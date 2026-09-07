@@ -8,15 +8,18 @@ import {
   IconClose,
   IconDevices,
   IconEmployees,
+  IconLists,
   IconOverview,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
+import { useAuth } from "@/components/auth/auth-provider";
 
 const navItems = [
   { label: "Overview", href: "/dashboard", icon: IconOverview },
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
+  { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
 ];
 
 export function Sidebar({
@@ -27,6 +30,10 @@ export function Sidebar({
   onClose: () => void;
 }) {
   const pathname = usePathname();
+  const { profile, user, signOut } = useAuth();
+  const visibleNavItems = profile?.role === "employee"
+    ? navItems.filter((item) => item.href === "/dashboard")
+    : navItems;
 
   return (
     <>
@@ -70,7 +77,7 @@ export function Sidebar({
             Super Admin
           </p>
           <nav className="space-y-1">
-            {navItems.map((item) => {
+            {visibleNavItems.map((item) => {
               const active =
                 item.href === "/dashboard"
                   ? pathname === "/dashboard"
@@ -105,6 +112,10 @@ export function Sidebar({
         </div>
 
         <div className="border-t border-border p-4">
+          <div className="mb-3 flex items-center justify-between gap-3 px-2">
+            <div className="min-w-0"><p className="truncate text-sm font-semibold">{profile?.full_name || user?.email || "Signed in"}</p><p className="mt-0.5 text-xs capitalize text-muted">{profile?.role || "Account"}</p></div>
+            <button type="button" onClick={signOut} className="shrink-0 text-xs font-semibold text-muted hover:text-primary">Sign out</button>
+          </div>
           <div className="rounded-2xl bg-gradient-to-br from-primary-soft to-white p-4 ring-1 ring-primary/10">
             <p className="text-sm font-semibold text-foreground">Live monitoring</p>
             <p className="mt-1.5 text-xs leading-5 text-muted">

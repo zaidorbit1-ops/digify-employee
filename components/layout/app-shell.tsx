@@ -4,6 +4,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { IconMenu } from "@/components/icons";
+import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 
 const titles: Record<string, string> = {
@@ -11,12 +12,18 @@ const titles: Record<string, string> = {
   "/dashboard/devices": "Devices",
   "/dashboard/employees": "Employees",
   "/dashboard/attendance": "Attendance",
+  "/dashboard/lookups": "Lookup lists",
 };
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const title = titles[pathname] ?? "Dashboard";
+  const { profile, user, loading, profileError, signOut } = useAuth();
+
+  if (loading) {
+    return <div className="grid min-h-screen place-items-center bg-background text-sm text-muted">Loading your workspace...</div>;
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -45,6 +52,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           <main className="min-w-0 flex-1">
             <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+              {profileError ? <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{profileError} Ask your administrator to link your account in the profiles table.</div> : null}
               {children}
             </div>
           </main>

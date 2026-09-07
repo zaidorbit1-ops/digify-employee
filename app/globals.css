@@ -31,6 +31,77 @@ body {
   font-family: var(--font-plus-jakarta), sans-serif;
 }
 
+.login-ambient {
+  isolation: isolate;
+  position: relative;
+  background:
+    linear-gradient(115deg, #ffffff 0%, #fff7f5 24%, #fdf0ee 46%, #fffaf9 67%, #fff1ef 86%, #ffffff 100%);
+  background-size: 360% 360%;
+  animation: login-background-drift 9s ease-in-out infinite;
+}
+
+.login-ambient::before,
+.login-ambient::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  border: 24px solid rgba(190, 65, 65, 0.2);
+  border-radius: 50%;
+  filter: blur(17px);
+  opacity: 1;
+}
+
+.login-ambient::before {
+  top: 5%;
+  left: -18%;
+  width: 76vw;
+  height: 48vh;
+  transform: rotate(-14deg);
+  animation: login-ribbon-one 14s ease-in-out infinite alternate;
+}
+
+.login-ambient::after {
+  right: -20%;
+  bottom: -12%;
+  width: 82vw;
+  height: 52vh;
+  border-color: rgba(94, 67, 63, 0.17);
+  transform: rotate(16deg);
+  animation: login-ribbon-two 17s ease-in-out infinite alternate;
+}
+
+@keyframes login-background-drift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes login-ribbon-one {
+  from { transform: translate3d(-4%, -2%, 0) rotate(-14deg); }
+  to { transform: translate3d(12%, 8%, 0) rotate(-4deg); }
+}
+
+@keyframes login-ribbon-two {
+  from { transform: translate3d(5%, 4%, 0) rotate(16deg); }
+  to { transform: translate3d(-10%, -8%, 0) rotate(7deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-ambient {
+    animation: none;
+  }
+
+  .login-ambient::before,
+  .login-ambient::after {
+    animation: none;
+  }
+}
+
 button,
 input,
 select {

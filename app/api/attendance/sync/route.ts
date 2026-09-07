@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { calculatePunchFields } from "@/lib/attendance";
 import { connectToZkDevice, normalizeAttendanceRecord } from "@/lib/zkteco";
-import { getDevices, upsertAttendanceRecords } from "@/lib/supabase";
+import { getDevices, getEmployees, getShiftTimings, upsertAttendanceRecords } from "@/lib/supabase";
 
 export async function POST(request: Request) {
   let zkDevice: Awaited<ReturnType<typeof connectToZkDevice>> | null = null;
@@ -23,12 +24,29 @@ export async function POST(request: Request) {
     const usersResponse = await zkDevice.getUsers();
     const attendanceResponse = await zkDevice.getAttendances();
 
-    const attendanceRecords = (attendanceResponse?.data ?? []).map(
+    const rawRecords: Array<ReturnType<typeof normalizeAttendanceRecord> & { device_id: number }> = (attendanceResponse?.data ?? []).map(
       (record: Parameters<typeof normalizeAttendanceRecord>[0]) => ({
         ...normalizeAttendanceRecord(record),
         device_id: device.id,
       })
     );
+    const [employees, shifts] = await Promise.all([getEmployees(), getShiftTimings()]);
+    const employeeByUid = new Map(employees.filter((employee) => employee.zk_device_uid != null).map((employee) => [Number(employee.zk_device_uid), employee]));
+    const grouped = new Map<string, typeof rawRecords>();
+    rawRecords.forEach((record) => {
+      const employee = employeeByUid.get(record.zk_user_id);
+      if (!employee) return;
+      const key = `${employee.id}:${new Date(record.check_in).toISOString().slice(0, 10)}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), record]);
+    });
+    const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
+    const attendanceRecords = rawRecords.map((record) => {
+      const employee = employeeByUid.get(record.zk_user_id);
+      const fields = employee
+      ? calculatePunchFields(grouped.get(`${employee.id}:${new Date(record.check_in).toISOString().slice(0, 10)}`) ?? [], employee.shift_id ? shiftById.get(employee.shift_id) : undefined)
+      : null;
+      return { ...record, employee_id: employee?.id ?? null, ...fields };
+    });
 
     const inserted = await upsertAttendanceRecords(attendanceRecords);
 

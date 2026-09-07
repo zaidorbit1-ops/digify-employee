@@ -95,3 +95,15 @@ export function IconEdit({ className }: IconProps) {
 export function IconTrash({ className }: IconProps) {
   return <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden><path d="M5 7h14M10 4h4l1 3H9l1-3ZM7 7l.7 13h8.6L17 7M10 11v5M14 11v5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
+
+export function IconLists({ className }: IconProps) {
+  return <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden><path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><circle cx="4.5" cy="6" r="1" fill="currentColor" /><circle cx="4.5" cy="12" r="1" fill="currentColor" /><circle cx="4.5" cy="18" r="1" fill="currentColor" /></svg>;
+}
+
+export function IconDownload({ className }: IconProps) {
+  return <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+export function IconFile({ className }: IconProps) {
+  return <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden><path d="M7 3.5h7l3.5 3.5v13.5H7V3.5Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" /><path d="M14 3.5V7h3.5M9.5 11h5M9.5 14h5M9.5 17h3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>;
+}

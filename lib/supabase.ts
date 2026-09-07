@@ -4,10 +4,11 @@ const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const supabaseAnonKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 export const supabase =
-  supabaseUrl && supabaseAnonKey
-    ? createClient(supabaseUrl, supabaseAnonKey, {
+  supabaseUrl && (supabaseServiceRoleKey || supabaseAnonKey)
+    ? createClient(supabaseUrl, supabaseServiceRoleKey || supabaseAnonKey, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,
@@ -24,13 +25,21 @@ export type DeviceInsert = {
 };
 
 export type EmployeeInsert = {
-  employee_id: string;
+  employee_id?: string;
   name: string;
+  auth_user_id?: string | null;
   department?: string;
+  department_id?: number | null;
   email?: string;
   phone?: string;
   position?: string;
+  position_id?: number | null;
+  shift_id?: number | null;
   salary?: number | null;
+  physical_address?: string;
+  cnic?: string;
+  joining_date?: string | null;
+  status?: string;
   device_id?: number | null;
   zk_device_uid?: number | null;
   enrollment_status?: string;
@@ -42,6 +51,11 @@ export type AttendanceUpsertRow = {
   zk_user_id: number;
   check_in: string;
   status?: string;
+  arrival_status?: string;
+  day_status?: string;
+  hours_worked?: number | null;
+  session_start?: string | null;
+  session_end?: string | null;
   device_log_id: number;
 };
 
@@ -53,6 +67,45 @@ function requireSupabase() {
   }
 
   return supabase;
+}
+
+function requireServiceRoleSupabase() {
+  if (!supabase || !supabaseServiceRoleKey) {
+    throw new Error("Supabase service role is not configured on the server.");
+  }
+
+  return supabase;
+}
+
+export async function createEmployeeAuthUser(email: string, password: string, fullName: string) {
+  const client = requireServiceRoleSupabase();
+  const { data, error } = await client.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true,
+    user_metadata: { full_name: fullName, role: "employee" },
+  });
+
+  if (error || !data.user) throw error ?? new Error("Could not create employee login.");
+  return data.user;
+}
+
+export async function updateEmployeeAuthUser(userId: string, values: { email?: string; password?: string; active: boolean }) {
+  const client = requireServiceRoleSupabase();
+  const { data, error } = await client.auth.admin.updateUserById(userId, {
+    ...(values.email ? { email: values.email, email_confirm: true } : {}),
+    ...(values.password ? { password: values.password } : {}),
+    ban_duration: values.active ? "none" : "876000h",
+  });
+
+  if (error || !data.user) throw error ?? new Error("Could not update employee login.");
+  return data.user;
+}
+
+export async function deleteEmployeeAuthUser(userId: string) {
+  const client = requireServiceRoleSupabase();
+  const { error } = await client.auth.admin.deleteUser(userId);
+  if (error) throw error;
 }
 
 export async function getDevices() {
@@ -128,6 +181,27 @@ export async function deleteEmployee(id: number) {
 export async function getAttendance() {
   const client = requireSupabase();
   const { data, error } = await client.from("attendance").select("*").order("check_in", { ascending: false });
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getShiftTimings() {
+  const client = requireSupabase();
+  const { data, error } = await client.from("shift_timings").select("*").order("name");
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getLeavesForRange(startDate: string, endDate: string) {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("leaves")
+    .select("employee_id, start_date, end_date, status")
+    .eq("status", "approved")
+    .lte("start_date", endDate)
+    .gte("end_date", startDate);
 
   if (error) throw error;
   return data ?? [];
