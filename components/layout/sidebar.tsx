@@ -1,0 +1,118 @@
+"use client";
+
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import {
+  IconAttendance,
+  IconClose,
+  IconDevices,
+  IconEmployees,
+  IconOverview,
+} from "@/components/icons";
+import { cn } from "@/lib/cn";
+
+const navItems = [
+  { label: "Overview", href: "/dashboard", icon: IconOverview },
+  { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
+  { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
+  { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
+];
+
+export function Sidebar({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}) {
+  const pathname = usePathname();
+
+  return (
+    <>
+      <div
+        className={cn(
+          "fixed inset-0 z-40 bg-stone-900/30 backdrop-blur-[2px] transition-opacity duration-300 lg:hidden",
+          open ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+        onClick={onClose}
+      />
+
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-[272px] flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          open ? "translate-x-0" : "-translate-x-full",
+        )}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-5">
+          <Link href="/dashboard" aria-label="Dashboard home" className="flex min-w-0 items-center gap-3" onClick={onClose}>
+            <Image
+              src="/logo.png"
+              alt="Company logo"
+              width={160}
+              height={40}
+              className="h-10 w-auto max-w-[168px] object-contain"
+              priority
+            />
+          </Link>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-primary-soft hover:text-primary lg:hidden"
+            aria-label="Close sidebar"
+          >
+            <IconClose className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-3 py-5">
+          <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">
+            Super Admin
+          </p>
+          <nav className="space-y-1">
+            {navItems.map((item) => {
+              const active =
+                item.href === "/dashboard"
+                  ? pathname === "/dashboard"
+                  : pathname.startsWith(item.href);
+              const Icon = item.icon;
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={onClose}
+                  className={cn(
+                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-200",
+                    active
+                      ? "bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(228,90,90,0.12)]"
+                      : "text-stone-500 hover:bg-[#fbf6f5] hover:text-foreground",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "grid h-9 w-9 place-items-center rounded-xl",
+                      active ? "bg-white text-primary shadow-sm" : "bg-stone-50 text-stone-400",
+                    )}
+                  >
+                    <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
+                  </span>
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
+
+        <div className="border-t border-border p-4">
+          <div className="rounded-2xl bg-gradient-to-br from-primary-soft to-white p-4 ring-1 ring-primary/10">
+            <p className="text-sm font-semibold text-foreground">Live monitoring</p>
+            <p className="mt-1.5 text-xs leading-5 text-muted">
+              The K60 is checked automatically every second.
+            </p>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
