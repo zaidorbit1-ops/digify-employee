@@ -71,3 +71,20 @@
 - Added a dedicated monthly detail page at `/dashboard/attendance/[employeeId]` opened from the History list.
 - Added monthly detail stats and daily attendance rows for the selected employee.
 - Sundays are now excluded from generated attendance days and treated as weekly holidays rather than Absent.
+
+### Background Attendance Sync — 2026-09-07
+
+- Added `scripts/attendance-worker.cjs` so ZKTeco attendance sync runs independently of the Attendance page.
+- Added `npm run attendance:worker`, polling the local Next.js sync endpoint every 15 seconds.
+- Added a protected worker secret in `.env.local` and allowed only that secret to call the worker sync endpoint without a browser session.
+- Added the Supabase Realtime migration `supabase/migrations/20260907130000_attendance_realtime.sql`.
+- Added an app-wide browser attendance notifier for Superadmin tabs, so new attendance can notify the user while working in another browser tab.
+- The worker was started successfully and checked 125 logs from the configured Main Gate Device.
+
+### Attendance Corrections & Live Session UI — 2026-09-07
+
+- Corrected shift comparison to use the configured office timezone (`ATTENDANCE_TIMEZONE_OFFSET_MINUTES=300`), so a 9 PM punch is Late for a 4 PM shift.
+- Restored global attendance popup and voice announcement for new realtime attendance events, including the employee name.
+- Replaced raw session timestamps with live worked duration in hours and minutes.
+- Added exact `worked_minutes` storage and migration for completed sessions.
+- Added Superadmin `Edit time` and testing `Clear` actions on Today attendance records.

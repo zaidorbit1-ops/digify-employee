@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { sessionWindow } from "@/lib/attendance";
 
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
@@ -54,6 +55,7 @@ export type AttendanceUpsertRow = {
   arrival_status?: string;
   day_status?: string;
   hours_worked?: number | null;
+  worked_minutes?: number | null;
   session_start?: string | null;
   session_end?: string | null;
   device_log_id: number;
@@ -184,6 +186,25 @@ export async function getAttendance() {
 
   if (error) throw error;
   return data ?? [];
+}
+
+export async function updateAttendanceRecord(id: number, checkIn: string) {
+  const client = requireSupabase();
+  const { data, error } = await client.from("attendance").update({ check_in: checkIn }).eq("id", id).select().single();
+
+  if (error) throw error;
+  return data;
+}
+
+export async function clearAttendanceForEmployeeDate(employeeId: number, date: string) {
+  const client = requireSupabase();
+  const [employees, shifts] = await Promise.all([getEmployees(), getShiftTimings()]);
+  const employee = employees.find((item) => item.id === employeeId);
+  const shift = employee?.shift_id ? shifts.find((item) => item.id === employee.shift_id) : undefined;
+  const { start, end } = sessionWindow(date, shift);
+  const { error } = await client.from("attendance").delete().eq("employee_id", employeeId).gte("check_in", start).lt("check_in", end);
+
+  if (error) throw error;
 }
 
 export async function getShiftTimings() {

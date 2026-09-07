@@ -3,7 +3,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.6",

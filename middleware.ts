@@ -24,8 +24,11 @@ export async function middleware(request: NextRequest) {
   const isLogin = request.nextUrl.pathname === "/login";
   const isDashboard = request.nextUrl.pathname.startsWith("/dashboard");
   const isApi = request.nextUrl.pathname.startsWith("/api/");
+  const isWorkerSync = request.nextUrl.pathname === "/api/attendance/sync"
+    && Boolean(process.env.ATTENDANCE_WORKER_SECRET)
+    && request.headers.get("x-attendance-worker-secret") === process.env.ATTENDANCE_WORKER_SECRET;
 
-  if (isApi && !user) {
+  if (isApi && !user && !isWorkerSync) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 

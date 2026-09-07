@@ -4,6 +4,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { IconMenu } from "@/components/icons";
+import { AttendanceNotifier } from "@/components/attendance/attendance-notifier";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 
@@ -27,6 +28,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <AttendanceNotifier />
       <div className="flex min-h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />
 

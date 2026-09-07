@@ -47,17 +47,30 @@ export async function enrollUserOnZkDevice({
   }
 }
 
+export function punchLogId(zkUserId: number, checkIn: string) {
+  const key = `${zkUserId}:${checkIn}`;
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return 100000 + ((hash >>> 0) % 2147383647);
+}
+
 export function normalizeAttendanceRecord(record: ZkAttendanceRecord) {
-  const zkUserId = Number(record.user_id ?? record.sn ?? 0);
-  const checkInISO =
+  const zkUserId = Number(record.user_id ?? 0);
+  const parsed =
     record.record_time instanceof Date
-      ? record.record_time.toISOString()
-      : new Date(String(record.record_time || new Date())).toISOString();
+      ? record.record_time
+      : new Date(String(record.record_time || new Date()));
+  parsed.setMilliseconds(0);
+  const checkInISO = parsed.toISOString();
+  const safeUserId = Number.isFinite(zkUserId) && zkUserId > 0 ? zkUserId : 0;
 
   return {
-    zk_user_id: Number.isFinite(zkUserId) && zkUserId > 0 ? zkUserId : 0,
+    zk_user_id: safeUserId,
     check_in: checkInISO,
-    status: record.type === 0 ? "present" : "present",
-    device_log_id: Number(record.sn ?? 0),
+    status: "present",
+    device_log_id: punchLogId(safeUserId, checkInISO),
   };
 }

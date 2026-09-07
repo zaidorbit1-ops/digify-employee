@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { calculatePunchFields } from "@/lib/attendance";
+import { calculatePunchFields, sessionDateKey } from "@/lib/attendance";
 import { connectToZkDevice, normalizeAttendanceRecord } from "@/lib/zkteco";
 import { getDevices, getEmployees, getShiftTimings, upsertAttendanceRecords } from "@/lib/supabase";
 
@@ -32,23 +32,26 @@ export async function POST(request: Request) {
     );
     const [employees, shifts] = await Promise.all([getEmployees(), getShiftTimings()]);
     const employeeByUid = new Map(employees.filter((employee) => employee.zk_device_uid != null).map((employee) => [Number(employee.zk_device_uid), employee]));
-    const grouped = new Map<string, typeof rawRecords>();
-    rawRecords.forEach((record) => {
+    const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
+    const validRecords = rawRecords.filter((record) => record.zk_user_id > 0);
+    const grouped = new Map<string, typeof validRecords>();
+    validRecords.forEach((record) => {
       const employee = employeeByUid.get(record.zk_user_id);
       if (!employee) return;
-      const key = `${employee.id}:${new Date(record.check_in).toISOString().slice(0, 10)}`;
+      const shift = employee.shift_id ? shiftById.get(employee.shift_id) : undefined;
+      const key = `${employee.id}:${sessionDateKey(record.check_in, shift)}`;
       grouped.set(key, [...(grouped.get(key) ?? []), record]);
     });
-    const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
-    const attendanceRecords = rawRecords.map((record) => {
+    const attendanceRecords = [...new Map(validRecords.map((record) => [`${record.device_log_id}`, record])).values()].map((record) => {
       const employee = employeeByUid.get(record.zk_user_id);
+      const shift = employee?.shift_id ? shiftById.get(employee.shift_id) : undefined;
       const fields = employee
-      ? calculatePunchFields(grouped.get(`${employee.id}:${new Date(record.check_in).toISOString().slice(0, 10)}`) ?? [], employee.shift_id ? shiftById.get(employee.shift_id) : undefined)
-      : null;
+        ? calculatePunchFields(grouped.get(`${employee.id}:${sessionDateKey(record.check_in, shift)}`) ?? [], shift)
+        : null;
       return { ...record, employee_id: employee?.id ?? null, ...fields };
     });
 
-    const inserted = await upsertAttendanceRecords(attendanceRecords);
+    const inserted = attendanceRecords.length ? await upsertAttendanceRecords(attendanceRecords) : [];
 
     const latest = attendanceRecords.at(-1);
     console.info("[K60 MONITOR]", {

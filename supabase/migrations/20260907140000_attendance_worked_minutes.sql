@@ -1,0 +1,1 @@
+ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS worked_minutes INT;
