@@ -88,3 +88,19 @@
 - Replaced raw session timestamps with live worked duration in hours and minutes.
 - Added exact `worked_minutes` storage and migration for completed sessions.
 - Added Superadmin `Edit time` and testing `Clear` actions on Today attendance records.
+
+### Stage 5 Partial Completion — Admin Side — 2026-09-07
+
+- Implemented the admin-side leave review flow for the Stage 5 requirement: Superadmin can review leave requests, approve or decline them, and the employee receives a leave-status notification.
+- Added leave management API endpoints at `/api/leaves` and `/api/leaves/[employeeId]` to list requests, create employee leave entries, and update request status.
+- Added the admin leave dashboard page at `/dashboard/leave` with search, status filter, review modal, approve, and decline actions.
+- Added the Leave item to the main sidebar so the Superadmin can access the review page directly.
+- This completes the admin-side portion of Stage 5 as required by the project plan. The employee-facing leave application flow and the final attendance/salary integration for approved leave are still pending as the remaining work for Stage 5 completion.
+
+### Stage 6 Partial Completion — 2026-09-07
+
+- Implemented the admin salary review and payout flow with automatic late, half-day, and absent deduction calculations.
+- Added PKR salary formatting, recent paid salaries list, and an Add salary popup for admin adjustments.
+- The popup allows the admin to skip late or absent deductions, enter a custom overall deduction amount, and add an admin note before confirming payment.
+- Salary payout records now store the custom deduction amount and adjustment note, and paid salary payouts create an expense record.
+- Stage 6 is partially complete: sending the salary email to the employee is not implemented yet. PDF salary slip generation and email delivery from Digify IT Solution remain pending.

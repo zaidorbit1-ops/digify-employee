@@ -19,6 +19,8 @@ const navItems = [
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
+  { label: "Leave", href: "/dashboard/leave", icon: IconAttendance },
+  { label: "Salary", href: "/dashboard/salary", icon: IconAttendance },
   { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
 ];
 

@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS public.salaries (
   late_deduction_enabled BOOLEAN NOT NULL DEFAULT true,
   deduction_amount NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (deduction_amount >= 0),
   net_pay NUMERIC(12,2) NOT NULL DEFAULT 0 CHECK (net_pay >= 0),
+  custom_deduction_amount NUMERIC(12,2) DEFAULT NULL CHECK (custom_deduction_amount IS NULL OR custom_deduction_amount >= 0),
+  adjustment_note TEXT,
   status VARCHAR(20) NOT NULL DEFAULT 'unpaid' CHECK (status IN ('unpaid', 'paid')),
   paid_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
