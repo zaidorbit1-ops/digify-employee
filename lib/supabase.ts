@@ -232,7 +232,7 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("attendance")
-    .upsert(rows, { onConflict: "device_log_id" })
+    .upsert(rows, { onConflict: "zk_user_id,check_in" })
     .select();
 
   if (error) throw error;

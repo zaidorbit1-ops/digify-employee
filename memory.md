@@ -104,3 +104,45 @@
 - The popup allows the admin to skip late or absent deductions, enter a custom overall deduction amount, and add an admin note before confirming payment.
 - Salary payout records now store the custom deduction amount and adjustment note, and paid salary payouts create an expense record.
 - Stage 6 is partially complete: sending the salary email to the employee is not implemented yet. PDF salary slip generation and email delivery from Digify IT Solution remain pending.
+
+### Stage 7 Complete — 2026-09-08
+
+- Added the Company Accounts page at `/dashboard/company-accounts` with Companies CRUD and accounts grouped under each company.
+- Added full account CRUD for platform name, login, and password, including edit, delete, company cascade delete, masked password display, reveal, and copy actions.
+- Added server-side AES-256-GCM encryption for account passwords; normal list responses never return decrypted passwords.
+- Added admin APIs at `/api/companies`, `/api/company-accounts`, and `/api/company-accounts/[id]/reveal`.
+- Added `supabase/migrations/20260908100000_company_account_password_ciphertext.sql` to store the encrypted text envelope safely.
+- Added the three-column company card grid and separate company detail pages at `/dashboard/company-accounts/[companyId]`.
+- Added admin password re-authentication before revealing or copying an account password.
+- Stage 7 is fully completed. The migration has been applied and `COMPANY_ACCOUNTS_ENCRYPTION_KEY` is configured in the server environment.
+
+### Stage 8 Complete — 2026-09-08
+
+- Added the Payment Tracking dashboard at `/dashboard/payments` with monthly transaction filtering and summary cards for total revenue, total expenses, and net profit/loss in PKR.
+- Added manual Expense and Revenue creation through modal forms, with edit and delete actions for manual transactions.
+- Salary-linked expenses are displayed as read-only `salary` transactions and cannot be manually deleted or duplicated.
+- Added the authenticated `/api/payments` endpoint for finance summaries and transaction CRUD.
+- Made salary expense creation idempotent with `salary_id` upsert protection, so retrying a salary payout does not create duplicate expenses.
+- Stage 8 is fully completed and the production build passes successfully.
+
+### Stage 9 Complete — 2026-09-08
+
+- Added the Settings page at `/dashboard/settings` for updating the signed-in user's name, email, and password.
+- Added Superadmin Access Management with searchable employee selection, quick employee chips, per-module Read/Add/Edit/Delete permissions, and a per-row `All` checkbox.
+- Added a granted-access overview table showing which employee has which module permissions.
+- Added `/api/permissions` for permission loading and upsert management.
+- Added middleware enforcement for dashboard routes and API methods based on module permissions.
+- Added Stage 9 RLS migration `supabase/migrations/20260908110000_stage9_profile_permissions.sql` for self-profile updates and employee permission reads.
+- Stage 9 implementation is complete; the new Supabase migration must be applied with `supabase db push` if it has not been run yet.
+
+### Stage 10 Complete — 2026-09-08
+
+- Added the employee personal dashboard at `/dashboard`, separate from the Superadmin overview.
+- Added employee pages for `/dashboard/my-attendance`, `/dashboard/my-salary`, and `/dashboard/apply-leave`.
+- Added employee navigation with Dashboard, My Attendance, My Salary History, Apply for Leave, and Settings.
+- Added self-scoped APIs at `/api/me`, `/api/me/attendance`, `/api/me/salaries`, and `/api/me/leaves`; employees can only read or submit records linked to their own profile.
+- Added personal attendance month filtering, salary history in PKR, leave submission, and leave status history.
+- Updated middleware so employee default routes work while additional modules remain controlled by Stage 9 permissions.
+- Stage 10 is fully completed and the production build passes successfully.
+- Refined Stage 10 with an isolated employee route folder: `/dashboard/employee`, `/dashboard/employee/attendance`, `/dashboard/employee/salary`, and `/dashboard/employee/leave`.
+- Employee sidebar now shows only personal default pages plus admin module links explicitly granted with `can_read` permission; Superadmin navigation remains separate.

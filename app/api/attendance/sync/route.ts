@@ -5,25 +5,45 @@ import { getDevices, getEmployees, getShiftTimings, upsertAttendanceRecords } fr
 
 export async function POST(request: Request) {
   let zkDevice: Awaited<ReturnType<typeof connectToZkDevice>> | null = null;
+  const startedAt = Date.now();
+  let syncPhase = "request";
 
   try {
+    console.info("[ATTENDANCE SYNC] started", { at: new Date().toISOString() });
     const body = await request.json().catch(() => ({}));
+    syncPhase = "load devices";
     const devices = await getDevices();
     const requestedDeviceId = Number(body.device_id);
     const device = devices.find((item) => item.id === requestedDeviceId) ?? devices.find((item) => item.status === "active") ?? devices[0];
 
     if (!device) {
+      console.error("[ATTENDANCE SYNC] no device configured");
       return NextResponse.json(
         { ok: false, error: "Add a K60 device before starting attendance sync." },
         { status: 400 }
       );
     }
 
+    console.info("[ATTENDANCE SYNC] selected device", {
+      deviceId: device.id,
+      device: device.name,
+      ip: device.device_ip,
+      port: device.port,
+      status: device.status,
+    });
+
+    syncPhase = "connect device";
     zkDevice = await connectToZkDevice(device.device_ip, device.port);
 
+    syncPhase = "read users";
     const usersResponse = await zkDevice.getUsers();
-    const attendanceResponse = await zkDevice.getAttendances();
+    console.info("[ATTENDANCE SYNC] users fetched", { device: device.name, count: usersResponse?.data?.length ?? 0 });
 
+    syncPhase = "read attendance logs";
+    const attendanceResponse = await zkDevice.getAttendances();
+    console.info("[ATTENDANCE SYNC] attendance logs fetched", { device: device.name, count: attendanceResponse?.data?.length ?? 0 });
+
+    syncPhase = "calculate attendance records";
     const rawRecords: Array<ReturnType<typeof normalizeAttendanceRecord> & { device_id: number }> = (attendanceResponse?.data ?? []).map(
       (record: Parameters<typeof normalizeAttendanceRecord>[0]) => ({
         ...normalizeAttendanceRecord(record),
@@ -42,7 +62,7 @@ export async function POST(request: Request) {
       const key = `${employee.id}:${sessionDateKey(record.check_in, shift)}`;
       grouped.set(key, [...(grouped.get(key) ?? []), record]);
     });
-    const attendanceRecords = [...new Map(validRecords.map((record) => [`${record.device_log_id}`, record])).values()].map((record) => {
+    const attendanceRecords = [...new Map(validRecords.map((record) => [`${record.zk_user_id}:${record.check_in}`, record])).values()].map((record) => {
       const employee = employeeByUid.get(record.zk_user_id);
       const shift = employee?.shift_id ? shiftById.get(employee.shift_id) : undefined;
       const fields = employee
@@ -51,6 +71,7 @@ export async function POST(request: Request) {
       return { ...record, employee_id: employee?.id ?? null, ...fields };
     });
 
+    syncPhase = "save attendance records";
     const inserted = attendanceRecords.length ? await upsertAttendanceRecords(attendanceRecords) : [];
 
     const latest = attendanceRecords.at(-1);
@@ -64,6 +85,7 @@ export async function POST(request: Request) {
         ? { userId: latest.zk_user_id, checkedInAt: latest.check_in, deviceLogId: latest.device_log_id }
         : null,
     });
+      console.info("[ATTENDANCE SYNC] completed", { device: device.name, elapsedMs: Date.now() - startedAt });
 
     return NextResponse.json({
       ok: true,
@@ -76,7 +98,20 @@ export async function POST(request: Request) {
     });
   } catch (error: unknown) {
     const message =
-      error instanceof Error ? error.message : "Unknown ZKTeco sync error";
+      error instanceof Error
+        ? error.message
+        : typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : "Unknown ZKTeco sync error";
+
+    console.error("[ATTENDANCE SYNC] failed", {
+      phase: syncPhase,
+      elapsedMs: Date.now() - startedAt,
+      error: message,
+      code: typeof error === "object" && error !== null && "code" in error ? error.code : undefined,
+      details: typeof error === "object" && error !== null && "details" in error ? error.details : undefined,
+      hint: typeof error === "object" && error !== null && "hint" in error ? error.hint : undefined,
+    });
 
     return NextResponse.json(
       {
@@ -86,7 +121,12 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   } finally {
-    await zkDevice?.disconnect().catch(() => undefined);
+    if (zkDevice) {
+      await zkDevice.disconnect().catch((error: unknown) => {
+        console.error("[ATTENDANCE SYNC] device disconnect failed", error);
+      });
+      console.info("[ATTENDANCE SYNC] device connection closed");
+    }
   }
 }
 

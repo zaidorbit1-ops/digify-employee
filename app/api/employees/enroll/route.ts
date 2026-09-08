@@ -27,13 +27,31 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Device was not found." }, { status: 404 });
     }
 
-    const uid = Number(body.zk_device_uid ?? employee.zk_device_uid ?? employee.id);
+    const uid = Number(body.zk_device_uid ?? employee.employee_id ?? employee.zk_device_uid);
     if (!Number.isInteger(uid) || uid <= 0) {
       return NextResponse.json(
         { error: "A valid numeric device user ID is required." },
         { status: 400 }
       );
     }
+
+    const conflictingEmployee = employees.find((item) => item.id !== employee.id && Number(item.zk_device_uid) === uid);
+    if (conflictingEmployee) {
+      return NextResponse.json(
+        { error: `ZKTeco user ID ${uid} is already assigned to ${conflictingEmployee.name}.` },
+        { status: 409 }
+      );
+    }
+
+    console.info("[ENROLLMENT] using employee ID as ZKTeco user ID", {
+      employee: employee.name,
+      employeeRecordId: employee.id,
+      employeeId: employee.employee_id,
+      zkUserId: uid,
+      device: device.name,
+      ip: device.device_ip,
+      port: device.port,
+    });
 
     const enrolled = await enrollUserOnZkDevice({
       ip: device.device_ip,

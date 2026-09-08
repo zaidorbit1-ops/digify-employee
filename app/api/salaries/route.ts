@@ -162,13 +162,13 @@ export async function POST(request: Request) {
     if (error) throw error;
 
     if (body.pay_now === true) {
-      const { error: expenseError } = await getClient().from("expenses").insert({
+      const { error: expenseError } = await getClient().from("expenses").upsert({
         source: "salary",
         salary_id: data.id,
         amount: summary.net_pay,
         description: `Salary payout for ${employee.name} (${new Date(month).toLocaleDateString(undefined, { month: "long", year: "numeric" })})`,
         expense_date: new Date().toISOString().slice(0, 10),
-      });
+      }, { onConflict: "salary_id" });
 
       if (expenseError) throw expenseError;
     }

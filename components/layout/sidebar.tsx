@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   IconAttendance,
   IconClose,
@@ -10,6 +11,7 @@ import {
   IconEmployees,
   IconLists,
   IconOverview,
+  IconFile,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -21,6 +23,9 @@ const navItems = [
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
   { label: "Leave", href: "/dashboard/leave", icon: IconAttendance },
   { label: "Salary", href: "/dashboard/salary", icon: IconAttendance },
+  { label: "Company accounts", href: "/dashboard/company-accounts", icon: IconFile },
+  { label: "Payment tracking", href: "/dashboard/payments", icon: IconFile },
+  { label: "Settings", href: "/dashboard/settings", icon: IconFile },
   { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
 ];
 
@@ -33,9 +38,32 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const { profile, user, signOut } = useAuth();
-  const visibleNavItems = profile?.role === "employee"
-    ? navItems.filter((item) => item.href === "/dashboard")
-    : navItems;
+  const [grantedModules, setGrantedModules] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (profile?.role !== "employee") return;
+    fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => setGrantedModules((result.permissions ?? []).map((permission: { module: string }) => permission.module))).catch(() => setGrantedModules([]));
+  }, [profile?.role]);
+
+  const moduleForHref: Record<string, string> = {
+    "/dashboard/devices": "devices",
+    "/dashboard/employees": "employees",
+    "/dashboard/attendance": "attendance",
+    "/dashboard/leave": "leave",
+    "/dashboard/salary": "salary",
+    "/dashboard/company-accounts": "company_accounts",
+    "/dashboard/payments": "payment_tracking",
+    "/dashboard/lookups": "lookups",
+  };
+  const employeeDefaultItems = [
+    { label: "Dashboard", href: "/dashboard", icon: IconOverview },
+    { label: "My attendance", href: "/dashboard/employee/attendance", icon: IconAttendance },
+    { label: "My salary history", href: "/dashboard/employee/salary", icon: IconAttendance },
+    { label: "Apply for leave", href: "/dashboard/employee/leave", icon: IconAttendance },
+    { label: "Settings", href: "/dashboard/settings", icon: IconFile },
+  ];
+  const employeeGrantedItems = navItems.filter((item) => moduleForHref[item.href] && grantedModules.includes(moduleForHref[item.href]));
+  const visibleNavItems = profile?.role === "employee" ? [...employeeDefaultItems, ...employeeGrantedItems] : navItems;
 
   return (
     <>
@@ -117,12 +145,6 @@ export function Sidebar({
           <div className="mb-3 flex items-center justify-between gap-3 px-2">
             <div className="min-w-0"><p className="truncate text-sm font-semibold">{profile?.full_name || user?.email || "Signed in"}</p><p className="mt-0.5 text-xs capitalize text-muted">{profile?.role || "Account"}</p></div>
             <button type="button" onClick={signOut} className="shrink-0 text-xs font-semibold text-muted hover:text-primary">Sign out</button>
-          </div>
-          <div className="rounded-2xl bg-gradient-to-br from-primary-soft to-white p-4 ring-1 ring-primary/10">
-            <p className="text-sm font-semibold text-foreground">Live monitoring</p>
-            <p className="mt-1.5 text-xs leading-5 text-muted">
-              The K60 is checked automatically every second.
-            </p>
           </div>
         </div>
       </aside>

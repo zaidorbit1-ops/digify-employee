@@ -14,6 +14,8 @@ const titles: Record<string, string> = {
   "/dashboard/employees": "Employees",
   "/dashboard/attendance": "Attendance",
   "/dashboard/lookups": "Lookup lists",
+  "/dashboard/employee": "Employee portal",
+  "/dashboard/settings": "Settings",
 };
 
 export function AppShell({ children }: { children: ReactNode }) {

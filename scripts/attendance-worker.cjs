@@ -8,6 +8,8 @@ if (!workerSecret) {
 }
 
 async function sync() {
+  const startedAt = Date.now();
+  console.log(`[attendance-worker] sync started ${new Date().toISOString()} -> ${appUrl}/api/attendance/sync`);
   try {
     const response = await fetch(`${appUrl}/api/attendance/sync`, {
       method: "POST",
@@ -15,12 +17,12 @@ async function sync() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      console.error(`[attendance-worker] ${response.status}: ${result.error || "Sync failed"}`);
+      console.error(`[attendance-worker] sync failed status=${response.status} elapsedMs=${Date.now() - startedAt} error=${result.error || "Sync failed"}`);
       return;
     }
-    console.log(`[attendance-worker] ${new Date().toISOString()} checked ${result.logsFetched ?? 0} logs from ${result.device || "device"}`);
+    console.log(`[attendance-worker] sync completed elapsedMs=${Date.now() - startedAt} device=${result.device || "device"} ip=${result.ip || "unknown"} port=${result.port || "unknown"} logs=${result.logsFetched ?? 0}`);
   } catch (error) {
-    console.error(`[attendance-worker] ${error instanceof Error ? error.message : "Connection failed"}`);
+    console.error(`[attendance-worker] request failed elapsedMs=${Date.now() - startedAt} error=${error instanceof Error ? error.message : "Connection failed"}`);
   }
 }
 
