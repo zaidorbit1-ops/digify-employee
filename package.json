@@ -6,7 +6,10 @@
     "lint": "eslint",
     "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs",
     "office:sync": "scripts\\start-office-sync.bat",
-    "office:autostart": "powershell -ExecutionPolicy Bypass -File scripts\\install-windows-autostart.ps1"
+    "office:autostart": "powershell -ExecutionPolicy Bypass -File scripts\\install-windows-autostart.ps1",
+    "attendance:build": "powershell -ExecutionPolicy Bypass -File scripts\\build-attendance-exe.ps1",
+    "attendance:install": "powershell -ExecutionPolicy Bypass -File scripts\\install-attendance-task.ps1",
+    "attendance:uninstall": "powershell -ExecutionPolicy Bypass -File scripts\\uninstall-attendance-task.ps1"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.6",
@@ -20,6 +23,7 @@
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "26.4.1",
     "@types/react": "19.2.18",
+    "@yao-pkg/pkg": "^6.22.0",
     "tailwindcss": "^4.3.3",
     "typescript": "7.0.2"
   }

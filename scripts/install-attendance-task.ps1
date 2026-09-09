@@ -1,0 +1,22 @@
+$ErrorActionPreference = "Stop"
+
+$appRoot = Split-Path -Parent $PSScriptRoot
+$dist = Join-Path $appRoot "dist"
+$exePath = Join-Path $dist "attendance-worker.exe"
+$taskName = "ZKTecoAttendanceConnector"
+
+if (-not (Test-Path $exePath)) { throw "Missing $exePath. Run npm run attendance:build first." }
+if (-not (Test-Path (Join-Path $dist ".env"))) { throw "Missing $dist\.env. Copy .env.example and configure it first." }
+
+$oldTaskName = "ZKTecoAttendanceSync"
+Unregister-ScheduledTask -TaskName $oldTaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+$action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $dist
+$trigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Seconds 30)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Start-ScheduledTask -TaskName $taskName
+Write-Host "Installed and started Windows task '$taskName'."
+Write-Host "Logs: $dist\logs\attendance-worker.log"
