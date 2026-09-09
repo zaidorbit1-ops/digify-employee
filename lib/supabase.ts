@@ -61,6 +61,16 @@ export type AttendanceUpsertRow = {
   device_log_id: number;
 };
 
+export type EnrollmentCommand = {
+  id: string;
+  employee_id: number;
+  device_id: number;
+  payload: { device_ip: string; port: number; uid: number; name: string };
+  status: "pending" | "processing" | "succeeded" | "failed";
+  result?: { uid?: number; userId?: string; name?: string } | null;
+  error_message?: string | null;
+};
+
 function requireSupabase() {
   if (!supabase) {
     throw new Error(
@@ -237,4 +247,121 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
 
   if (error) throw error;
   return data ?? [];
+}
+
+export async function createOrReuseEnrollmentCommand(values: {
+  employee_id: number;
+  device_id: number;
+  idempotency_key: string;
+  payload: EnrollmentCommand["payload"];
+}) {
+  const client = requireServiceRoleSupabase();
+  const { data: existing, error: findError } = await client
+    .from("device_commands")
+    .select("*")
+    .eq("idempotency_key", values.idempotency_key)
+    .maybeSingle();
+  if (findError) throw findError;
+  if (existing && (existing.status === "pending" || existing.status === "processing")) return existing as EnrollmentCommand;
+
+  const { data, error } = existing
+    ? await client.from("device_commands").update({
+        status: "pending",
+        payload: values.payload,
+        result: null,
+        error_message: null,
+        attempts: 0,
+        available_at: new Date().toISOString(),
+        claimed_at: null,
+        completed_at: null,
+      }).eq("id", existing.id).select().single()
+    : await client.from("device_commands").insert({
+        command_type: "enroll_user",
+        employee_id: values.employee_id,
+        device_id: values.device_id,
+        idempotency_key: values.idempotency_key,
+        payload: values.payload,
+      }).select().single();
+  if (error) throw error;
+  return data as EnrollmentCommand;
+}
+
+export async function getPendingEnrollmentCommands() {
+  const client = requireServiceRoleSupabase();
+  const staleClaim = new Date(Date.now() - 120000).toISOString();
+  await client.from("device_commands").update({ status: "pending", claimed_at: null })
+    .eq("command_type", "enroll_user")
+    .eq("status", "processing")
+    .lt("claimed_at", staleClaim);
+  const { data, error } = await client.from("device_commands")
+    .select("*")
+    .eq("command_type", "enroll_user")
+    .in("status", ["pending", "processing"])
+    .lte("available_at", new Date().toISOString())
+    .order("created_at", { ascending: true })
+    .limit(10);
+  if (error) throw error;
+  return (data ?? []) as EnrollmentCommand[];
+}
+
+export async function claimEnrollmentCommand(id: string) {
+  const client = requireServiceRoleSupabase();
+  const { data: current, error: currentError } = await client.from("device_commands").select("attempts").eq("id", id).eq("status", "pending").maybeSingle();
+  if (currentError) throw currentError;
+  if (!current) return null;
+  const { data, error } = await client.from("device_commands")
+    .update({ status: "processing", attempts: Number(current.attempts ?? 0) + 1, claimed_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("command_type", "enroll_user")
+    .eq("status", "pending")
+    .select()
+    .maybeSingle();
+  if (error) throw error;
+  return data as EnrollmentCommand | null;
+}
+
+export async function completeEnrollmentCommand(id: string, result: EnrollmentCommand["result"]) {
+  const client = requireServiceRoleSupabase();
+  const { data: command, error: commandError } = await client.from("device_commands")
+    .update({ status: "succeeded", result, error_message: null, completed_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("status", "processing")
+    .select()
+    .single();
+  if (commandError) throw commandError;
+  await updateEmployee(command.employee_id, {
+    device_id: command.device_id,
+    zk_device_uid: Number(result?.uid),
+    enrollment_status: "enrolled",
+  });
+  return command as EnrollmentCommand;
+}
+
+export async function failEnrollmentCommand(id: string, message: string) {
+  const client = requireServiceRoleSupabase();
+  const { data: current, error: currentError } = await client.from("device_commands").select("attempts").eq("id", id).eq("status", "processing").maybeSingle();
+  if (currentError) throw currentError;
+  if (!current) return null;
+  const attempts = Number(current.attempts ?? 0);
+  const retrying = attempts < 3;
+  const { data, error } = await client.from("device_commands")
+    .update({
+      status: retrying ? "pending" : "failed",
+      error_message: message.slice(0, 1000),
+      available_at: new Date(Date.now() + 15000).toISOString(),
+      completed_at: retrying ? null : new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("status", "processing")
+    .select()
+    .single();
+  if (error) throw error;
+  return data as EnrollmentCommand;
+}
+
+export async function getEnrollmentCommand(id: string) {
+  const client = requireServiceRoleSupabase();
+  const { data, error } = await client.from("device_commands").select("*").eq("id", id).maybeSingle();
+  if (error) throw error;
+  return data as EnrollmentCommand | null;
 }

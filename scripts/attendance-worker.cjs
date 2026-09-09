@@ -20,6 +20,7 @@ const intervalMs = Number(process.env.ATTENDANCE_SYNC_INTERVAL_MS || 15000);
 const deviceIp = process.env.ZK_DEVICE_IP;
 const devicePort = Number(process.env.ZK_DEVICE_PORT || 4370);
 const connectorApiUrl = process.env.CONNECTOR_API_URL;
+const connectorCommandsUrl = process.env.CONNECTOR_COMMANDS_URL || (connectorApiUrl ? connectorApiUrl.replace(/\/ingest\/?$/, "/commands") : "");
 const connectorToken = process.env.CONNECTOR_TOKEN;
 const logDirectory = path.join(workerDirectory, "logs");
 const logPath = path.join(logDirectory, "attendance-worker.log");
@@ -47,8 +48,8 @@ function errorDetails(error) {
   try { return JSON.stringify(error); } catch { return String(error); }
 }
 
-if (!deviceIp || !connectorApiUrl || !connectorToken) {
-  writeLog("ERROR", "ZK_DEVICE_IP, CONNECTOR_API_URL, and CONNECTOR_TOKEN are required.");
+if (!deviceIp || !connectorApiUrl || !connectorCommandsUrl || !connectorToken) {
+  writeLog("ERROR", "ZK_DEVICE_IP, CONNECTOR_API_URL, CONNECTOR_COMMANDS_URL, and CONNECTOR_TOKEN are required.");
   process.exit(1);
 }
 
@@ -81,6 +82,52 @@ async function sync() {
   }
 }
 
+async function processEnrollmentCommands() {
+  const response = await fetch(connectorCommandsUrl, {
+    headers: { "x-connector-token": connectorToken },
+    signal: AbortSignal.timeout(Math.max(10000, intervalMs - 1000)),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Command API ${response.status}: ${result.error || "request failed"}`);
+
+  for (const command of result.commands ?? []) {
+    let device;
+    try {
+      const claimResponse = await fetch(`${connectorCommandsUrl}/${command.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-connector-token": connectorToken },
+        body: JSON.stringify({ action: "claim" }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!claimResponse.ok) continue;
+      const claimed = await claimResponse.json();
+      if (!claimed.claimed) continue;
+
+      const payload = command.payload;
+      device = new Zkteco(payload.device_ip, Number(payload.port), 5000, 5000, 65472);
+      await device.createSocket();
+      await device.setUser(Number(payload.uid), String(payload.uid), String(payload.name), "", 0, "");
+      const completeResponse = await fetch(`${connectorCommandsUrl}/${command.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-connector-token": connectorToken },
+        body: JSON.stringify({ action: "complete", result: { uid: Number(payload.uid), userId: String(payload.uid), name: String(payload.name) } }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!completeResponse.ok) throw new Error(`Command completion failed with status ${completeResponse.status}`);
+      writeLog("INFO", `Enrollment command completed; commandId=${command.id}; uid=${payload.uid}`);
+    } catch (error) {
+      writeLog("ERROR", `Enrollment command failed; commandId=${command.id}; error=${errorDetails(error)}`);
+      await fetch(`${connectorCommandsUrl}/${command.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-connector-token": connectorToken },
+        body: JSON.stringify({ action: "fail", error: errorDetails(error) }),
+      }).catch(() => undefined);
+    } finally {
+      if (device) await device.disconnect().catch(() => undefined);
+    }
+  }
+}
+
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -96,12 +143,18 @@ writeLog("INFO", `Worker started; intervalMs=${intervalMs}; device=${deviceIp}:$
 async function runForever() {
   while (!shuttingDown) {
     await sync();
+    await processEnrollmentCommands().catch((error) => {
+      writeLog("ERROR", `Enrollment command polling failed; error=${errorDetails(error)}`);
+    });
     if (!shuttingDown) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }
 
 if (process.env.ATTENDANCE_ONCE === "1") {
-  sync().then(() => process.exit(0));
+  sync()
+    .then(() => processEnrollmentCommands())
+    .catch((error) => writeLog("ERROR", `Enrollment command polling failed; error=${errorDetails(error)}`))
+    .then(() => { process.exitCode = 0; });
 } else {
   runForever().catch((error) => {
     writeLog("ERROR", `Worker loop failed: ${errorDetails(error)}`);

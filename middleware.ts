@@ -28,8 +28,9 @@ export async function middleware(request: NextRequest) {
     && Boolean(process.env.ATTENDANCE_WORKER_SECRET)
     && request.headers.get("x-attendance-worker-secret") === process.env.ATTENDANCE_WORKER_SECRET;
   const isConnectorIngest = request.nextUrl.pathname === "/api/attendance/ingest";
+  const isConnectorCommand = request.nextUrl.pathname.startsWith("/api/attendance/commands");
 
-  if (isApi && !user && !isWorkerSync && !isConnectorIngest) {
+  if (isApi && !user && !isWorkerSync && !isConnectorIngest && !isConnectorCommand) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 
