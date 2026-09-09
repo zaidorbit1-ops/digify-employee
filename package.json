@@ -4,7 +4,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs"
+    "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs",
+    "office:sync": "scripts\\start-office-sync.bat",
+    "office:autostart": "powershell -ExecutionPolicy Bypass -File scripts\\install-windows-autostart.ps1"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.6",

@@ -49,11 +49,8 @@ export default function AttendancePage() {
   async function syncAndLoad() {
     setSyncing(true);
     try {
-      await fetch("/api/attendance/sync", { method: "POST" });
-    } catch {
-      // Existing database records can still be displayed if the device is offline.
-    } finally {
       await loadAttendance();
+    } finally {
       setSyncing(false);
     }
   }
