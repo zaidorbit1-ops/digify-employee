@@ -11,7 +11,11 @@ import {
   IconEmployees,
   IconLists,
   IconOverview,
-  IconFile,
+  IconCalendar,
+  IconSalary,
+  IconBriefcase,
+  IconWallet,
+  IconSettings,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -21,11 +25,11 @@ const navItems = [
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
-  { label: "Leave", href: "/dashboard/leave", icon: IconAttendance },
-  { label: "Salary", href: "/dashboard/salary", icon: IconAttendance },
-  { label: "Company accounts", href: "/dashboard/company-accounts", icon: IconFile },
-  { label: "Payment tracking", href: "/dashboard/payments", icon: IconFile },
-  { label: "Settings", href: "/dashboard/settings", icon: IconFile },
+  { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
+  { label: "Salary", href: "/dashboard/salary", icon: IconSalary },
+  { label: "Company accounts", href: "/dashboard/company-accounts", icon: IconBriefcase },
+  { label: "Payment tracking", href: "/dashboard/payments", icon: IconWallet },
+  { label: "Settings", href: "/dashboard/settings", icon: IconSettings },
   { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
 ];
 
@@ -58,9 +62,9 @@ export function Sidebar({
   const employeeDefaultItems = [
     { label: "Dashboard", href: "/dashboard", icon: IconOverview },
     { label: "My attendance", href: "/dashboard/employee/attendance", icon: IconAttendance },
-    { label: "My salary history", href: "/dashboard/employee/salary", icon: IconAttendance },
-    { label: "Apply for leave", href: "/dashboard/employee/leave", icon: IconAttendance },
-    { label: "Settings", href: "/dashboard/settings", icon: IconFile },
+    { label: "My salary history", href: "/dashboard/employee/salary", icon: IconSalary },
+    { label: "Apply for leave", href: "/dashboard/employee/leave", icon: IconCalendar },
+    { label: "Settings", href: "/dashboard/settings", icon: IconSettings },
   ];
   const employeeGrantedItems = navItems.filter((item) => moduleForHref[item.href] && grantedModules.includes(moduleForHref[item.href]));
   const visibleNavItems = profile?.role === "employee" ? [...employeeDefaultItems, ...employeeGrantedItems] : navItems;

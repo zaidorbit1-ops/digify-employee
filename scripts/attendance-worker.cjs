@@ -45,7 +45,11 @@ function writeLog(level, message) {
 
 function errorDetails(error) {
   if (error instanceof Error) return error.message;
-  try { return JSON.stringify(error); } catch { return String(error); }
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== "{}") return serialized;
+    return String(error?.message || error);
+  } catch { return String(error); }
 }
 
 if (!deviceIp || !connectorApiUrl || !connectorCommandsUrl || !connectorToken) {

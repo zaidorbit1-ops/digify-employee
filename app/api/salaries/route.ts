@@ -42,6 +42,7 @@ export async function GET(request: Request) {
       const lateDays = monthSummary.filter((day) => day.arrival_status === "late" && day.status !== "leave").length;
       const absentDays = monthSummary.filter((day) => day.status === "absent").length;
       const halfDays = monthSummary.filter((day) => day.status === "half_day").length;
+      const presentDays = monthSummary.filter((day) => day.status === "present").length;
 
       const baseSalary = Number(employee.salary ?? 0);
       const summary = calculateMonthlySalary({
@@ -52,7 +53,7 @@ export async function GET(request: Request) {
         lateDeductionEnabled: true,
       });
 
-      return NextResponse.json({ summary, employee, month: monthKey });
+      return NextResponse.json({ summary: { ...summary, present_days: presentDays }, employee, month: monthKey });
     }
 
     const { data, error } = await getClient()
@@ -118,14 +119,24 @@ export async function POST(request: Request) {
     const absentDays = monthSummary.filter((day) => day.status === "absent").length;
     const halfDays = monthSummary.filter((day) => day.status === "half_day").length;
 
-    const effectiveLateDays = ignoreLate ? 0 : lateDays;
-    const effectiveAbsentDays = ignoreAbsent ? 0 : absentDays;
+    const adjustedLateDays = Number(body.adjusted_late_days);
+    const adjustedAbsentDays = Number(body.adjusted_absent_days);
+    const adjustedHalfDays = Number(body.adjusted_half_days);
+    const effectiveLateDays = Number.isInteger(adjustedLateDays) && adjustedLateDays >= 0
+      ? Math.min(adjustedLateDays, lateDays)
+      : (ignoreLate ? 0 : lateDays);
+    const effectiveAbsentDays = Number.isInteger(adjustedAbsentDays) && adjustedAbsentDays >= 0
+      ? Math.min(adjustedAbsentDays, absentDays)
+      : (ignoreAbsent ? 0 : absentDays);
+    const effectiveHalfDays = Number.isInteger(adjustedHalfDays) && adjustedHalfDays >= 0
+      ? Math.min(adjustedHalfDays, halfDays)
+      : halfDays;
 
     let summary = calculateMonthlySalary({
       baseSalary,
       lateDays: effectiveLateDays,
       absentDays: effectiveAbsentDays,
-      halfDays,
+      halfDays: effectiveHalfDays,
       lateDeductionEnabled,
     });
 

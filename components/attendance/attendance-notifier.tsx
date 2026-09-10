@@ -14,9 +14,21 @@ type Shift = { start_time: string; end_time: string; grace_minutes?: number };
 export function AttendanceNotifier() {
   const { user, profile } = useAuth();
   const [event, setEvent] = useState<AttendanceEvent | null>(null);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+
+  function speak(message: string) {
+    if (window.localStorage.getItem("attendance-voice-enabled") !== "true" || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(message);
+    utterance.rate = 0.95;
+    utterance.volume = 1;
+    window.speechSynthesis.speak(utterance);
+  }
 
   useEffect(() => {
     if (!user || profile?.role !== "superadmin") return;
+
+    setVoiceEnabled(window.localStorage.getItem("attendance-voice-enabled") === "true");
 
     if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => undefined);
@@ -45,10 +57,7 @@ export function AttendanceNotifier() {
         if (kind === "ignored") return;
         setEvent({ name, checkIn, kind });
         window.setTimeout(() => setEvent(null), 9000);
-        if ("speechSynthesis" in window) {
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(new SpeechSynthesisUtterance(`${name} has ${kind === "check_in" ? "checked in" : "checked out"}`));
-        }
+        speak(`${name} has ${kind === "check_in" ? "checked in" : "checked out"}`);
         if (typeof window === "undefined" || !("Notification" in window) || Notification.permission !== "granted") return;
         new Notification(kind === "check_in" ? "Check-in recorded" : "Check-out recorded", {
           body: `${name} ${kind === "check_in" ? "checked in" : "checked out"} at ${new Date(checkIn).toLocaleTimeString()}.`,
@@ -63,6 +72,7 @@ export function AttendanceNotifier() {
     };
   }, [profile?.role, user]);
 
+  if (!voiceEnabled) return <button type="button" onClick={async () => { window.localStorage.setItem("attendance-voice-enabled", "true"); setVoiceEnabled(true); if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission().catch(() => undefined); speak("Attendance voice alerts enabled"); }} className="fixed bottom-5 right-5 z-[60] rounded-xl border border-primary/20 bg-white px-4 py-3 text-sm font-semibold text-primary shadow-[0_14px_35px_rgba(228,90,90,0.18)]">Enable voice alerts</button>;
   if (!event) return null;
   const { kind, name, checkIn } = event;
   return <div className="fixed right-5 top-5 z-[60] w-[min(420px,calc(100vw-2.5rem))] overflow-hidden rounded-2xl border border-emerald-100 bg-white shadow-[0_24px_60px_rgba(16,185,129,0.18)]"><div className="h-1.5 bg-emerald-500" /><div className="flex gap-4 p-5"><div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-600"><IconCheck className="h-6 w-6" /></div><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-600">{kind === "check_in" ? "Check-in recorded" : "Check-out recorded"}</p><h2 className="mt-1 text-lg font-bold">{name}</h2><p className="mt-1 text-sm text-muted">{name} {kind === "check_in" ? "checked in" : "checked out"} at {new Date(checkIn).toLocaleTimeString()}.</p></div></div></div>;
