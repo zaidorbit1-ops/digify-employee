@@ -42,6 +42,7 @@ export function OverviewView() {
   async function loadAttendance(showEvent = false) {
     const response = await fetch("/api/attendance", { cache: "no-store" });
     const data = await response.json();
+    if (!response.ok) throw new Error(data.error ?? "Could not load attendance feed.");
     const records: AttendanceRow[] = data.attendance ?? [];
     if (showEvent && records[0] && latestId.current !== null && records[0].id !== latestId.current) {
       setEvent(records[0]);
@@ -60,14 +61,8 @@ export function OverviewView() {
     if (polling.current) return;
     polling.current = true;
     try {
-      const response = await fetch("/api/attendance/sync", { method: "POST" });
-      const data = await response.json();
-      if (response.ok && data.ok) {
-        setMonitorState("online");
-        await loadAttendance(true);
-      } else {
-        setMonitorState("offline");
-      }
+      await loadAttendance(true);
+      setMonitorState("online");
     } catch {
       setMonitorState("offline");
     } finally {
@@ -102,16 +97,12 @@ export function OverviewView() {
     setSyncing(true);
     setSyncMessage(null);
     try {
-      const response = await fetch("/api/attendance/sync", { method: "POST" });
-      const data = await response.json();
-      setSyncMessage(
-        response.ok && data.ok
-          ? `Connected to ${data.device}. ${data.logsFetched ?? 0} records checked.`
-          : data.error ?? "Sync failed.",
-      );
-      if (response.ok && data.ok) await loadAttendance(true);
+      await loadAttendance(true);
+      setMonitorState("online");
+      setSyncMessage("Latest attendance data loaded.");
     } catch {
-      setSyncMessage("Sync failed. Confirm the K60 is online and saved in Devices.");
+      setMonitorState("offline");
+      setSyncMessage("Attendance feed is unavailable. Confirm the connector and website connection.");
     } finally {
       setSyncing(false);
     }
@@ -165,7 +156,7 @@ export function OverviewView() {
           <>
             <span className="hidden items-center gap-2 text-xs font-medium text-muted sm:flex">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              {monitorState === "online" ? "Device connected · Live" : monitorState === "offline" ? "Device offline" : "Connecting to device..."}
+              {monitorState === "online" ? "Data feed live" : monitorState === "offline" ? "Data feed unavailable" : "Connecting to data feed..."}
             </span>
             <Button onClick={handleManualSync} disabled={syncing}>
               <IconRefresh className="h-4 w-4" />

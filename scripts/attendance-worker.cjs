@@ -26,6 +26,10 @@ const logDirectory = path.join(workerDirectory, "logs");
 const logPath = path.join(logDirectory, "attendance-worker.log");
 const maxLogBytes = 5 * 1024 * 1024;
 let shuttingDown = false;
+let deviceWasConnected = false;
+let lastSyncError = "";
+let lastCommandError = "";
+let previousPunches = new Set();
 
 fs.mkdirSync(logDirectory, { recursive: true });
 
@@ -52,21 +56,33 @@ function errorDetails(error) {
   } catch { return String(error); }
 }
 
+function writeErrorOnce(scope, error) {
+  const message = errorDetails(error);
+  if (scope === "sync" && message === lastSyncError) return;
+  if (scope === "commands" && message === lastCommandError) return;
+  if (scope === "sync") lastSyncError = message;
+  if (scope === "commands") lastCommandError = message;
+  writeLog("ERROR", `${scope} failed; retrying in ${intervalMs}ms; error=${message}`);
+}
+
+function punchKey(record) {
+  return `${record.user_id}:${new Date(String(record.record_time)).toISOString()}`;
+}
+
 if (!deviceIp || !connectorApiUrl || !connectorCommandsUrl || !connectorToken) {
   writeLog("ERROR", "ZK_DEVICE_IP, CONNECTOR_API_URL, CONNECTOR_COMMANDS_URL, and CONNECTOR_TOKEN are required.");
   process.exit(1);
 }
 
 async function sync() {
-  const startedAt = Date.now();
   let device;
   let connected = false;
   try {
-    writeLog("INFO", `Polling K60 at ${deviceIp}:${devicePort}`);
     device = new Zkteco(deviceIp, devicePort, 5000, 5000, 65472);
     await device.createSocket();
     connected = true;
-    writeLog("INFO", "K60 connected");
+    if (!deviceWasConnected) writeLog("INFO", `K60 connected at ${deviceIp}:${devicePort}`);
+    deviceWasConnected = true;
 
     const attendanceResponse = await device.getAttendances();
     const records = attendanceResponse?.data || [];
@@ -78,9 +94,21 @@ async function sync() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(`Ingest API ${response.status}: ${result.error || "request failed"}`);
-    writeLog("INFO", `Attendance sync completed; fetched=${records.length}, synced=${result.synced ?? 0}, elapsedMs=${Date.now() - startedAt}`);
+
+    const currentPunches = new Set(records.map(punchKey));
+    if (!previousPunches.size) {
+      writeLog("INFO", `Attendance baseline loaded; records=${records.length}`);
+    } else {
+      records.filter((record) => !previousPunches.has(punchKey(record))).forEach((record) => {
+        writeLog("INFO", `Attendance recorded; uid=${record.user_id}; time=${new Date(String(record.record_time)).toISOString()}`);
+      });
+    }
+    previousPunches = currentPunches;
+    lastSyncError = "";
   } catch (error) {
-    writeLog("ERROR", `Sync failed; retrying in ${intervalMs}ms; error=${errorDetails(error)}`);
+    if (deviceWasConnected) writeLog("WARN", `K60 connection lost at ${deviceIp}:${devicePort}`);
+    deviceWasConnected = false;
+    writeErrorOnce("sync", error);
   } finally {
     if (device && connected) await device.disconnect().catch((error) => writeLog("WARN", `K60 disconnect failed: ${errorDetails(error)}`));
   }
@@ -93,6 +121,7 @@ async function processEnrollmentCommands() {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`Command API ${response.status}: ${result.error || "request failed"}`);
+  lastCommandError = "";
 
   for (const command of result.commands ?? []) {
     let device;
@@ -118,9 +147,9 @@ async function processEnrollmentCommands() {
         signal: AbortSignal.timeout(10000),
       });
       if (!completeResponse.ok) throw new Error(`Command completion failed with status ${completeResponse.status}`);
-      writeLog("INFO", `Enrollment command completed; commandId=${command.id}; uid=${payload.uid}`);
+      writeLog("INFO", `Enrollment completed; commandId=${command.id}; uid=${payload.uid}; name=${payload.name}`);
     } catch (error) {
-      writeLog("ERROR", `Enrollment command failed; commandId=${command.id}; error=${errorDetails(error)}`);
+      writeLog("ERROR", `Enrollment failed; commandId=${command.id}; error=${errorDetails(error)}`);
       await fetch(`${connectorCommandsUrl}/${command.id}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-connector-token": connectorToken },
@@ -147,9 +176,7 @@ writeLog("INFO", `Worker started; intervalMs=${intervalMs}; device=${deviceIp}:$
 async function runForever() {
   while (!shuttingDown) {
     await sync();
-    await processEnrollmentCommands().catch((error) => {
-      writeLog("ERROR", `Enrollment command polling failed; error=${errorDetails(error)}`);
-    });
+    await processEnrollmentCommands().catch((error) => writeErrorOnce("commands", error));
     if (!shuttingDown) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }
@@ -157,7 +184,7 @@ async function runForever() {
 if (process.env.ATTENDANCE_ONCE === "1") {
   sync()
     .then(() => processEnrollmentCommands())
-    .catch((error) => writeLog("ERROR", `Enrollment command polling failed; error=${errorDetails(error)}`))
+    .catch((error) => writeErrorOnce("commands", error))
     .then(() => { process.exitCode = 0; });
 } else {
   runForever().catch((error) => {
