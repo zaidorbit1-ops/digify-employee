@@ -1,5 +1,10 @@
 $ErrorActionPreference = "Stop"
 
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+	throw "Run this installer from PowerShell as Administrator. Windows requires elevation to register the SYSTEM attendance task."
+}
+
 $appRoot = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $appRoot "dist"
 $exePath = Join-Path $dist "attendance-worker.exe"
@@ -16,7 +21,8 @@ $trigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Secon
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
 Start-ScheduledTask -TaskName $taskName
-Write-Host "Installed and started Windows task '$taskName'."
+$registeredTask = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+Write-Host "Installed and started Windows task '$($registeredTask.TaskName)'."
 Write-Host "Logs: $dist\logs\attendance-worker.log"

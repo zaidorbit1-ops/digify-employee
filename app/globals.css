@@ -108,6 +108,62 @@ select {
   font: inherit;
 }
 
+.loader-panel {
+  animation: loader-panel-in 180ms ease-out both;
+}
+
+.loader-orbit,
+.button-spinner {
+  display: inline-block;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: loader-spin 700ms linear infinite;
+}
+
+.loader-orbit {
+  width: 26px;
+  height: 26px;
+  color: var(--primary);
+  padding: 3px;
+  box-shadow: inset 0 0 0 2px rgba(228, 90, 90, 0.12);
+}
+
+.loader-orbit span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 2px solid transparent;
+  border-top-color: #5e433f;
+  border-radius: inherit;
+  animation: loader-spin 450ms linear infinite reverse;
+}
+
+.button-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+@keyframes loader-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes loader-panel-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader-panel,
+  .loader-orbit,
+  .loader-orbit span,
+  .button-spinner {
+    animation: none;
+  }
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: #e0d6d4 transparent;

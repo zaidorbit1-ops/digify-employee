@@ -7,6 +7,7 @@ import { IconMenu } from "@/components/icons";
 import { AttendanceNotifier } from "@/components/attendance/attendance-notifier";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
+import { GlobalLoader } from "@/components/ui/global-loader";
 
 const titles: Record<string, string> = {
   "/dashboard": "Overview",
@@ -30,6 +31,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      <GlobalLoader />
       <AttendanceNotifier />
       <div className="flex min-h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />

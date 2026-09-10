@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { addDays, buildAttendanceDays, dateKey, sessionDateKey } from "@/lib/attendance";
-import { clearAttendanceForEmployeeDate, getAttendance, getEmployees, getLeavesForRange, getShiftTimings, updateAttendanceRecord } from "@/lib/supabase";
+import { clearAttendanceForEmployeeDate, createManualAttendanceRecord, getAttendance, getEmployees, getLeavesForRange, getShiftTimings, updateAttendanceRecord } from "@/lib/supabase";
 
 function monthRange(month: string) {
   const today = dateKey(new Date());
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
     const view = url.searchParams.get("view") ?? "today";
     const today = dateKey(new Date());
     const range = view === "history" ? monthRange(url.searchParams.get("month") ?? "") : { month: "", start: addDays(today, -1), end: today };
-    const [attendance, employees, shifts, approvedLeaves] = await Promise.all([getAttendance(), getEmployees(), getShiftTimings(), getLeavesForRange(range.start, range.end)]);
+    const [attendance, employees, shifts, approvedLeaves] = await Promise.all([getAttendance(addDays(range.start, -1), addDays(range.end, 1)), getEmployees(), getShiftTimings(), getLeavesForRange(range.start, range.end)]);
     const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
     const allDays = buildAttendanceDays({ employees, shifts, punches: attendance, approvedLeaves, startDate: range.start, endDate: range.end });
     const days = view === "history"
@@ -40,6 +40,22 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ record });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not update attendance." }, { status: 500 });
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const employeeId = Number(body.employee_id);
+    const checkIn = String(body.check_in ?? "");
+    const timestamp = new Date(checkIn);
+    if (!Number.isInteger(employeeId) || employeeId <= 0 || !checkIn || !Number.isFinite(timestamp.getTime())) {
+      return NextResponse.json({ error: "A valid employee and attendance time are required." }, { status: 400 });
+    }
+    const record = await createManualAttendanceRecord(employeeId, timestamp.toISOString());
+    return NextResponse.json({ record });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not add attendance." }, { status: 500 });
   }
 }
 

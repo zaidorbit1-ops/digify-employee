@@ -190,9 +190,12 @@ export async function deleteEmployee(id: number) {
   if (error) throw error;
 }
 
-export async function getAttendance() {
+export async function getAttendance(startDate?: string, endDate?: string) {
   const client = requireSupabase();
-  const { data, error } = await client.from("attendance").select("*").order("check_in", { ascending: false });
+  let query = client.from("attendance").select("*").order("check_in", { ascending: false });
+  if (startDate) query = query.gte("check_in", sessionWindow(startDate).start);
+  if (endDate) query = query.lt("check_in", sessionWindow(endDate).start);
+  const { data, error } = await query;
 
   if (error) throw error;
   return data ?? [];
@@ -202,6 +205,25 @@ export async function updateAttendanceRecord(id: number, checkIn: string) {
   const client = requireSupabase();
   const { data, error } = await client.from("attendance").update({ check_in: checkIn }).eq("id", id).select().single();
 
+  if (error) throw error;
+  return data;
+}
+
+export async function createManualAttendanceRecord(employeeId: number, checkIn: string) {
+  const client = requireSupabase();
+  const { data: employee, error: employeeError } = await client
+    .from("employees")
+    .select("id, zk_device_uid")
+    .eq("id", employeeId)
+    .maybeSingle();
+  if (employeeError) throw employeeError;
+  if (!employee?.zk_device_uid) throw new Error("Employee has no device user ID.");
+
+  const { data, error } = await client
+    .from("attendance")
+    .insert({ employee_id: employeeId, zk_user_id: employee.zk_device_uid, check_in: checkIn, status: "present" })
+    .select()
+    .single();
   if (error) throw error;
   return data;
 }
@@ -236,6 +258,37 @@ export async function getLeavesForRange(startDate: string, endDate: string) {
 
   if (error) throw error;
   return data ?? [];
+}
+
+export async function getAttendanceByZkUserIds(zkUserIds: number[]) {
+  const client = requireSupabase();
+  if (!zkUserIds.length) return [];
+  const { data, error } = await client.from("attendance").select("*").in("zk_user_id", zkUserIds);
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function updateAttendanceSessionFields(
+  employeeId: number,
+  start: string,
+  end: string,
+  fields: {
+    arrival_status?: string;
+    day_status?: string;
+    hours_worked?: number | null;
+    worked_minutes?: number | null;
+    session_start?: string | null;
+    session_end?: string | null;
+  },
+) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("attendance")
+    .update(fields)
+    .eq("employee_id", employeeId)
+    .gte("check_in", start)
+    .lt("check_in", end);
+  if (error) throw error;
 }
 
 export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {

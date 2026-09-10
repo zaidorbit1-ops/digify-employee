@@ -1,6 +1,7 @@
-type Shift = { id: number; start_time: string; end_time: string; grace_minutes?: number };
+export type Shift = { id?: number; start_time: string; end_time: string; grace_minutes?: number };
 type Employee = { id: number; name: string; employee_id?: string; zk_device_uid?: number | null; shift_id?: number | null; department_id?: number | null; position_id?: number | null };
 type Punch = { id?: number; employee_id?: number | null; zk_user_id: number; check_in: string; status?: string; arrival_status?: string; day_status?: string; hours_worked?: number | null; session_start?: string | null; session_end?: string | null; device_log_id?: number };
+export type AttendanceEventKind = "check_in" | "check_out" | "ignored";
 
 const officeOffsetMinutes = Number(process.env.ATTENDANCE_TIMEZONE_OFFSET_MINUTES ?? 300);
 const duplicatePunchWindowMs = 60_000;
@@ -50,15 +51,23 @@ export function sessionWindow(date: string, shift?: Shift) {
   return { start: officeDateTimeToUtc(date, 0), end: officeDateTimeToUtc(addDays(date, 1), 0) };
 }
 
-function sessionPunches(punches: Punch[]) {
+export function sessionPunches<T extends { check_in: string }>(punches: T[]) {
   const sorted = [...punches].sort((a, b) => new Date(a.check_in).getTime() - new Date(b.check_in).getTime());
-  const unique: Punch[] = [];
+  const unique: T[] = [];
   sorted.forEach((punch) => {
     const previous = unique.at(-1);
     if (previous && new Date(punch.check_in).getTime() - new Date(previous.check_in).getTime() < duplicatePunchWindowMs) return;
     unique.push(punch);
   });
   return unique;
+}
+
+function officeArrivalMinutes(checkIn: string, shift?: Shift) {
+  const officePunchTime = new Date(new Date(checkIn).getTime() + officeOffsetMinutes * 60000);
+  let minutes = officePunchTime.getUTCHours() * 60 + officePunchTime.getUTCMinutes();
+  const start = shift ? timeToMinutes(shift.start_time) : null;
+  if (shift && start !== null && isOvernightShift(shift) && minutes < start) minutes += 24 * 60;
+  return minutes;
 }
 
 export function calculatePunchFields(punches: Punch[], shift?: Shift) {
@@ -68,11 +77,9 @@ export function calculatePunchFields(punches: Punch[], shift?: Shift) {
   if (!first) return null;
 
   const start = shift ? timeToMinutes(shift.start_time) : null;
-  const punchTime = new Date(first.check_in);
-  const officePunchTime = new Date(punchTime.getTime() + officeOffsetMinutes * 60000);
-  const arrivalMinutes = officePunchTime.getUTCHours() * 60 + officePunchTime.getUTCMinutes();
+  const arrivalMinutes = officeArrivalMinutes(first.check_in, shift);
   const arrivalStatus = start === null || arrivalMinutes <= start + (shift?.grace_minutes ?? 15) ? "on_time" : "late";
-  const workedMinutes = second ? Math.max(0, Math.round((new Date(second.check_in).getTime() - punchTime.getTime()) / 60000)) : null;
+  const workedMinutes = second ? Math.max(0, Math.round((new Date(second.check_in).getTime() - new Date(first.check_in).getTime()) / 60000)) : null;
   const hoursWorked = workedMinutes === null ? null : workedMinutes / 60;
   const dayStatus = hoursWorked !== null && hoursWorked <= 5 ? "half_day" : "present";
 
@@ -84,6 +91,14 @@ export function calculatePunchFields(punches: Punch[], shift?: Shift) {
     session_start: first.check_in,
     session_end: second?.check_in ?? null,
   };
+}
+
+export function attendanceEventKind(punches: { check_in: string }[], incomingCheckIn: string): AttendanceEventKind {
+  const unique = sessionPunches(punches);
+  const index = unique.findIndex((punch) => punch.check_in === incomingCheckIn);
+  if (index === 0) return "check_in";
+  if (index === 1) return "check_out";
+  return "ignored";
 }
 
 export function buildAttendanceDays({ employees, shifts, punches, approvedLeaves, startDate, endDate }: { employees: Employee[]; shifts: Shift[]; punches: Punch[]; approvedLeaves: { employee_id: number; start_date: string; end_date: string }[]; startDate: string; endDate: string }) {
