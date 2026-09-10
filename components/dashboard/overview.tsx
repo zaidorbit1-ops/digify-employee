@@ -117,6 +117,13 @@ export function OverviewView() {
     }
   }
 
+  const todayKey = new Date().toLocaleDateString();
+  const todayAttendance = attendance.filter((row) => new Date(row.check_in).toLocaleDateString() === todayKey);
+  const mappedToday = todayAttendance.filter((row) => row.employee).length;
+  const uniqueToday = new Set(todayAttendance.map((row) => row.employee?.id ?? `device-${row.zk_user_id}`)).size;
+  const activeEmployees = employees.filter((employee) => employee.zk_device_uid != null).length;
+  const coverage = employees.length ? Math.round((mappedToday / Math.max(uniqueToday, 1)) * 100) : 0;
+
   return (
     <>
       {event ? (
@@ -174,11 +181,21 @@ export function OverviewView() {
         <Card className="text-muted">Loading your workspace...</Card>
       ) : (
         <>
+          <section className="mb-6 overflow-hidden rounded-[1.25rem] bg-[#241b19] text-white shadow-[0_18px_45px_rgba(36,27,25,0.12)]">
+            <div className="grid gap-8 p-6 sm:p-8 lg:grid-cols-[1fr_auto] lg:items-end">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-[#ffaaa2]"><span className="h-2 w-2 rounded-full bg-emerald-400" />Live operations room</div>
+                <h2 className="mt-3 max-w-2xl text-2xl font-bold tracking-tight sm:text-3xl">A quieter way to see the whole office.</h2>
+                <p className="mt-2 max-w-xl text-sm leading-6 text-stone-300">The connector is watching your K60 device continuously. New punches appear here as soon as they sync.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:gap-3"><div className="rounded-xl bg-white/10 px-4 py-3"><p className="text-[10px] uppercase tracking-[0.12em] text-stone-400">Today</p><p className="mt-1 text-2xl font-bold">{uniqueToday}</p><p className="text-xs text-stone-300">active people</p></div><div className="rounded-xl bg-white/10 px-4 py-3"><p className="text-[10px] uppercase tracking-[0.12em] text-stone-400">Coverage</p><p className="mt-1 text-2xl font-bold">{Math.min(coverage, 100)}%</p><p className="text-xs text-stone-300">mapped punches</p></div></div>
+            </div>
+          </section>
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label="Employees"
               value={employees.length}
-              detail="Registered people"
+              detail={`${activeEmployees} mapped to a device`}
               tone="primary"
               icon={<IconEmployees className="h-5 w-5" />}
             />
@@ -192,7 +209,7 @@ export function OverviewView() {
             <StatCard
               label="Attendance logs"
               value={attendance.length}
-              detail="Imported records"
+              detail={`${todayAttendance.length} received today`}
               tone="amber"
               icon={<IconAttendance className="h-5 w-5" />}
             />
@@ -203,6 +220,15 @@ export function OverviewView() {
               tone="emerald"
               icon={<IconCheck className="h-5 w-5" />}
             />
+          </section>
+
+          <section className="mt-6 grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
+            <Card className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Attendance signal</p><h2 className="mt-1 text-lg font-bold">Today&apos;s movement</h2></div><Badge tone={monitorState === "online" ? "success" : "danger"}>{monitorState === "online" ? "Live" : "Attention"}</Badge></div>
+              <div className="mt-6 space-y-4"><SignalRow label="Punches received" value={todayAttendance.length} total={Math.max(employees.length, todayAttendance.length, 1)} color="bg-primary" /><SignalRow label="Mapped to employees" value={mappedToday} total={Math.max(todayAttendance.length, 1)} color="bg-emerald-500" /><SignalRow label="Configured devices" value={devices.filter((device) => device.status === "active").length} total={Math.max(devices.length, 1)} color="bg-sky-500" /></div>
+              <div className="mt-6 flex items-center justify-between border-t border-border pt-4 text-xs text-muted"><span>Auto-check runs every second</span><button type="button" onClick={handleManualSync} className="font-semibold text-primary hover:underline">Run a check now</button></div>
+            </Card>
+            <Card className="p-5 sm:p-6"><div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Quick read</p><h2 className="mt-1 text-lg font-bold">Workspace health</h2></div><IconCheck className="h-5 w-5 text-emerald-500" /></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><HealthItem label="Device link" value={monitorState === "online" ? "Connected" : "Offline"} tone={monitorState === "online" ? "emerald" : "rose"} /><HealthItem label="Employees" value={`${employees.length} records`} tone="sky" /><HealthItem label="Latest sync" value={attendance[0] ? new Date(attendance[0].check_in).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Waiting"} tone="amber" /></div><div className="mt-5 rounded-xl bg-[#fcfaf9] p-4"><p className="text-sm font-semibold">Keep the signal clean</p><p className="mt-1 text-xs leading-5 text-muted">A mapped device UID lets attendance flow straight into the employee timeline and reports.</p></div></Card>
           </section>
 
           <section className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
@@ -294,4 +320,14 @@ export function OverviewView() {
       )}
     </>
   );
+}
+
+function SignalRow({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  const width = Math.min(100, Math.round((value / total) * 100));
+  return <div><div className="mb-2 flex items-center justify-between text-xs"><span className="font-medium text-muted">{label}</span><strong>{value}</strong></div><div className="h-2 overflow-hidden rounded-full bg-stone-100"><div className={`h-full rounded-full ${color} transition-all duration-700`} style={{ width: `${width}%` }} /></div></div>;
+}
+
+function HealthItem({ label, value, tone }: { label: string; value: string; tone: "emerald" | "rose" | "sky" | "amber" }) {
+  const styles = { emerald: "bg-emerald-50 text-emerald-700", rose: "bg-rose-50 text-rose-700", sky: "bg-sky-50 text-sky-700", amber: "bg-amber-50 text-amber-700" };
+  return <div className={`rounded-xl p-3 ${styles[tone]}`}><p className="text-[10px] font-bold uppercase tracking-[0.1em] opacity-70">{label}</p><p className="mt-2 text-sm font-bold">{value}</p></div>;
 }
