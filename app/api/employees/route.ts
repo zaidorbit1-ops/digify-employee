@@ -103,6 +103,10 @@ export async function PATCH(request: Request) {
     const current = (await getEmployees()).find((employee) => employee.id === id);
     if (!current) return NextResponse.json({ error: "Employee was not found." }, { status: 404 });
 
+    if (body.enrollment_status === undefined) {
+      values.enrollment_status = current.enrollment_status ?? "pending";
+    }
+
     const employee = await updateEmployee(id, values);
     if (current.auth_user_id) {
       await updateEmployeeAuthUser(current.auth_user_id, { email: values.email, password, active: values.status === "active" });
