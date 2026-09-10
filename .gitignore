@@ -21,6 +21,7 @@
 /build
 /dist/
 /logs/
+*.zip
 
 # misc
 .DS_Store
