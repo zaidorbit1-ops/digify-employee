@@ -4,7 +4,9 @@ import { sessionWindow } from "@/lib/attendance";
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
 const supabaseAnonKey =
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 export const supabase =
@@ -74,7 +76,7 @@ export type EnrollmentCommand = {
 function requireSupabase() {
   if (!supabase) {
     throw new Error(
-      "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to your .env.local file."
+      "Supabase is not configured. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to your .env.local file.",
     );
   }
 
@@ -89,7 +91,11 @@ function requireServiceRoleSupabase() {
   return supabase;
 }
 
-export async function createEmployeeAuthUser(email: string, password: string, fullName: string) {
+export async function createEmployeeAuthUser(
+  email: string,
+  password: string,
+  fullName: string,
+) {
   const client = requireServiceRoleSupabase();
   const { data, error } = await client.auth.admin.createUser({
     email,
@@ -98,11 +104,15 @@ export async function createEmployeeAuthUser(email: string, password: string, fu
     user_metadata: { full_name: fullName, role: "employee" },
   });
 
-  if (error || !data.user) throw error ?? new Error("Could not create employee login.");
+  if (error || !data.user)
+    throw error ?? new Error("Could not create employee login.");
   return data.user;
 }
 
-export async function updateEmployeeAuthUser(userId: string, values: { email?: string; password?: string; active: boolean }) {
+export async function updateEmployeeAuthUser(
+  userId: string,
+  values: { email?: string; password?: string; active: boolean },
+) {
   const client = requireServiceRoleSupabase();
   const { data, error } = await client.auth.admin.updateUserById(userId, {
     ...(values.email ? { email: values.email, email_confirm: true } : {}),
@@ -110,7 +120,8 @@ export async function updateEmployeeAuthUser(userId: string, values: { email?: s
     ban_duration: values.active ? "none" : "876000h",
   });
 
-  if (error || !data.user) throw error ?? new Error("Could not update employee login.");
+  if (error || !data.user)
+    throw error ?? new Error("Could not update employee login.");
   return data.user;
 }
 
@@ -122,7 +133,10 @@ export async function deleteEmployeeAuthUser(userId: string) {
 
 export async function getDevices() {
   const client = requireSupabase();
-  const { data, error } = await client.from("devices").select("*").order("id", { ascending: false });
+  const { data, error } = await client
+    .from("devices")
+    .select("*")
+    .order("id", { ascending: false });
 
   if (error) throw error;
   return data ?? [];
@@ -130,7 +144,11 @@ export async function getDevices() {
 
 export async function addDevice(device: DeviceInsert) {
   const client = requireSupabase();
-  const { data, error } = await client.from("devices").insert(device).select().single();
+  const { data, error } = await client
+    .from("devices")
+    .insert(device)
+    .select()
+    .single();
 
   if (error) throw error;
   return data;
@@ -138,7 +156,12 @@ export async function addDevice(device: DeviceInsert) {
 
 export async function updateDevice(id: number, device: Partial<DeviceInsert>) {
   const client = requireSupabase();
-  const { data, error } = await client.from("devices").update(device).eq("id", id).select().single();
+  const { data, error } = await client
+    .from("devices")
+    .update(device)
+    .eq("id", id)
+    .select()
+    .single();
 
   if (error) throw error;
   return data;
@@ -153,7 +176,10 @@ export async function deleteDevice(id: number) {
 
 export async function getEmployees() {
   const client = requireSupabase();
-  const { data, error } = await client.from("employees").select("*").order("id", { ascending: false });
+  const { data, error } = await client
+    .from("employees")
+    .select("*")
+    .order("id", { ascending: false });
 
   if (error) throw error;
   return data ?? [];
@@ -161,7 +187,11 @@ export async function getEmployees() {
 
 export async function addEmployee(employee: EmployeeInsert) {
   const client = requireSupabase();
-  const { data, error } = await client.from("employees").insert(employee).select().single();
+  const { data, error } = await client
+    .from("employees")
+    .insert(employee)
+    .select()
+    .single();
 
   if (error) throw error;
   return data;
@@ -169,7 +199,7 @@ export async function addEmployee(employee: EmployeeInsert) {
 
 export async function updateEmployee(
   id: number,
-  employee: Partial<EmployeeInsert>
+  employee: Partial<EmployeeInsert>,
 ) {
   const client = requireSupabase();
   const { data, error } = await client
@@ -192,7 +222,10 @@ export async function deleteEmployee(id: number) {
 
 export async function getAttendance(startDate?: string, endDate?: string) {
   const client = requireSupabase();
-  let query = client.from("attendance").select("*").order("check_in", { ascending: false });
+  let query = client
+    .from("attendance")
+    .select("*")
+    .order("check_in", { ascending: false });
   if (startDate) query = query.gte("check_in", sessionWindow(startDate).start);
   if (endDate) query = query.lt("check_in", sessionWindow(endDate).start);
   const { data, error } = await query;
@@ -203,13 +236,21 @@ export async function getAttendance(startDate?: string, endDate?: string) {
 
 export async function updateAttendanceRecord(id: number, checkIn: string) {
   const client = requireSupabase();
-  const { data, error } = await client.from("attendance").update({ check_in: checkIn }).eq("id", id).select().single();
+  const { data, error } = await client
+    .from("attendance")
+    .update({ check_in: checkIn })
+    .eq("id", id)
+    .select()
+    .single();
 
   if (error) throw error;
   return data;
 }
 
-export async function createManualAttendanceRecord(employeeId: number, checkIn: string) {
+export async function createManualAttendanceRecord(
+  employeeId: number,
+  checkIn: string,
+) {
   const client = requireSupabase();
   const { data: employee, error: employeeError } = await client
     .from("employees")
@@ -217,31 +258,53 @@ export async function createManualAttendanceRecord(employeeId: number, checkIn: 
     .eq("id", employeeId)
     .maybeSingle();
   if (employeeError) throw employeeError;
-  if (!employee?.zk_device_uid) throw new Error("Employee has no device user ID.");
+  if (!employee?.zk_device_uid)
+    throw new Error("Employee has no device user ID.");
 
   const { data, error } = await client
     .from("attendance")
-    .insert({ employee_id: employeeId, zk_user_id: employee.zk_device_uid, check_in: checkIn, status: "present" })
+    .insert({
+      employee_id: employeeId,
+      zk_user_id: employee.zk_device_uid,
+      check_in: checkIn,
+      status: "present",
+    })
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function clearAttendanceForEmployeeDate(employeeId: number, date: string) {
+export async function clearAttendanceForEmployeeDate(
+  employeeId: number,
+  date: string,
+) {
   const client = requireSupabase();
-  const [employees, shifts] = await Promise.all([getEmployees(), getShiftTimings()]);
+  const [employees, shifts] = await Promise.all([
+    getEmployees(),
+    getShiftTimings(),
+  ]);
   const employee = employees.find((item) => item.id === employeeId);
-  const shift = employee?.shift_id ? shifts.find((item) => item.id === employee.shift_id) : undefined;
+  const shift = employee?.shift_id
+    ? shifts.find((item) => item.id === employee.shift_id)
+    : undefined;
   const { start, end } = sessionWindow(date, shift);
-  const { error } = await client.from("attendance").delete().eq("employee_id", employeeId).gte("check_in", start).lt("check_in", end);
+  const { error } = await client
+    .from("attendance")
+    .delete()
+    .eq("employee_id", employeeId)
+    .gte("check_in", start)
+    .lt("check_in", end);
 
   if (error) throw error;
 }
 
 export async function getShiftTimings() {
   const client = requireSupabase();
-  const { data, error } = await client.from("shift_timings").select("*").order("name");
+  const { data, error } = await client
+    .from("shift_timings")
+    .select("*")
+    .order("name");
 
   if (error) throw error;
   return data ?? [];
@@ -260,10 +323,25 @@ export async function getLeavesForRange(startDate: string, endDate: string) {
   return data ?? [];
 }
 
+export async function getHolidaysForRange(startDate: string, endDate: string) {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("holidays")
+    .select("id, title, start_date, end_date")
+    .lte("start_date", endDate)
+    .gte("end_date", startDate)
+    .order("start_date");
+  if (error) throw error;
+  return data ?? [];
+}
+
 export async function getAttendanceByZkUserIds(zkUserIds: number[]) {
   const client = requireSupabase();
   if (!zkUserIds.length) return [];
-  const { data, error } = await client.from("attendance").select("*").in("zk_user_id", zkUserIds);
+  const { data, error } = await client
+    .from("attendance")
+    .select("*")
+    .in("zk_user_id", zkUserIds);
   if (error) throw error;
   return data ?? [];
 }
@@ -315,26 +393,39 @@ export async function createOrReuseEnrollmentCommand(values: {
     .eq("idempotency_key", values.idempotency_key)
     .maybeSingle();
   if (findError) throw findError;
-  if (existing && (existing.status === "pending" || existing.status === "processing")) return existing as EnrollmentCommand;
+  if (
+    existing &&
+    (existing.status === "pending" || existing.status === "processing")
+  )
+    return existing as EnrollmentCommand;
 
   const { data, error } = existing
-    ? await client.from("device_commands").update({
-        status: "pending",
-        payload: values.payload,
-        result: null,
-        error_message: null,
-        attempts: 0,
-        available_at: new Date().toISOString(),
-        claimed_at: null,
-        completed_at: null,
-      }).eq("id", existing.id).select().single()
-    : await client.from("device_commands").insert({
-        command_type: "enroll_user",
-        employee_id: values.employee_id,
-        device_id: values.device_id,
-        idempotency_key: values.idempotency_key,
-        payload: values.payload,
-      }).select().single();
+    ? await client
+        .from("device_commands")
+        .update({
+          status: "pending",
+          payload: values.payload,
+          result: null,
+          error_message: null,
+          attempts: 0,
+          available_at: new Date().toISOString(),
+          claimed_at: null,
+          completed_at: null,
+        })
+        .eq("id", existing.id)
+        .select()
+        .single()
+    : await client
+        .from("device_commands")
+        .insert({
+          command_type: "enroll_user",
+          employee_id: values.employee_id,
+          device_id: values.device_id,
+          idempotency_key: values.idempotency_key,
+          payload: values.payload,
+        })
+        .select()
+        .single();
   if (error) throw error;
   return data as EnrollmentCommand;
 }
@@ -342,11 +433,14 @@ export async function createOrReuseEnrollmentCommand(values: {
 export async function getPendingEnrollmentCommands() {
   const client = requireServiceRoleSupabase();
   const staleClaim = new Date(Date.now() - 120000).toISOString();
-  await client.from("device_commands").update({ status: "pending", claimed_at: null })
+  await client
+    .from("device_commands")
+    .update({ status: "pending", claimed_at: null })
     .eq("command_type", "enroll_user")
     .eq("status", "processing")
     .lt("claimed_at", staleClaim);
-  const { data, error } = await client.from("device_commands")
+  const { data, error } = await client
+    .from("device_commands")
     .select("*")
     .eq("command_type", "enroll_user")
     .in("status", ["pending", "processing"])
@@ -359,11 +453,21 @@ export async function getPendingEnrollmentCommands() {
 
 export async function claimEnrollmentCommand(id: string) {
   const client = requireServiceRoleSupabase();
-  const { data: current, error: currentError } = await client.from("device_commands").select("attempts").eq("id", id).eq("status", "pending").maybeSingle();
+  const { data: current, error: currentError } = await client
+    .from("device_commands")
+    .select("attempts")
+    .eq("id", id)
+    .eq("status", "pending")
+    .maybeSingle();
   if (currentError) throw currentError;
   if (!current) return null;
-  const { data, error } = await client.from("device_commands")
-    .update({ status: "processing", attempts: Number(current.attempts ?? 0) + 1, claimed_at: new Date().toISOString() })
+  const { data, error } = await client
+    .from("device_commands")
+    .update({
+      status: "processing",
+      attempts: Number(current.attempts ?? 0) + 1,
+      claimed_at: new Date().toISOString(),
+    })
     .eq("id", id)
     .eq("command_type", "enroll_user")
     .eq("status", "pending")
@@ -373,10 +477,19 @@ export async function claimEnrollmentCommand(id: string) {
   return data as EnrollmentCommand | null;
 }
 
-export async function completeEnrollmentCommand(id: string, result: EnrollmentCommand["result"]) {
+export async function completeEnrollmentCommand(
+  id: string,
+  result: EnrollmentCommand["result"],
+) {
   const client = requireServiceRoleSupabase();
-  const { data: command, error: commandError } = await client.from("device_commands")
-    .update({ status: "succeeded", result, error_message: null, completed_at: new Date().toISOString() })
+  const { data: command, error: commandError } = await client
+    .from("device_commands")
+    .update({
+      status: "succeeded",
+      result,
+      error_message: null,
+      completed_at: new Date().toISOString(),
+    })
     .eq("id", id)
     .eq("status", "processing")
     .select()
@@ -392,12 +505,18 @@ export async function completeEnrollmentCommand(id: string, result: EnrollmentCo
 
 export async function failEnrollmentCommand(id: string, message: string) {
   const client = requireServiceRoleSupabase();
-  const { data: current, error: currentError } = await client.from("device_commands").select("attempts").eq("id", id).eq("status", "processing").maybeSingle();
+  const { data: current, error: currentError } = await client
+    .from("device_commands")
+    .select("attempts")
+    .eq("id", id)
+    .eq("status", "processing")
+    .maybeSingle();
   if (currentError) throw currentError;
   if (!current) return null;
   const attempts = Number(current.attempts ?? 0);
   const retrying = attempts < 3;
-  const { data, error } = await client.from("device_commands")
+  const { data, error } = await client
+    .from("device_commands")
     .update({
       status: retrying ? "pending" : "failed",
       error_message: message.slice(0, 1000),
@@ -414,7 +533,11 @@ export async function failEnrollmentCommand(id: string, message: string) {
 
 export async function getEnrollmentCommand(id: string) {
   const client = requireServiceRoleSupabase();
-  const { data, error } = await client.from("device_commands").select("*").eq("id", id).maybeSingle();
+  const { data, error } = await client
+    .from("device_commands")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
   if (error) throw error;
   return data as EnrollmentCommand | null;
 }

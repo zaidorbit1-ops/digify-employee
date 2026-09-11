@@ -28,6 +28,7 @@ type AttendanceDay = {
   date: string;
   employee: Employee;
   status: string | null;
+  holiday_title?: string | null;
   arrival_status?: string | null;
   hours_worked?: number | null;
   worked_minutes?: number | null;
@@ -37,13 +38,14 @@ type AttendanceDay = {
 };
 const tone: Record<
   string,
-  "success" | "warning" | "danger" | "primary" | "neutral"
+  "success" | "warning" | "danger" | "primary" | "neutral" | "holiday"
 > = {
   present: "success",
   late: "warning",
   half_day: "warning",
   absent: "danger",
   leave: "primary",
+  holiday: "holiday",
 };
 const statusLabel = (value: string) =>
   value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -328,7 +330,11 @@ export default function AttendanceEmployeeDetailPage() {
                         day.status ? (tone[day.status] ?? "neutral") : "neutral"
                       }
                     >
-                      {day.status ? statusLabel(day.status) : "Upcoming"}
+                      {day.status === "holiday"
+                        ? `Holiday${day.holiday_title ? ` · ${day.holiday_title}` : ""}`
+                        : day.status
+                          ? statusLabel(day.status)
+                          : "Upcoming"}
                     </Badge>
                   </td>
                   <td className="px-5 py-3 text-right">

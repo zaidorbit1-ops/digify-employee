@@ -26,6 +26,7 @@ const navItems = [
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
+  { label: "Holidays", href: "/dashboard/holidays", icon: IconCalendar },
   { label: "Salary", href: "/dashboard/salary", icon: IconSalary },
   {
     label: "Company accounts",
@@ -87,6 +88,11 @@ export function Sidebar({
     {
       label: "Apply for leave",
       href: "/dashboard/employee/leave",
+      icon: IconCalendar,
+    },
+    {
+      label: "See holidays",
+      href: "/dashboard/employee/holidays",
       icon: IconCalendar,
     },
     { label: "Settings", href: "/dashboard/settings", icon: IconSettings },

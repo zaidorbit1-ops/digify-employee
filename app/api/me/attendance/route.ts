@@ -40,6 +40,7 @@ export async function GET(request: Request) {
       { data: shifts, error: shiftError },
       { data: punches, error: attendanceError },
       { data: leaves, error: leaveError },
+      { data: holidays, error: holidayError },
     ] = await Promise.all([
       client
         .from("employees")
@@ -65,16 +66,23 @@ export async function GET(request: Request) {
         .eq("status", "approved")
         .lte("start_date", endDate)
         .gte("end_date", startDate),
+      client
+        .from("holidays")
+        .select("id, title, start_date, end_date")
+        .lte("start_date", endDate)
+        .gte("end_date", startDate),
     ]);
     if (employeeError) throw employeeError;
     if (shiftError) throw shiftError;
     if (attendanceError) throw attendanceError;
     if (leaveError) throw leaveError;
+    if (holidayError) throw holidayError;
     const days = buildAttendanceDays({
       employees: [employee],
       shifts: shifts ?? [],
       punches: punches ?? [],
       approvedLeaves: leaves ?? [],
+      holidays: holidays ?? [],
       startDate,
       endDate,
     });
@@ -90,6 +98,7 @@ export async function GET(request: Request) {
           worked_minutes: day.worked_minutes,
           session_end: day.session_end,
           date: day.date,
+          holiday_title: day.holiday_title,
           upcoming: day.status === null,
         }))
         .sort((a, b) => b.date.localeCompare(a.date)),

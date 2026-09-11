@@ -177,6 +177,7 @@ export function buildAttendanceDays({
   shifts,
   punches,
   approvedLeaves,
+  holidays,
   startDate,
   endDate,
 }: {
@@ -185,6 +186,12 @@ export function buildAttendanceDays({
   punches: Punch[];
   approvedLeaves: {
     employee_id: number;
+    start_date: string;
+    end_date: string;
+  }[];
+  holidays?: {
+    id?: number;
+    title: string;
     start_date: string;
     end_date: string;
   }[];
@@ -201,6 +208,7 @@ export function buildAttendanceDays({
   );
   const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
   const grouped = new Map<string, Punch[]>();
+  const holidayRanges = holidays ?? [];
 
   punches.forEach((punch) => {
     const employee =
@@ -236,6 +244,9 @@ export function buildAttendanceDays({
           date >= item.start_date &&
           date <= item.end_date,
       );
+      const holiday = holidayRanges.find(
+        (item) => date >= item.start_date && date <= item.end_date,
+      );
       const fields = calculatePunchFields(
         employeePunches,
         employee.shift_id ? shiftById.get(employee.shift_id) : undefined,
@@ -244,8 +255,9 @@ export function buildAttendanceDays({
         date,
         employee,
         punches: employeePunches,
-        status:
-          date > dateKey(new Date())
+        status: holiday
+          ? "holiday"
+          : date > dateKey(new Date())
             ? null
             : leave
               ? "leave"
@@ -255,6 +267,7 @@ export function buildAttendanceDays({
         worked_minutes: fields?.worked_minutes ?? null,
         session_start: fields?.session_start ?? null,
         session_end: fields?.session_end ?? null,
+        holiday_title: holiday?.title ?? null,
       };
     }),
   );

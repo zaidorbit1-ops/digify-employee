@@ -24,6 +24,7 @@ type AttendanceRecord = {
   session_end?: string | null;
   date: string;
   upcoming?: boolean;
+  holiday_title?: string | null;
 };
 
 const monthNow = new Date().toISOString().slice(0, 7);
@@ -252,27 +253,32 @@ function AttendanceRow({ record }: { record: AttendanceRecord }) {
   const isUpcoming = record.upcoming || status === null;
   const isAbsent = status === "absent";
   const isLeave = status === "leave";
+  const isHoliday = status === "holiday";
   const isHalf = status === "half_day";
   const tone = isUpcoming
     ? "neutral"
     : isAbsent
       ? "danger"
-      : isLeave
-        ? "primary"
-        : isHalf || record.arrival_status === "late"
-          ? "warning"
-          : "success";
+      : isHoliday
+        ? "holiday"
+        : isLeave
+          ? "primary"
+          : isHalf || record.arrival_status === "late"
+            ? "warning"
+            : "success";
   const label = isUpcoming
     ? "Upcoming"
     : isAbsent
       ? "Absent"
-      : isLeave
-        ? "Leave"
-        : isHalf
-          ? "Half day"
-          : record.arrival_status === "late"
-            ? "Late"
-            : "Present";
+      : isHoliday
+        ? `Holiday${record.holiday_title ? ` · ${record.holiday_title}` : ""}`
+        : isLeave
+          ? "Leave"
+          : isHalf
+            ? "Half day"
+            : record.arrival_status === "late"
+              ? "Late"
+              : "Present";
   return (
     <div
       className={`grid items-center gap-4 border-b border-border px-5 py-4 last:border-b-0 sm:grid-cols-[minmax(180px,1fr)_1fr_1fr_1fr_auto] sm:px-6 ${isUpcoming ? "bg-stone-50/45" : "hover:bg-[#fffafa]"}`}

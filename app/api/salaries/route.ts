@@ -8,6 +8,7 @@ import {
 import {
   getAttendance,
   getEmployees,
+  getHolidaysForRange,
   getLeavesForRange,
   getShiftTimings,
   supabase,
@@ -35,12 +36,14 @@ export async function GET(request: Request) {
       month
     ) {
       const monthKey = normalizeMonthKey(month);
-      const [attendance, employees, shifts, leaves] = await Promise.all([
-        getAttendance(),
-        getEmployees(),
-        getShiftTimings(),
-        getLeavesForRange(monthKey, monthKey.replace("-01", "-31")),
-      ]);
+      const [attendance, employees, shifts, leaves, holidays] =
+        await Promise.all([
+          getAttendance(),
+          getEmployees(),
+          getShiftTimings(),
+          getLeavesForRange(monthKey, monthKey.replace("-01", "-31")),
+          getHolidaysForRange(monthKey, monthKey.replace("-01", "-31")),
+        ]);
 
       const employee = employees.find((entry) => entry.id === employeeId);
       if (!employee) {
@@ -55,6 +58,7 @@ export async function GET(request: Request) {
         shifts,
         punches: attendance,
         approvedLeaves: leaves,
+        holidays,
         startDate: monthKey,
         endDate: monthKey.replace("-01", "-31"),
       });
@@ -146,12 +150,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const [attendance, employees, shifts, leaves] = await Promise.all([
-      getAttendance(),
-      getEmployees(),
-      getShiftTimings(),
-      getLeavesForRange(month, month.replace("-01", "-31")),
-    ]);
+    const [attendance, employees, shifts, leaves, holidays] = await Promise.all(
+      [
+        getAttendance(),
+        getEmployees(),
+        getShiftTimings(),
+        getLeavesForRange(month, month.replace("-01", "-31")),
+        getHolidaysForRange(month, month.replace("-01", "-31")),
+      ],
+    );
 
     const employee = employees.find((entry) => entry.id === employeeId);
     if (!employee) {
@@ -166,6 +173,7 @@ export async function POST(request: Request) {
       shifts,
       punches: attendance,
       approvedLeaves: leaves,
+      holidays,
       startDate: month,
       endDate: month.replace("-01", "-31"),
     });
