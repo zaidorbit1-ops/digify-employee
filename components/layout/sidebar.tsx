@@ -27,7 +27,11 @@ const navItems = [
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
   { label: "Salary", href: "/dashboard/salary", icon: IconSalary },
-  { label: "Company accounts", href: "/dashboard/company-accounts", icon: IconBriefcase },
+  {
+    label: "Company accounts",
+    href: "/dashboard/company-accounts",
+    icon: IconBriefcase,
+  },
   { label: "Payment tracking", href: "/dashboard/payments", icon: IconWallet },
   { label: "Settings", href: "/dashboard/settings", icon: IconSettings },
   { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
@@ -46,7 +50,16 @@ export function Sidebar({
 
   useEffect(() => {
     if (profile?.role !== "employee") return;
-    fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => setGrantedModules((result.permissions ?? []).map((permission: { module: string }) => permission.module))).catch(() => setGrantedModules([]));
+    fetch("/api/me/permissions", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((result) =>
+        setGrantedModules(
+          (result.permissions ?? []).map(
+            (permission: { module: string }) => permission.module,
+          ),
+        ),
+      )
+      .catch(() => setGrantedModules([]));
   }, [profile?.role]);
 
   const moduleForHref: Record<string, string> = {
@@ -61,13 +74,32 @@ export function Sidebar({
   };
   const employeeDefaultItems = [
     { label: "Dashboard", href: "/dashboard", icon: IconOverview },
-    { label: "My attendance", href: "/dashboard/employee/attendance", icon: IconAttendance },
-    { label: "My salary history", href: "/dashboard/employee/salary", icon: IconSalary },
-    { label: "Apply for leave", href: "/dashboard/employee/leave", icon: IconCalendar },
+    {
+      label: "My attendance",
+      href: "/dashboard/employee/attendance",
+      icon: IconAttendance,
+    },
+    {
+      label: "My salary history",
+      href: "/dashboard/employee/salary",
+      icon: IconSalary,
+    },
+    {
+      label: "Apply for leave",
+      href: "/dashboard/employee/leave",
+      icon: IconCalendar,
+    },
     { label: "Settings", href: "/dashboard/settings", icon: IconSettings },
   ];
-  const employeeGrantedItems = navItems.filter((item) => moduleForHref[item.href] && grantedModules.includes(moduleForHref[item.href]));
-  const visibleNavItems = profile?.role === "employee" ? [...employeeDefaultItems, ...employeeGrantedItems] : navItems;
+  const employeeGrantedItems = navItems.filter(
+    (item) =>
+      moduleForHref[item.href] &&
+      grantedModules.includes(moduleForHref[item.href]),
+  );
+  const visibleNavItems =
+    profile?.role === "employee"
+      ? [...employeeDefaultItems, ...employeeGrantedItems]
+      : navItems;
 
   return (
     <>
@@ -86,7 +118,12 @@ export function Sidebar({
         )}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-5">
-          <Link href="/dashboard" aria-label="Dashboard home" className="flex min-w-0 items-center gap-3" onClick={onClose}>
+          <Link
+            href="/dashboard"
+            aria-label="Dashboard home"
+            className="flex min-w-0 items-center gap-3"
+            onClick={onClose}
+          >
             <Image
               src="/logo.png"
               alt="Company logo"
@@ -108,7 +145,9 @@ export function Sidebar({
 
         <div className="flex-1 overflow-y-auto px-3 py-5">
           <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">
-            Super Admin
+            {profile?.role === "employee"
+              ? "Employee workspace"
+              : "Admin workspace"}
           </p>
           <nav className="space-y-1">
             {visibleNavItems.map((item) => {
@@ -133,7 +172,9 @@ export function Sidebar({
                   <span
                     className={cn(
                       "grid h-9 w-9 place-items-center rounded-xl",
-                      active ? "bg-white text-primary shadow-sm" : "bg-stone-50 text-stone-400",
+                      active
+                        ? "bg-white text-primary shadow-sm"
+                        : "bg-stone-50 text-stone-400",
                     )}
                   >
                     <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
@@ -147,8 +188,21 @@ export function Sidebar({
 
         <div className="border-t border-border p-4">
           <div className="mb-3 flex items-center justify-between gap-3 px-2">
-            <div className="min-w-0"><p className="truncate text-sm font-semibold">{profile?.full_name || user?.email || "Signed in"}</p><p className="mt-0.5 text-xs capitalize text-muted">{profile?.role || "Account"}</p></div>
-            <button type="button" onClick={signOut} className="shrink-0 text-xs font-semibold text-muted hover:text-primary">Sign out</button>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold">
+                {profile?.full_name || user?.email || "Signed in"}
+              </p>
+              <p className="mt-0.5 text-xs capitalize text-muted">
+                {profile?.role || "Account"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={signOut}
+              className="shrink-0 text-xs font-semibold text-muted hover:text-primary"
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </aside>

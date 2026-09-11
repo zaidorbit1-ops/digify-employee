@@ -1,6 +1,12 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -35,7 +41,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
 
-    async function loadProfile(currentUser: { id: string; email?: string } | null) {
+    async function loadProfile(
+      currentUser: { id: string; email?: string } | null,
+    ) {
       if (!currentUser) {
         if (mounted) {
           setProfile(null);
@@ -52,25 +60,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (!mounted) return;
       setProfile(data as AuthProfile | null);
-      setProfileError(error?.message ?? (!data ? "Your account is not linked to a profile yet." : null));
+      setProfileError(
+        error?.message ??
+          (!data ? "Your account is not linked to a profile yet." : null),
+      );
     }
 
     async function loadUser() {
       const { data } = await supabase.auth.getUser();
       if (!mounted) return;
-      const currentUser = data.user ? { id: data.user.id, email: data.user.email } : null;
+      const currentUser = data.user
+        ? { id: data.user.id, email: data.user.email }
+        : null;
       setUser(currentUser);
       await loadProfile(currentUser);
       if (mounted) setLoading(false);
     }
 
     loadUser();
-    const { data: listener } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
-      const currentUser = session?.user ? { id: session.user.id, email: session.user.email } : null;
-      setUser(currentUser);
-      loadProfile(currentUser);
-      setLoading(false);
-    });
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event: AuthChangeEvent, session: Session | null) => {
+        const currentUser = session?.user
+          ? { id: session.user.id, email: session.user.email }
+          : null;
+        setUser(currentUser);
+        loadProfile(currentUser);
+        setLoading(false);
+      },
+    );
 
     return () => {
       mounted = false;
@@ -79,14 +96,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [supabase]);
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: "global" });
+    if (typeof window !== "undefined") {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith("sb-")) window.localStorage.removeItem(key);
+      }
+      for (const key of Object.keys(window.sessionStorage)) {
+        if (key.startsWith("sb-")) window.sessionStorage.removeItem(key);
+      }
+    }
     setUser(null);
     setProfile(null);
+    setProfileError(null);
     router.replace("/login");
     router.refresh();
   }
 
-  return <AuthContext.Provider value={{ user, profile, loading, profileError, signOut }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{ user, profile, loading, profileError, signOut }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {

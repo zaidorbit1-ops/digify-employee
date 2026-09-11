@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { IconCheck, IconSearch, IconTrash, IconRefresh } from "@/components/icons";
+import {
+  IconCheck,
+  IconSearch,
+  IconTrash,
+  IconRefresh,
+} from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,8 +24,17 @@ type LeaveRecord = {
   reason: string;
   status: LeaveStatus;
   created_at: string;
-  employees?: { id: number; name: string; email?: string | null; employee_id?: string | number | null } | null;
+  employees?: {
+    id: number;
+    name: string;
+    email?: string | null;
+    employee_id?: string | number | null;
+  } | null;
 };
+
+function leaveType(record: LeaveRecord) {
+  return record.start_date === record.end_date ? "One day" : "Multiple days";
+}
 
 type Message = { text: string; tone?: "danger" | "success" };
 
@@ -35,13 +49,20 @@ function formatDateRange(start: string, end: string) {
   const startDate = new Date(`${start}T00:00:00Z`);
   const endDate = new Date(`${end}T00:00:00Z`);
   const sameDay = start === end;
-  if (sameDay) return startDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  if (sameDay)
+    return startDate.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   return `${startDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${endDate.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
 }
 
 export default function LeaveAdminPage() {
   const [records, setRecords] = useState<LeaveRecord[]>([]);
-  const [statusFilter, setStatusFilter] = useState<LeaveStatus | "all">("pending");
+  const [statusFilter, setStatusFilter] = useState<LeaveStatus | "all">(
+    "pending",
+  );
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
@@ -51,12 +72,21 @@ export default function LeaveAdminPage() {
     setLoading(true);
     setMessage(null);
     try {
-      const response = await fetch(`/api/leaves?status=${statusFilter}`, { cache: "no-store" });
+      const response = await fetch(`/api/leaves?status=${statusFilter}`, {
+        cache: "no-store",
+      });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not load leave requests.");
+      if (!response.ok)
+        throw new Error(result.error ?? "Could not load leave requests.");
       setRecords(result.leaves ?? []);
     } catch (error) {
-      setMessage({ text: error instanceof Error ? error.message : "Could not load leave requests.", tone: "danger" });
+      setMessage({
+        text:
+          error instanceof Error
+            ? error.message
+            : "Could not load leave requests.",
+        tone: "danger",
+      });
     } finally {
       setLoading(false);
     }
@@ -75,7 +105,10 @@ export default function LeaveAdminPage() {
     });
     const result = await response.json();
     if (!response.ok) {
-      setMessage({ text: result.error ?? "Could not update leave request.", tone: "danger" });
+      setMessage({
+        text: result.error ?? "Could not update leave request.",
+        tone: "danger",
+      });
       return;
     }
     setMessage({ text: `Leave request ${nextStatus}.`, tone: "success" });
@@ -87,8 +120,11 @@ export default function LeaveAdminPage() {
     const normalized = query.trim().toLowerCase();
     return records.filter((record) => {
       const employeeName = record.employees?.name ?? "";
-      const employeeId = String(record.employees?.employee_id ?? record.employee_id ?? "");
-      const haystack = `${employeeName} ${employeeId} ${record.reason}`.toLowerCase();
+      const employeeId = String(
+        record.employees?.employee_id ?? record.employee_id ?? "",
+      );
+      const haystack =
+        `${employeeName} ${employeeId} ${record.reason}`.toLowerCase();
       return !normalized || haystack.includes(normalized);
     });
   }, [records, query]);
@@ -99,7 +135,12 @@ export default function LeaveAdminPage() {
         eyebrow="Leave management"
         title="Admin leave review"
         description="Approve or reject leave requests and keep the attendance and salary rules in sync."
-        actions={<Button variant="secondary" onClick={loadLeaves} disabled={loading}><IconRefresh className="h-4 w-4" />{loading ? "Refreshing..." : "Refresh"}</Button>}
+        actions={
+          <Button variant="secondary" onClick={loadLeaves} disabled={loading}>
+            <IconRefresh className="h-4 w-4" />
+            {loading ? "Refreshing..." : "Refresh"}
+          </Button>
+        }
       />
 
       {message ? (
@@ -129,9 +170,17 @@ export default function LeaveAdminPage() {
               />
             </label>
 
-            <SelectInput className="h-10 w-36 text-xs" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as LeaveStatus | "all")}>
+            <SelectInput
+              className="h-10 w-36 text-xs"
+              value={statusFilter}
+              onChange={(event) =>
+                setStatusFilter(event.target.value as LeaveStatus | "all")
+              }
+            >
               {statusOptions.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
               ))}
             </SelectInput>
           </div>
@@ -143,6 +192,7 @@ export default function LeaveAdminPage() {
               <tr>
                 <th className="px-5 py-3 font-bold">Employee</th>
                 <th className="px-3 py-3 font-bold">Date range</th>
+                <th className="px-3 py-3 font-bold">Type</th>
                 <th className="px-3 py-3 font-bold">Reason</th>
                 <th className="px-3 py-3 font-bold">Requested</th>
                 <th className="px-3 py-3 font-bold">Status</th>
@@ -154,22 +204,51 @@ export default function LeaveAdminPage() {
                 <tr key={record.id} className="transition hover:bg-[#fffafa]">
                   <td className="px-5 py-4">
                     <div>
-                      <p className="font-semibold leading-tight">{record.employees?.name ?? `Employee #${record.employee_id}`}</p>
-                      <p className="mt-1 text-[11px] text-muted">{record.employees?.email ?? "No email"}</p>
+                      <p className="font-semibold leading-tight">
+                        {record.employees?.name ??
+                          `Employee #${record.employee_id}`}
+                      </p>
+                      <p className="mt-1 text-[11px] text-muted">
+                        {record.employees?.email ?? "No email"}
+                      </p>
                     </div>
                   </td>
-                  <td className="px-3 py-4 font-medium text-muted">{formatDateRange(record.start_date, record.end_date)}</td>
-                  <td className="px-3 py-4 text-muted">{record.reason || "No reason provided"}</td>
-                  <td className="px-3 py-4 text-muted">{new Date(record.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</td>
+                  <td className="px-3 py-4 font-medium text-muted">
+                    {formatDateRange(record.start_date, record.end_date)}
+                  </td>
                   <td className="px-3 py-4">
-                    <Badge tone={
-                      record.status === "approved" ? "success" :
-                      record.status === "declined" ? "danger" : "warning"
-                    }>{record.status}</Badge>
+                    <Badge tone="primary">{leaveType(record)}</Badge>
+                  </td>
+                  <td className="px-3 py-4 text-muted">
+                    {record.reason || "No reason provided"}
+                  </td>
+                  <td className="px-3 py-4 text-muted">
+                    {new Date(record.created_at).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </td>
+                  <td className="px-3 py-4">
+                    <Badge
+                      tone={
+                        record.status === "approved"
+                          ? "success"
+                          : record.status === "declined"
+                            ? "danger"
+                            : "warning"
+                      }
+                    >
+                      {record.status}
+                    </Badge>
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex justify-end gap-2">
-                      <Button variant="secondary" className="h-9 px-3 text-xs" onClick={() => setSelected(record)}>
+                      <Button
+                        variant="secondary"
+                        className="h-9 px-3 text-xs"
+                        onClick={() => setSelected(record)}
+                      >
                         Review
                       </Button>
                     </div>
@@ -187,40 +266,93 @@ export default function LeaveAdminPage() {
         </div>
       </Card>
 
-      <Modal open={Boolean(selected)} onClose={() => setSelected(null)} title="Review leave request" description="Approve or decline this leave request.">
+      <Modal
+        open={Boolean(selected)}
+        onClose={() => setSelected(null)}
+        title="Review leave request"
+        description="Approve or decline this leave request."
+      >
         {selected ? (
           <div className="space-y-5">
             <div className="rounded-2xl border border-border bg-[#fcfaf9] p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">Employee</p>
-                  <p className="mt-1 text-lg font-bold">{selected.employees?.name ?? `Employee #${selected.employee_id}`}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">
+                    Employee
+                  </p>
+                  <p className="mt-1 text-lg font-bold">
+                    {selected.employees?.name ??
+                      `Employee #${selected.employee_id}`}
+                  </p>
                 </div>
-                <Badge tone={selected.status === "approved" ? "success" : selected.status === "declined" ? "danger" : "warning"}>{selected.status}</Badge>
+                <Badge
+                  tone={
+                    selected.status === "approved"
+                      ? "success"
+                      : selected.status === "declined"
+                        ? "danger"
+                        : "warning"
+                  }
+                >
+                  {selected.status}
+                </Badge>
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-border bg-white px-3 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">Range</p>
-                  <p className="mt-2 font-semibold">{formatDateRange(selected.start_date, selected.end_date)}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">
+                    Range
+                  </p>
+                  <p className="mt-2 font-semibold">
+                    {formatDateRange(selected.start_date, selected.end_date)}
+                  </p>
                 </div>
                 <div className="rounded-xl border border-border bg-white px-3 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">Requested</p>
-                  <p className="mt-2 font-semibold">{new Date(selected.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">
+                    Type
+                  </p>
+                  <p className="mt-2 font-semibold">{leaveType(selected)}</p>
+                </div>
+                <div className="rounded-xl border border-border bg-white px-3 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">
+                    Requested
+                  </p>
+                  <p className="mt-2 font-semibold">
+                    {new Date(selected.created_at).toLocaleDateString(
+                      undefined,
+                      { month: "short", day: "numeric", year: "numeric" },
+                    )}
+                  </p>
                 </div>
               </div>
             </div>
 
             <Field label="Reason">
-              <TextInput value={selected.reason || "No reason provided"} readOnly />
+              <TextInput
+                value={selected.reason || "No reason provided"}
+                readOnly
+              />
             </Field>
 
             <div className="flex justify-end gap-3 border-t border-border pt-5">
-              <Button type="button" variant="secondary" onClick={() => setSelected(null)}>Cancel</Button>
-              <Button type="button" variant="secondary" className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800" onClick={() => updateStatus("declined")}>
-                <IconTrash className="h-4 w-4" />Decline
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setSelected(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 hover:text-rose-800"
+                onClick={() => updateStatus("declined")}
+              >
+                <IconTrash className="h-4 w-4" />
+                Decline
               </Button>
               <Button type="button" onClick={() => updateStatus("approved")}>
-                <IconCheck className="h-4 w-4" />Approve
+                <IconCheck className="h-4 w-4" />
+                Approve
               </Button>
             </div>
           </div>
