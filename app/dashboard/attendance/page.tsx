@@ -2,13 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { IconDownload, IconFile, IconRefresh } from "@/components/icons";
+import { IconRefresh } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert } from "@/components/ui/empty-state";
-import { Field, SelectInput, TextInput } from "@/components/ui/field";
+import { Field, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
+import { EmployeePicker } from "@/components/ui/employee-picker";
+import { FilterPicker } from "@/components/ui/filter-picker";
+import { MonthPicker } from "@/components/ui/month-picker";
 import { PageHeader } from "@/components/ui/page-header";
 
 type Employee = { id: number; name: string; employee_id?: string; shift_id?: number | null };
@@ -27,6 +30,7 @@ export default function AttendancePage() {
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shiftFilter, setShiftFilter] = useState("all");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -97,8 +101,9 @@ export default function AttendancePage() {
 
   const visibleDays = days.filter((day) => {
     const matchesShift = shiftFilter === "all" || String(day.employee.shift_id ?? "") === shiftFilter;
-    const matchesSearch = day.employee.name.toLowerCase().includes(query.toLowerCase());
-    return matchesShift && matchesSearch;
+    const matchesEmployee = employeeFilter === "all" || String(day.employee.id) === employeeFilter;
+    const matchesSearch = view === "history" ? day.employee.name.toLowerCase().includes(query.toLowerCase()) : true;
+    return matchesShift && matchesEmployee && matchesSearch;
   });
   const todayRecords = visibleDays.filter((day) => day.punches.length > 0);
   const summaries = useMemo(() => employees.filter((employee) => employee.name.toLowerCase().includes(query.toLowerCase()) && (shiftFilter === "all" || String(employee.shift_id ?? "") === shiftFilter)).map((employee) => {
@@ -106,19 +111,11 @@ export default function AttendancePage() {
     return { employee, present: employeeDays.filter((day) => day.status === "present").length, late: employeeDays.filter((day) => day.arrival_status === "late").length, absent: employeeDays.filter((day) => day.status === "absent").length, halfDay: employeeDays.filter((day) => day.status === "half_day").length, leave: employeeDays.filter((day) => day.status === "leave").length };
   }), [employees, days, query, shiftFilter]);
 
-  function exportCsv() {
-    const exportDays = view === "today" ? todayRecords : visibleDays;
-    const rows = exportDays.map((day) => [day.date, day.employee.name, labelStatus(day.status), labelStatus(day.arrival_status ?? "-"), day.hours_worked ?? "", day.session_start ?? "", day.session_end ?? ""]);
-    const csv = [["Date", "Employee", "Day status", "Arrival", "Hours worked", "Session start", "Session end"], ...rows].map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `attendance-${month}.csv`; link.click(); URL.revokeObjectURL(link.href);
-  }
-
   return <>
     <PageHeader eyebrow="Attendance" title="Attendance engine" description="Review shift-based attendance, arrival status, hours, and monthly history." actions={<Button variant="secondary" onClick={syncAndLoad} disabled={loading || syncing}><IconRefresh className="h-4 w-4" />{syncing ? "Syncing..." : loading ? "Loading..." : "Refresh"}</Button>} />
     {error ? <div className="mb-5"><Alert tone="danger">{error}</Alert></div> : null}
     <Card className="mb-5 p-2 sm:p-2"><div className="flex gap-2"><button type="button" onClick={() => setView("today")} className={`rounded-xl px-4 py-2.5 text-sm font-semibold ${view === "today" ? "bg-primary text-white" : "text-muted hover:bg-primary-soft"}`}>Today&apos;s attendance</button><button type="button" onClick={() => setView("history")} className={`rounded-xl px-4 py-2.5 text-sm font-semibold ${view === "history" ? "bg-primary text-white" : "text-muted hover:bg-primary-soft"}`}>History</button></div></Card>
-    <Card className="overflow-hidden p-0 sm:p-0"><div className="flex flex-col gap-3 border-b border-border p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-semibold">{view === "today" ? "Today's attendance" : `Attendance history · ${month}`}</h2><p className="mt-0.5 text-xs text-muted">{view === "today" ? `${todayRecords.length} checked-in employees` : `${summaries.length} employees`}</p></div><div className="flex max-w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1"><TextInput className="!h-9 !w-44 shrink-0 text-xs" placeholder="Search employee" value={query} onChange={(event) => setQuery(event.target.value)} /><SelectInput className="!h-9 !w-36 shrink-0 text-xs" value={shiftFilter} onChange={(event) => setShiftFilter(event.target.value)}><option value="all">All shifts</option>{shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</SelectInput>{view === "history" ? <TextInput className="!h-9 !w-36 shrink-0 text-xs" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /> : null}<Button variant="secondary" className="h-9 shrink-0 px-3 text-xs" onClick={exportCsv}><IconDownload className="h-3.5 w-3.5" />Excel</Button><Button variant="secondary" className="h-9 shrink-0 px-3 text-xs" onClick={() => window.print()}><IconFile className="h-3.5 w-3.5" />PDF</Button></div></div></div>
+    <Card className="relative overflow-visible p-0 sm:p-0"><div className="flex flex-col gap-3 border-b border-border p-4 sm:p-5"><div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><h2 className="text-base font-semibold">{view === "today" ? "Today's attendance" : `Attendance history · ${month}`}</h2><p className="mt-0.5 text-xs text-muted">{view === "today" ? `${todayRecords.length} checked-in employees` : `${summaries.length} employees`}</p></div><div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:w-auto lg:flex-wrap lg:items-center">{view === "today" ? <EmployeePicker className="w-full lg:w-[210px]" employees={employees} value={employeeFilter} onChange={setEmployeeFilter} /> : <TextInput className="!h-9 !w-full text-xs sm:col-span-2 lg:!w-44" placeholder="Search employee" value={query} onChange={(event) => setQuery(event.target.value)} />}<FilterPicker className="w-full lg:w-36" options={[{ value: "all", label: "All shifts" }, ...shifts.map((shift) => ({ value: String(shift.id), label: shift.name }))]} value={shiftFilter} onChange={setShiftFilter} placeholder="All shifts" />{view === "history" ? <MonthPicker className="w-full lg:w-[220px]" value={month} onChange={setMonth} /> : null}</div></div></div>
       {view === "today" ? <TodayTable days={todayRecords} shifts={shifts} loading={loading} now={now} onEdit={editDay} onClear={clearDay} /> : <HistoryList summaries={summaries} month={month} />}
     </Card>
     <Modal open={Boolean(editPunch)} onClose={() => setEditPunch(null)} title="Edit attendance time" description={editPunch ? `Correct the check-in time for ${editPunch.employee}.` : undefined}>

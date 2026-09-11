@@ -6,7 +6,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $appRoot = Split-Path -Parent $PSScriptRoot
-$dist = Join-Path $appRoot "dist"
+$dist = if (Test-Path (Join-Path $appRoot "attendance-worker.exe")) {
+	$appRoot
+} else {
+	Join-Path $appRoot "dist"
+}
 $exePath = Join-Path $dist "attendance-worker.exe"
 $taskName = "ZKTecoAttendanceConnector"
 
