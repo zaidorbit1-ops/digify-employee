@@ -131,13 +131,24 @@ export async function POST(request: Request) {
     const device = devices.find(
       (item) => item.device_ip === deviceIp && Number(item.port) === port,
     );
-    const rawRecords = records.map((record) => ({
-      ...normalizeAttendanceRecord({
-        ...record,
-        user_id: String(record.user_id),
-      }),
-      device_id: device?.id ?? null,
-    }));
+    const rawRecords = [];
+    for (const record of records) {
+      try {
+        rawRecords.push({
+          ...normalizeAttendanceRecord({
+            ...record,
+            user_id: String(record.user_id),
+          }),
+          device_id: device?.id ?? null,
+        });
+      } catch (error) {
+        console.warn("[ATTENDANCE INGEST] skipped record", {
+          user_id: record.user_id,
+          record_time: record.record_time,
+          error: serializeError(error),
+        });
+      }
+    }
     const employeeByUid = new Map(
       employees
         .filter((employee) => employee.zk_device_uid != null)
@@ -219,7 +230,9 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error: "Attendance ingest failed.",
+        error: details.message
+          ? `Attendance ingest failed: ${String(details.message)}`
+          : "Attendance ingest failed.",
         details,
       },
       { status: 500 },

@@ -89,19 +89,33 @@ export function punchLogId(zkUserId: number, checkIn: string) {
   return 100000 + ((hash >>> 0) % 2147383647);
 }
 
+function parseRecordTime(recordTime: string | Date) {
+  if (recordTime instanceof Date) return new Date(recordTime.getTime());
+
+  const rawTime = String(recordTime || "").trim();
+  if (!rawTime) return new Date(NaN);
+
+  const naiveLocal = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?$/.test(
+    rawTime,
+  );
+  if (naiveLocal) {
+    const naiveUtc = new Date(rawTime.replace(" ", "T") + "Z");
+    if (Number.isFinite(naiveUtc.getTime())) {
+      return new Date(naiveUtc.getTime() - attendanceOffsetMinutes * 60000);
+    }
+  }
+
+  return new Date(rawTime);
+}
+
 export function normalizeAttendanceRecord(record: ZkAttendanceRecord) {
   const zkUserId = Number(record.user_id ?? 0);
-  const rawTime = String(record.record_time || "");
-  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(rawTime);
-  const parsed =
-    record.record_time instanceof Date
-      ? record.record_time
-      : hasTimezone
-        ? new Date(rawTime)
-        : new Date(
-            new Date(rawTime.replace(" ", "T") + "Z").getTime() -
-              attendanceOffsetMinutes * 60000,
-          );
+  const parsed = parseRecordTime(record.record_time || "");
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error(
+      `Invalid attendance timestamp: ${String(record.record_time)}`,
+    );
+  }
   parsed.setMilliseconds(0);
   const checkInISO = parsed.toISOString();
   const safeUserId = Number.isFinite(zkUserId) && zkUserId > 0 ? zkUserId : 0;

@@ -67,6 +67,7 @@ export function dateKey(value: string | Date) {
   const shifted = new Date(
     new Date(value).getTime() + officeOffsetMinutes * 60000,
   );
+  if (!Number.isFinite(shifted.getTime())) return "";
   return shifted.toISOString().slice(0, 10);
 }
 
