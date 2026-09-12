@@ -192,15 +192,20 @@ export async function POST(request: Request) {
       synced: synced.length,
     });
   } catch (error) {
+    const details = serializeError(error);
     console.error("[ATTENDANCE INGEST] failed", {
-      details: serializeError(error),
+      details,
       deviceIp: body?.device_ip,
       port: body?.port,
       recordCount: Array.isArray(body?.records) ? body.records.length : 0,
     });
 
     return NextResponse.json(
-      { ok: false, error: "Attendance ingest failed." },
+      {
+        ok: false,
+        error: "Attendance ingest failed.",
+        details,
+      },
       { status: 500 },
     );
   }

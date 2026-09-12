@@ -371,13 +371,87 @@ export async function updateAttendanceSessionFields(
 
 export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
   const client = requireSupabase();
-  const { data, error } = await client
-    .from("attendance")
-    .upsert(rows, { onConflict: "zk_user_id,check_in" })
-    .select();
+  if (!rows.length) return [];
 
-  if (error) throw error;
-  return data ?? [];
+  const normalizedRows = [...new Map(
+    rows.map((row) => {
+      const checkIn = new Date(row.check_in).toISOString();
+      return [
+        `${row.zk_user_id}:${checkIn}`,
+        {
+          ...row,
+          check_in: checkIn,
+          employee_id: row.employee_id ?? null,
+          device_id: row.device_id ?? null,
+          status: row.status ?? "present",
+        },
+      ];
+    }),
+  ).values()];
+
+  try {
+    const { data, error } = await client
+      .from("attendance")
+      .upsert(normalizedRows, { onConflict: "zk_user_id,check_in" })
+      .select();
+
+    if (error) throw error;
+    return data ?? [];
+  } catch (error) {
+    const { data: existing, error: listError } = await client
+      .from("attendance")
+      .select("zk_user_id, check_in")
+      .in(
+        "zk_user_id",
+        [...new Set(normalizedRows.map((row) => row.zk_user_id))],
+      );
+
+    if (listError) throw listError;
+
+    const existingKeys = new Set(
+      (existing ?? []).map(
+        (row) => `${row.zk_user_id}:${new Date(row.check_in).toISOString()}`,
+      ),
+    );
+
+    const insertRows = normalizedRows.filter(
+      (row) => !existingKeys.has(`${row.zk_user_id}:${row.check_in}`),
+    );
+    const updateRows = normalizedRows.filter((row) =>
+      existingKeys.has(`${row.zk_user_id}:${row.check_in}`),
+    );
+
+    const insertedResult = insertRows.length
+      ? await client.from("attendance").insert(insertRows).select()
+      : { data: [] as any[], error: null };
+    if (insertedResult.error) throw insertedResult.error;
+
+    const updatedRows: any[] = [];
+    for (const row of updateRows) {
+      const { data, error: updateError } = await client
+        .from("attendance")
+        .update({
+          employee_id: row.employee_id,
+          device_id: row.device_id,
+          status: row.status,
+          arrival_status: row.arrival_status,
+          day_status: row.day_status,
+          hours_worked: row.hours_worked,
+          worked_minutes: row.worked_minutes,
+          session_start: row.session_start,
+          session_end: row.session_end,
+          device_log_id: row.device_log_id,
+        })
+        .eq("zk_user_id", row.zk_user_id)
+        .eq("check_in", row.check_in)
+        .select();
+
+      if (updateError) throw updateError;
+      updatedRows.push(...(data ?? []));
+    }
+
+    return [...(insertedResult.data ?? []), ...updatedRows];
+  }
 }
 
 export async function createOrReuseEnrollmentCommand(values: {

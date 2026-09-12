@@ -110,8 +110,17 @@ async function sync() {
       body: JSON.stringify({ device_ip: deviceIp, port: devicePort, records }),
       signal: AbortSignal.timeout(Math.max(10000, intervalMs - 1000)),
     });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`Ingest API ${response.status}: ${result.error || "request failed"}`);
+    const responseText = await response.text();
+    let result = {};
+    try {
+      result = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      result = { raw: responseText };
+    }
+    if (!response.ok) {
+      const detail = result?.details ? ` | ${JSON.stringify(result.details)}` : responseText ? ` | ${responseText}` : "";
+      throw new Error(`Ingest API ${response.status}: ${result.error || "request failed"}${detail}`);
+    }
 
     const currentPunches = new Set(records.map(punchKey));
     if (!previousPunches.size) {
