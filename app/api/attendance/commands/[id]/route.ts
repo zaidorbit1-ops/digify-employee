@@ -26,7 +26,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       return NextResponse.json({ ok: true, command });
     }
     return NextResponse.json({ ok: false, error: "Unsupported command action." }, { status: 400 });
-  } catch {
+  } catch (error) {
+    console.error("[DEVICE COMMAND] update failed", {
+      id,
+      action: await request.clone().json().catch(() => ({})).then((body) => body?.action ?? null),
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { message: String(error) },
+    });
     return NextResponse.json({ ok: false, error: "Could not update device command." }, { status: 500 });
   }
 }

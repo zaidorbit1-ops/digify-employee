@@ -56,13 +56,28 @@ function errorDetails(error) {
   } catch { return String(error); }
 }
 
+function errorContext(error) {
+  const nested = error && typeof error === "object" ? error : {};
+  const root = nested.err && typeof nested.err === "object" ? nested.err : nested;
+  return {
+    name: nested.name || root.name || null,
+    code: nested.code ?? root.code ?? null,
+    errno: nested.errno ?? root.errno ?? null,
+    syscall: nested.syscall ?? root.syscall ?? null,
+    address: nested.address ?? root.address ?? null,
+    port: nested.port ?? root.port ?? null,
+    message: errorDetails(error),
+    stack: nested.stack || root.stack || null,
+    raw: Object.keys(nested).length > 0 ? nested : null,
+  };
+}
+
 function writeErrorOnce(scope, error) {
   const message = errorDetails(error);
-  if (scope === "sync" && message === lastSyncError) return;
-  if (scope === "commands" && message === lastCommandError) return;
+  const context = errorContext(error);
   if (scope === "sync") lastSyncError = message;
   if (scope === "commands") lastCommandError = message;
-  writeLog("ERROR", `${scope} failed; retrying in ${intervalMs}ms; error=${message}`);
+  writeLog("ERROR", `${scope} failed; retrying in ${intervalMs}ms; error=${message}; context=${JSON.stringify(context)}`);
 }
 
 function punchKey(record) {
@@ -78,6 +93,7 @@ async function sync() {
   let device;
   let connected = false;
   try {
+    writeLog("INFO", `Sync cycle start; device=${deviceIp}:${devicePort}; intervalMs=${intervalMs}`);
     device = new Zkteco(deviceIp, devicePort, 5000, 5000, 65472);
     await device.createSocket();
     connected = true;
@@ -86,6 +102,8 @@ async function sync() {
 
     const attendanceResponse = await device.getAttendances();
     const records = attendanceResponse?.data || [];
+    writeLog("INFO", `Device attendance fetch succeeded; device=${deviceIp}:${devicePort}; records=${records.length}`);
+
     const response = await fetch(connectorApiUrl, {
       method: "POST",
       headers: { "content-type": "application/json", "x-connector-token": connectorToken },
@@ -108,9 +126,10 @@ async function sync() {
   } catch (error) {
     if (deviceWasConnected) writeLog("WARN", `K60 connection lost at ${deviceIp}:${devicePort}`);
     deviceWasConnected = false;
+    writeLog("ERROR", `TCP/device sync failure; device=${deviceIp}:${devicePort}; connected=${connected}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`);
     writeErrorOnce("sync", error);
   } finally {
-    if (device && connected) await device.disconnect().catch((error) => writeLog("WARN", `K60 disconnect failed: ${errorDetails(error)}`));
+    if (device && connected) await device.disconnect().catch((error) => writeLog("WARN", `K60 disconnect failed; device=${deviceIp}:${devicePort}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`));
   }
 }
 
@@ -122,6 +141,10 @@ async function processEnrollmentCommands() {
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(`Command API ${response.status}: ${result.error || "request failed"}`);
   lastCommandError = "";
+
+  if (Array.isArray(result.commands) && result.commands.length > 0) {
+    writeLog("INFO", `Command poll returned ${result.commands.length} pending enrollment command(s)`);
+  }
 
   for (const command of result.commands ?? []) {
     let device;
@@ -137,6 +160,7 @@ async function processEnrollmentCommands() {
       if (!claimed.claimed) continue;
 
       const payload = command.payload;
+      writeLog("INFO", `Enrollment command claimed; commandId=${command.id}; uid=${payload.uid}; device=${payload.device_ip}:${payload.port}`);
       device = new Zkteco(payload.device_ip, Number(payload.port), 5000, 5000, 65472);
       await device.createSocket();
       await device.setUser(Number(payload.uid), String(payload.uid), String(payload.name), "", 0, "");
@@ -149,7 +173,7 @@ async function processEnrollmentCommands() {
       if (!completeResponse.ok) throw new Error(`Command completion failed with status ${completeResponse.status}`);
       writeLog("INFO", `Enrollment completed; commandId=${command.id}; uid=${payload.uid}; name=${payload.name}`);
     } catch (error) {
-      writeLog("ERROR", `Enrollment failed; commandId=${command.id}; error=${errorDetails(error)}`);
+      writeLog("ERROR", `Enrollment failed; commandId=${command.id}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`);
       await fetch(`${connectorCommandsUrl}/${command.id}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-connector-token": connectorToken },

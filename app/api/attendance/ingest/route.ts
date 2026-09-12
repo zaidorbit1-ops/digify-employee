@@ -38,6 +38,31 @@ function isIncomingRecord(value: unknown): value is IncomingRecord {
   );
 }
 
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+      cause:
+        error instanceof Error && "cause" in error && error.cause !== undefined
+          ? serializeError(error.cause)
+          : undefined,
+    };
+  }
+
+  if (typeof error === "string") return { message: error };
+  if (error && typeof error === "object") {
+    try {
+      return JSON.parse(JSON.stringify(error));
+    } catch {
+      return { message: String(error) };
+    }
+  }
+
+  return { message: String(error) };
+}
+
 export async function POST(request: Request) {
   if (!hasValidToken(request)) {
     return NextResponse.json(
@@ -46,8 +71,10 @@ export async function POST(request: Request) {
     );
   }
 
+  let body: any = null;
+
   try {
-    const body = await request.json();
+    body = await request.json();
     const deviceIp =
       typeof body?.device_ip === "string" ? body.device_ip.trim() : "";
     const port = Number(body?.port);
@@ -165,10 +192,13 @@ export async function POST(request: Request) {
       synced: synced.length,
     });
   } catch (error) {
-    console.error(
-      "[ATTENDANCE INGEST] failed",
-      error instanceof Error ? error.message : "Unknown ingest error",
-    );
+    console.error("[ATTENDANCE INGEST] failed", {
+      details: serializeError(error),
+      deviceIp: body?.device_ip,
+      port: body?.port,
+      recordCount: Array.isArray(body?.records) ? body.records.length : 0,
+    });
+
     return NextResponse.json(
       { ok: false, error: "Attendance ingest failed." },
       { status: 500 },
