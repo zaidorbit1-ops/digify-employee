@@ -118,8 +118,14 @@ async function sync() {
       result = { raw: responseText };
     }
     if (!response.ok) {
-      const detail = result?.details ? ` | ${JSON.stringify(result.details)}` : responseText ? ` | ${responseText}` : "";
-      throw new Error(`Ingest API ${response.status}: ${result.error || "request failed"}${detail}`);
+      const detail = result?.details
+        ? ` | ${JSON.stringify(result.details)}`
+        : responseText
+          ? ` | ${responseText.slice(0, 4000)}`
+          : "";
+      const ingestError = new Error(`Ingest API ${response.status}: ${result.error || "request failed"}${detail}`);
+      ingestError.name = "IngestApiError";
+      throw ingestError;
     }
 
     const currentPunches = new Set(records.map(punchKey));
@@ -133,9 +139,12 @@ async function sync() {
     previousPunches = currentPunches;
     lastSyncError = "";
   } catch (error) {
-    if (deviceWasConnected) writeLog("WARN", `K60 connection lost at ${deviceIp}:${devicePort}`);
-    deviceWasConnected = false;
-    writeLog("ERROR", `TCP/device sync failure; device=${deviceIp}:${devicePort}; connected=${connected}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`);
+    const ingestFailure = error?.name === "IngestApiError" || String(errorDetails(error)).includes("Ingest API");
+    if (!ingestFailure) {
+      if (deviceWasConnected) writeLog("WARN", `K60 connection lost at ${deviceIp}:${devicePort}`);
+      deviceWasConnected = false;
+    }
+    writeLog("ERROR", `${ingestFailure ? "Ingest API" : "TCP/device"} sync failure; device=${deviceIp}:${devicePort}; connected=${connected}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`);
     writeErrorOnce("sync", error);
   } finally {
     if (device && connected) await device.disconnect().catch((error) => writeLog("WARN", `K60 disconnect failed; device=${deviceIp}:${devicePort}; error=${errorDetails(error)}; context=${JSON.stringify(errorContext(error))}`));

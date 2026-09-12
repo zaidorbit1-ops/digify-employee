@@ -60,7 +60,7 @@ export type AttendanceUpsertRow = {
   worked_minutes?: number | null;
   session_start?: string | null;
   session_end?: string | null;
-  device_log_id: number;
+  device_log_id?: number;
 };
 
 export type EnrollmentCommand = {
@@ -335,14 +335,24 @@ export async function getHolidaysForRange(startDate: string, endDate: string) {
   return data ?? [];
 }
 
-export async function getAttendanceByZkUserIds(zkUserIds: number[]) {
+function throwSupabaseError(action: string, error: { message?: string; code?: string; details?: string; hint?: string }) {
+  throw new Error(
+    `${action}: ${error.message || "request failed"}${error.code ? ` (code=${error.code})` : ""}${error.details ? ` details=${error.details}` : ""}${error.hint ? ` hint=${error.hint}` : ""}`,
+  );
+}
+
+export async function getAttendanceByZkUserIds(
+  zkUserIds: number[],
+  startIso?: string,
+  endIso?: string,
+) {
   const client = requireSupabase();
   if (!zkUserIds.length) return [];
-  const { data, error } = await client
-    .from("attendance")
-    .select("*")
-    .in("zk_user_id", zkUserIds);
-  if (error) throw error;
+  let query = client.from("attendance").select("*").in("zk_user_id", zkUserIds);
+  if (startIso) query = query.gte("check_in", startIso);
+  if (endIso) query = query.lt("check_in", endIso);
+  const { data, error } = await query;
+  if (error) throwSupabaseError("Could not load attendance for device users", error);
   return data ?? [];
 }
 
@@ -379,11 +389,23 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
       return [
         `${row.zk_user_id}:${checkIn}`,
         {
-          ...row,
-          check_in: checkIn,
           employee_id: row.employee_id ?? null,
           device_id: row.device_id ?? null,
+          zk_user_id: row.zk_user_id,
+          check_in: checkIn,
           status: row.status ?? "present",
+          arrival_status: row.arrival_status ?? null,
+          day_status: row.day_status ?? null,
+          hours_worked:
+            row.hours_worked == null
+              ? null
+              : Number(Math.min(9999.99, Math.max(0, Number(row.hours_worked))).toFixed(2)),
+          worked_minutes:
+            row.worked_minutes == null
+              ? null
+              : Math.min(599999, Math.max(0, Math.round(Number(row.worked_minutes)))),
+          session_start: row.session_start ?? null,
+          session_end: row.session_end ?? null,
         },
       ];
     }),
@@ -395,7 +417,7 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
       .upsert(normalizedRows, { onConflict: "zk_user_id,check_in" })
       .select();
 
-    if (error) throw error;
+    if (error) throwSupabaseError("Attendance upsert failed", error);
     return data ?? [];
   } catch (error) {
     const { data: existing, error: listError } = await client
@@ -406,7 +428,7 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
         [...new Set(normalizedRows.map((row) => row.zk_user_id))],
       );
 
-    if (listError) throw listError;
+    if (listError) throwSupabaseError("Attendance lookup after upsert failed", listError);
 
     const existingKeys = new Set(
       (existing ?? []).map(
@@ -424,7 +446,9 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
     const insertedResult = insertRows.length
       ? await client.from("attendance").insert(insertRows).select()
       : { data: [] as any[], error: null };
-    if (insertedResult.error) throw insertedResult.error;
+    if (insertedResult.error) {
+      throwSupabaseError("Attendance insert failed", insertedResult.error);
+    }
 
     const updatedRows: any[] = [];
     for (const row of updateRows) {
@@ -440,13 +464,12 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
           worked_minutes: row.worked_minutes,
           session_start: row.session_start,
           session_end: row.session_end,
-          device_log_id: row.device_log_id,
         })
         .eq("zk_user_id", row.zk_user_id)
         .eq("check_in", row.check_in)
         .select();
 
-      if (updateError) throw updateError;
+      if (updateError) throwSupabaseError("Attendance update failed", updateError);
       updatedRows.push(...(data ?? []));
     }
 

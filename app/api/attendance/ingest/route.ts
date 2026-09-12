@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { calculatePunchFields, sessionDateKey } from "@/lib/attendance";
 import { normalizeAttendanceRecord } from "@/lib/zkteco";
 import {
-  getAttendance,
+  getAttendanceByZkUserIds,
   getDevices,
   getEmployees,
   getShiftTimings,
@@ -106,11 +106,27 @@ export async function POST(request: Request) {
       );
     }
 
+    const zkUserIds = [
+      ...new Set(
+        records
+          .map((record) => Number(record.user_id))
+          .filter((userId) => Number.isInteger(userId) && userId > 0),
+      ),
+    ];
+    const recordTimes = records
+      .map((record) => new Date(String(record.record_time)).getTime())
+      .filter((time) => Number.isFinite(time));
+    const rangeStart = recordTimes.length
+      ? new Date(Math.min(...recordTimes) - 36 * 60 * 60 * 1000).toISOString()
+      : undefined;
+    const rangeEnd = recordTimes.length
+      ? new Date(Math.max(...recordTimes) + 36 * 60 * 60 * 1000).toISOString()
+      : undefined;
     const [devices, employees, shifts, existingAttendance] = await Promise.all([
       getDevices(),
       getEmployees(),
       getShiftTimings(),
-      getAttendance(),
+      getAttendanceByZkUserIds(zkUserIds, rangeStart, rangeEnd),
     ]);
     const device = devices.find(
       (item) => item.device_ip === deviceIp && Number(item.port) === port,
