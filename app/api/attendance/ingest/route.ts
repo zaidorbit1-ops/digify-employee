@@ -164,7 +164,9 @@ export async function POST(request: Request) {
       const shift = employee.shift_id
         ? shiftById.get(employee.shift_id)
         : undefined;
-      const key = `${employee.id}:${sessionDateKey(record.check_in, shift)}`;
+      const sessionDate = sessionDateKey(record.check_in, shift);
+      if (!sessionDate) return;
+      const key = `${employee.id}:${sessionDate}`;
       grouped.set(key, [
         ...(grouped.get(key) ?? []),
         record as (typeof validRecords)[number],
@@ -177,7 +179,9 @@ export async function POST(request: Request) {
       const shift = employee.shift_id
         ? shiftById.get(employee.shift_id)
         : undefined;
-      const key = `${employee.id}:${sessionDateKey(record.check_in, shift)}`;
+      const sessionDate = sessionDateKey(record.check_in, shift);
+      if (!sessionDate) return;
+      const key = `${employee.id}:${sessionDate}`;
       grouped.set(key, [...(grouped.get(key) ?? []), record]);
     });
 

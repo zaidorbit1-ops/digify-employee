@@ -32,6 +32,8 @@ const officeOffsetMinutes = Number(
   process.env.ATTENDANCE_TIMEZONE_OFFSET_MINUTES ?? 300,
 );
 const duplicatePunchWindowMs = 60_000;
+const SESSION_LEAD_MINUTES = 4 * 60;
+const SESSION_TAIL_MINUTES = 4 * 60;
 
 function timeToMinutes(value: string) {
   const [hours, minutes] = value.slice(0, 5).split(":").map(Number);
@@ -46,15 +48,10 @@ function officeDateTimeToUtc(date: string, minutes: number) {
   ).toISOString();
 }
 
-function isOvernightShift(shift?: Shift) {
-  if (!shift) return false;
-  return timeToMinutes(shift.end_time) <= timeToMinutes(shift.start_time);
-}
-
-function overnightMidpoint(shift: Shift) {
-  return Math.floor(
-    (timeToMinutes(shift.end_time) + timeToMinutes(shift.start_time)) / 2,
-  );
+function shiftEndMinutesFromStartDate(shift: Shift) {
+  const start = timeToMinutes(shift.start_time);
+  const end = timeToMinutes(shift.end_time);
+  return end <= start ? end + 24 * 60 : end;
 }
 
 export function addDays(date: string, days: number) {
@@ -71,28 +68,35 @@ export function dateKey(value: string | Date) {
   return shifted.toISOString().slice(0, 10);
 }
 
-export function sessionDateKey(value: string | Date, shift?: Shift) {
-  const calendar = dateKey(value);
-  if (!isOvernightShift(shift) || !shift) return calendar;
-  const office = new Date(
-    new Date(value).getTime() + officeOffsetMinutes * 60000,
-  );
-  const minutes = office.getUTCHours() * 60 + office.getUTCMinutes();
-  return minutes < overnightMidpoint(shift) ? addDays(calendar, -1) : calendar;
-}
-
 export function sessionWindow(date: string, shift?: Shift) {
-  if (isOvernightShift(shift) && shift) {
-    const midpoint = overnightMidpoint(shift);
+  if (!shift) {
     return {
-      start: officeDateTimeToUtc(date, midpoint),
-      end: officeDateTimeToUtc(addDays(date, 1), midpoint),
+      start: officeDateTimeToUtc(date, 0),
+      end: officeDateTimeToUtc(addDays(date, 1), 0),
     };
   }
+  const startMinutes = timeToMinutes(shift.start_time);
+  const endMinutes = shiftEndMinutesFromStartDate(shift);
   return {
-    start: officeDateTimeToUtc(date, 0),
-    end: officeDateTimeToUtc(addDays(date, 1), 0),
+    start: officeDateTimeToUtc(date, startMinutes - SESSION_LEAD_MINUTES),
+    end: officeDateTimeToUtc(date, endMinutes + SESSION_TAIL_MINUTES),
   };
+}
+
+export function sessionDateKey(value: string | Date, shift?: Shift) {
+  const calendar = dateKey(value);
+  if (!calendar) return "";
+  if (!shift) return calendar;
+  const punch = new Date(value).getTime();
+  if (!Number.isFinite(punch)) return "";
+  for (const delta of [-1, 0, 1]) {
+    const date = addDays(calendar, delta);
+    const window = sessionWindow(date, shift);
+    const start = new Date(window.start).getTime();
+    const end = new Date(window.end).getTime();
+    if (punch >= start && punch < end) return date;
+  }
+  return "";
 }
 
 export function sessionPunches<T extends { check_in: string }>(punches: T[]) {
@@ -114,36 +118,38 @@ export function sessionPunches<T extends { check_in: string }>(punches: T[]) {
   return unique;
 }
 
-function officeArrivalMinutes(checkIn: string, shift?: Shift) {
-  const officePunchTime = new Date(
-    new Date(checkIn).getTime() + officeOffsetMinutes * 60000,
-  );
-  let minutes =
-    officePunchTime.getUTCHours() * 60 + officePunchTime.getUTCMinutes();
-  const start = shift ? timeToMinutes(shift.start_time) : null;
-  if (shift && start !== null && isOvernightShift(shift) && minutes < start)
-    minutes += 24 * 60;
-  return minutes;
-}
-
 export function calculatePunchFields(punches: Punch[], shift?: Shift) {
   const unique = sessionPunches(punches);
   const first = unique[0];
-  const second = unique[1];
   if (!first) return null;
 
-  const start = shift ? timeToMinutes(shift.start_time) : null;
-  const arrivalMinutes = officeArrivalMinutes(first.check_in, shift);
-  const arrivalStatus =
-    start === null || arrivalMinutes <= start + (shift?.grace_minutes ?? 15)
-      ? "on_time"
-      : "late";
-  const workedMinutes = second
+  const sessionDate = sessionDateKey(first.check_in, shift);
+  const window = sessionDate ? sessionWindow(sessionDate, shift) : null;
+  const windowEnd = window ? new Date(window.end).getTime() : Number.POSITIVE_INFINITY;
+  const inWindow = unique.filter(
+    (punch) => new Date(punch.check_in).getTime() < windowEnd,
+  );
+  const checkIn = inWindow[0];
+  const checkOut = inWindow[1];
+  if (!checkIn) return null;
+
+  let arrivalStatus = "on_time";
+  if (shift && sessionDate) {
+    const shiftStart = new Date(
+      officeDateTimeToUtc(sessionDate, timeToMinutes(shift.start_time)),
+    ).getTime();
+    const graceMs = (shift.grace_minutes ?? 15) * 60_000;
+    if (new Date(checkIn.check_in).getTime() > shiftStart + graceMs) {
+      arrivalStatus = "late";
+    }
+  }
+
+  const workedMinutes = checkOut
     ? Math.max(
         0,
         Math.round(
-          (new Date(second.check_in).getTime() -
-            new Date(first.check_in).getTime()) /
+          (new Date(checkOut.check_in).getTime() -
+            new Date(checkIn.check_in).getTime()) /
             60000,
         ),
       )
@@ -157,8 +163,8 @@ export function calculatePunchFields(punches: Punch[], shift?: Shift) {
     day_status: dayStatus,
     hours_worked: hoursWorked === null ? null : Number(hoursWorked.toFixed(2)),
     worked_minutes: workedMinutes,
-    session_start: first.check_in,
-    session_end: second?.check_in ?? null,
+    session_start: checkIn.check_in,
+    session_end: checkOut?.check_in ?? null,
   };
 }
 
@@ -219,7 +225,9 @@ export function buildAttendanceDays({
     const shift = employee.shift_id
       ? shiftById.get(employee.shift_id)
       : undefined;
-    const key = `${employee.id}:${sessionDateKey(punch.check_in, shift)}`;
+    const sessionDate = sessionDateKey(punch.check_in, shift);
+    if (!sessionDate) return;
+    const key = `${employee.id}:${sessionDate}`;
     grouped.set(key, [
       ...(grouped.get(key) ?? []),
       { ...punch, employee_id: employee.id },

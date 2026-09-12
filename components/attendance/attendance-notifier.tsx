@@ -49,6 +49,7 @@ export function AttendanceNotifier() {
           ? await client.from("shift_timings").select("start_time, end_time, grace_minutes").eq("id", employee.shift_id).maybeSingle() as { data: Shift | null }
           : { data: null };
         const sessionDate = sessionDateKey(checkIn, shift ?? undefined);
+        if (!sessionDate) return;
         const attendanceWindow = sessionWindow(sessionDate, shift ?? undefined);
         const { data: sessionPunches } = employeeId
           ? await client.from("attendance").select("check_in").eq("employee_id", employeeId).gte("check_in", attendanceWindow.start).lt("check_in", attendanceWindow.end).order("check_in", { ascending: true })
