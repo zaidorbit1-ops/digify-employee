@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import fontkit from "@pdf-lib/fontkit";
-import { PDFDocument, rgb } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
 type ReceiptData = {
   employee: {
@@ -48,33 +48,56 @@ function dateLabel(date: string) {
     : parsed.toLocaleDateString("en-US");
 }
 
+async function embedPreferredFont(
+  document: PDFDocument,
+  regularPath: string,
+  fallback: keyof typeof StandardFonts,
+) {
+  const candidates = [
+    regularPath,
+    regularPath.replace(/\.woff$/, ".woff2"),
+    regularPath.replace(/-400-normal\.(woff|woff2)$/i, "-400-normal.woff"),
+    regularPath.replace(/-600-normal\.(woff|woff2)$/i, "-600-normal.woff"),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      return await document.embedFont(await readFile(candidate));
+    } catch {
+      // Try the next candidate or fallback built-in font.
+    }
+  }
+
+  return await document.embedFont(StandardFonts[fallback]);
+}
+
 export async function generateSalaryReceiptPdf(data: ReceiptData) {
   const document = await PDFDocument.create();
   document.registerFontkit(fontkit);
   const page = document.addPage([595, 720]);
-  const regular = await document.embedFont(
-    await readFile(
-      path.join(
-        process.cwd(),
-        "node_modules",
-        "@fontsource",
-        "poppins",
-        "files",
-        "poppins-latin-400-normal.woff",
-      ),
+  const regular = await embedPreferredFont(
+    document,
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "@fontsource",
+      "poppins",
+      "files",
+      "poppins-latin-400-normal.woff",
     ),
+    "Helvetica",
   );
-  const bold = await document.embedFont(
-    await readFile(
-      path.join(
-        process.cwd(),
-        "node_modules",
-        "@fontsource",
-        "poppins",
-        "files",
-        "poppins-latin-600-normal.woff",
-      ),
+  const bold = await embedPreferredFont(
+    document,
+    path.join(
+      process.cwd(),
+      "node_modules",
+      "@fontsource",
+      "poppins",
+      "files",
+      "poppins-latin-600-normal.woff",
     ),
+    "HelveticaBold",
   );
   const { width, height } = page.getSize();
   const logoPath = path.join(process.cwd(), "public", "logo.png");
