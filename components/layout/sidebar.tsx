@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   IconAttendance,
   IconClose,
@@ -48,6 +48,32 @@ export function Sidebar({
   const pathname = usePathname();
   const { profile, user, signOut } = useAuth();
   const [grantedModules, setGrantedModules] = useState<string[]>([]);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleWindowWheel = (event: WheelEvent) => {
+      const sidebar = sidebarRef.current;
+      const el = sidebarScrollRef.current;
+      if (!sidebar || !el) return;
+
+      const target = event.target;
+      if (!(target instanceof Node) || !sidebar.contains(target)) return;
+
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      if (maxScroll <= 0) return;
+
+      const atTop = el.scrollTop <= 0 && event.deltaY < 0;
+      const atBottom = el.scrollTop >= maxScroll - 1 && event.deltaY > 0;
+      if (atTop || atBottom) return;
+
+      event.preventDefault();
+      el.scrollTop = Math.min(Math.max(el.scrollTop + event.deltaY, 0), maxScroll);
+    };
+
+    window.addEventListener("wheel", handleWindowWheel, { passive: false });
+    return () => window.removeEventListener("wheel", handleWindowWheel);
+  }, []);
 
   useEffect(() => {
     if (profile?.role !== "employee") return;
@@ -118,8 +144,9 @@ export function Sidebar({
       />
 
       <aside
+        ref={sidebarRef}
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[272px] flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex h-screen w-[272px] flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -149,7 +176,10 @@ export function Sidebar({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-5">
+        <div
+          ref={sidebarScrollRef}
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-5"
+        >
           <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">
             {profile?.role === "employee"
               ? "Employee workspace"

@@ -30,13 +30,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-screen overflow-hidden bg-background text-foreground">
       <GlobalLoader />
       <AttendanceNotifier />
-      <div className="flex min-h-screen">
+      <div className="flex h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-white/90 px-4 py-3 backdrop-blur-md lg:hidden">
             <button
               type="button"
@@ -56,7 +56,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="ml-auto text-sm font-semibold">{title}</span>
           </header>
 
-          <main className="min-w-0 flex-1">
+          <main className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
               {profileError ? <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{profileError} Ask your administrator to link your account in the profiles table.</div> : null}
               {children}
