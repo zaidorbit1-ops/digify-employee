@@ -25,6 +25,11 @@ export function GlobalLoader() {
       const target =
         event.target instanceof Element ? event.target.closest("a") : null;
       if (!target || target.target === "_blank") return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest("button, input, select, textarea, [role='button']")
+      )
+        return;
       const href = target.getAttribute("href");
       if (
         !href ||

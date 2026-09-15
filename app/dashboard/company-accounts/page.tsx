@@ -18,6 +18,26 @@ type CompanyForm = { name: string; logo_url: string; notes: string };
 
 const emptyCompany: CompanyForm = { name: "", logo_url: "", notes: "" };
 
+function CompanyLogo({ company }: { company: Company }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const showImage = Boolean(company.logo_url) && !imageFailed;
+
+  return (
+    <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border border-border bg-primary-soft text-2xl font-bold text-primary">
+      {showImage ? (
+        <img
+          src={company.logo_url ?? ""}
+          alt={`${company.name} logo`}
+          className="h-full w-full object-cover"
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        company.name.slice(0, 1).toUpperCase()
+      )}
+    </div>
+  );
+}
+
 export default function CompanyAccountsPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [accountCounts, setAccountCounts] = useState<Record<number, number>>({});
@@ -109,9 +129,7 @@ export default function CompanyAccountsPage() {
                 <div className="h-1.5 bg-primary" />
                 <div className="flex min-h-[250px] flex-col p-5 sm:p-6">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border border-border bg-primary-soft text-2xl font-bold text-primary">
-                      {company.logo_url ? <img src={company.logo_url} alt={`${company.name} logo`} className="h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : company.name.slice(0, 1).toUpperCase()}
-                    </div>
+                    <CompanyLogo company={company} />
                     <Badge tone="neutral">{accountCounts[company.id] ?? 0} accounts</Badge>
                   </div>
                   <div className="mt-6 flex-1"><h2 className="text-xl font-bold tracking-tight group-hover:text-primary">{company.name}</h2><p className="mt-2 line-clamp-3 text-sm leading-6 text-muted">{company.notes || "Manage this company's social media, tools, and digital accounts."}</p></div>
