@@ -85,6 +85,20 @@ export function IconAttendance({ className }: IconProps) {
   );
 }
 
+export function IconBell({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M6.5 10.5a5.5 5.5 0 0 1 11 0c0 6 2.5 6.5 2.5 6.5h-16s2.5-.5 2.5-6.5ZM10 20h4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function IconFingerprint({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>

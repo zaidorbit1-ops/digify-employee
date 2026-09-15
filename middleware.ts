@@ -103,9 +103,11 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith("/dashboard/my-attendance") ||
         request.nextUrl.pathname.startsWith("/dashboard/my-salary") ||
         request.nextUrl.pathname.startsWith("/dashboard/apply-leave") ||
+        request.nextUrl.pathname.startsWith("/dashboard/notes") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee/holidays") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee") ||
-        request.nextUrl.pathname.startsWith("/api/me");
+        request.nextUrl.pathname.startsWith("/api/me") ||
+        request.nextUrl.pathname.startsWith("/api/notes");
       const module = permissionModule(request.nextUrl.pathname);
       const permission =
         module && profile.employee_id

@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   IconAttendance,
+  IconBell,
   IconClose,
   IconDevices,
   IconEmployees,
@@ -25,6 +26,7 @@ const navItems = [
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
+  { label: "Notes & Reminders", href: "/dashboard/notes", icon: IconBell },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
   { label: "Holidays", href: "/dashboard/holidays", icon: IconCalendar },
   { label: "Salary", href: "/dashboard/salary", icon: IconSalary },
@@ -48,6 +50,7 @@ export function Sidebar({
   const pathname = usePathname();
   const { profile, user, signOut } = useAuth();
   const [grantedModules, setGrantedModules] = useState<string[]>([]);
+  const [pendingNotes, setPendingNotes] = useState(0);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
 
@@ -89,6 +92,27 @@ export function Sidebar({
       .catch(() => setGrantedModules([]));
   }, [profile?.role]);
 
+  useEffect(() => {
+    if (!user) return;
+    let mounted = true;
+    async function loadPendingNotes() {
+      try {
+        const response = await fetch("/api/notes", { cache: "no-store" });
+        if (!response.ok) return;
+        const result = await response.json();
+        if (mounted) setPendingNotes((result.notes ?? []).filter((note: { completed_at?: string | null }) => !note.completed_at).length);
+      } catch {
+        if (mounted) setPendingNotes(0);
+      }
+    }
+    loadPendingNotes();
+    const timer = window.setInterval(loadPendingNotes, 30000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [user, pathname]);
+
   const moduleForHref: Record<string, string> = {
     "/dashboard/devices": "devices",
     "/dashboard/employees": "employees",
@@ -105,6 +129,11 @@ export function Sidebar({
       label: "My attendance",
       href: "/dashboard/employee/attendance",
       icon: IconAttendance,
+    },
+    {
+      label: "Notes & Reminders",
+      href: "/dashboard/notes",
+      icon: IconBell,
     },
     {
       label: "My salary history",
@@ -215,7 +244,14 @@ export function Sidebar({
                   >
                     <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
                   </span>
-                  {item.label}
+                  <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                    <span className="truncate">{item.label}</span>
+                    {item.href === "/dashboard/notes" && pendingNotes > 0 ? (
+                      <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                        {pendingNotes > 99 ? "99+" : pendingNotes}
+                      </span>
+                    ) : null}
+                  </span>
                 </Link>
               );
             })}

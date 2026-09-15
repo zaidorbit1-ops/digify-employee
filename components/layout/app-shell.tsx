@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { IconMenu } from "@/components/icons";
 import { AttendanceNotifier } from "@/components/attendance/attendance-notifier";
+import { NotesNotifier } from "@/components/notes/notes-notifier";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 import { GlobalLoader } from "@/components/ui/global-loader";
@@ -33,6 +34,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="h-screen overflow-hidden bg-background text-foreground">
       <GlobalLoader />
       <AttendanceNotifier />
+      <NotesNotifier />
       <div className="flex h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />
 
