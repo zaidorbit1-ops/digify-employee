@@ -4,8 +4,7 @@ const SHELL_ASSETS = [
   "/login",
   "/manifest.webmanifest",
   "/logo.png",
-  "/icon-192.png",
-  "/icon-512.png",
+  "/icon-512.svg",
 ];
 
 self.addEventListener("install", (event) => {
@@ -51,7 +50,7 @@ self.addEventListener("fetch", (event) => {
         if (
           response.ok &&
           (url.pathname.startsWith("/_next/static/") ||
-            url.pathname === "/logo.png")
+            (url.pathname === "/logo.png" || url.pathname === "/icon-512.svg"))
         ) {
           const copy = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
