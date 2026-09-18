@@ -29,6 +29,16 @@ type Data = {
     worked_minutes?: number | null;
     arrival_status?: string | null;
   }[];
+  todayAttendance?: {
+    check_in: string;
+    session_end?: string | null;
+    worked_minutes?: number | null;
+    arrival_status?: string | null;
+  } | null;
+  missingCheckoutWarnings: {
+    date: string;
+    check_in: string;
+  }[];
   salaries: { id?: number; month: string; net_pay: number; status: string }[];
   leaves: {
     id?: number;
@@ -56,6 +66,22 @@ const shortDate = (value?: string | null) =>
 
 function formatDuration(minutes: number) {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function formatWarningDate(value: string) {
+  return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatWarningTime(value: string) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export function EmployeeHome() {
@@ -107,13 +133,17 @@ export function EmployeeHome() {
   const completedSessions = data.attendance.filter(
     (record) => record.session_end,
   ).length;
-  const openSession = data.attendance.find((record) => !record.session_end);
+  const openSession =
+    data.todayAttendance && !data.todayAttendance.session_end
+      ? data.todayAttendance
+      : null;
   const elapsedMinutes = openSession
     ? Math.max(
         0,
         Math.floor((now - new Date(openSession.check_in).getTime()) / 60000),
       )
     : 0;
+  const missingCheckoutWarnings = data.missingCheckoutWarnings ?? [];
 
   return (
     <div className="employee-dashboard space-y-5">
@@ -193,6 +223,35 @@ export function EmployeeHome() {
           </div>
         </div>
       </section>
+
+      {missingCheckoutWarnings.length ? (
+        <section className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-rose-900 shadow-sm sm:px-6">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-rose-600 text-sm font-bold text-white">
+              !
+            </span>
+            <div className="min-w-0">
+              <h2 className="font-bold text-rose-800">Checkout missing</h2>
+              <p className="mt-1 text-sm leading-5 text-rose-700">
+                Your checkout is missing for the attendance day(s) below. Please contact your administrator to add the checkout time.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {missingCheckoutWarnings.map((warning) => (
+                  <div key={`${warning.date}-${warning.check_in}`} className="rounded-xl border border-rose-200 bg-white/70 px-3 py-2 text-sm">
+                    <span className="font-semibold">{formatWarningDate(warning.date)}</span>
+                    <span className="ml-2 text-rose-700">
+                      Check-in {formatWarningTime(warning.check_in)} · Checkout missing
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <Link href="/dashboard/employee/attendance" className="mt-3 inline-block text-sm font-bold text-rose-800 underline decoration-rose-300 underline-offset-4 hover:text-rose-950">
+                View attendance details
+              </Link>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <DashboardStat

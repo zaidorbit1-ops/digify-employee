@@ -86,10 +86,9 @@ export function sessionWindow(date: string, shift?: Shift) {
 export function sessionDateKey(value: string | Date, shift?: Shift) {
   const calendar = dateKey(value);
   if (!calendar) return "";
-  if (!shift) return calendar;
   const punch = new Date(value).getTime();
   if (!Number.isFinite(punch)) return "";
-  for (const delta of [-1, 0, 1]) {
+  for (const delta of shift ? [-1, 0, 1] : [-1, 0]) {
     const date = addDays(calendar, delta);
     const window = sessionWindow(date, shift);
     const start = new Date(window.start).getTime();

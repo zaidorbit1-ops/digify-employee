@@ -301,8 +301,15 @@ function AttendanceRow({ record }: { record: AttendanceRecord }) {
       <Info
         label="Check-out"
         value={
-          isUpcoming || !record.session_end ? "-" : time(record.session_end)
+          isUpcoming
+            ? "-"
+            : record.session_end
+              ? time(record.session_end)
+              : record.check_in
+                ? "Checkout missing"
+                : "-"
         }
+        danger={!isUpcoming && Boolean(record.check_in) && !record.session_end}
       />
       <Info
         label="Worked"
@@ -321,13 +328,26 @@ function AttendanceRow({ record }: { record: AttendanceRecord }) {
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
+function Info({
+  label,
+  value,
+  danger = false,
+}: {
+  label: string;
+  value: string;
+  danger?: boolean;
+}) {
   return (
     <div>
       <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">
         {label}
       </p>
-      <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
+      <p
+        className={`mt-1 text-sm font-semibold ${danger ? "text-rose-600" : "text-foreground"}`}
+      >
+        {danger ? <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-rose-500 align-middle" /> : null}
+        {value}
+      </p>
     </div>
   );
 }
