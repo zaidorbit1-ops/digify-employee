@@ -155,7 +155,16 @@ export async function POST(request: Request) {
         .map((employee) => [Number(employee.zk_device_uid), employee]),
     );
     const shiftById = new Map(shifts.map((shift) => [shift.id, shift]));
-    const validRecords = rawRecords.filter((record) => record.zk_user_id > 0);
+    const overriddenDevicePunches = new Set(
+      existingAttendance
+        .filter((record) => record.manual_override && record.device_log_id != null)
+        .map((record) => String(record.device_log_id)),
+    );
+    const validRecords = rawRecords.filter(
+      (record) =>
+        record.zk_user_id > 0 &&
+        !overriddenDevicePunches.has(String(record.device_log_id)),
+    );
     const grouped = new Map<string, typeof validRecords>();
 
     existingAttendance.forEach((record) => {

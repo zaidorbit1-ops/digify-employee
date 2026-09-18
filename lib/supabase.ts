@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { sessionWindow } from "@/lib/attendance";
+import { punchLogId } from "@/lib/zkteco";
 
 const supabaseUrl =
   process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
@@ -61,6 +62,7 @@ export type AttendanceUpsertRow = {
   session_start?: string | null;
   session_end?: string | null;
   device_log_id?: number;
+  manual_override?: boolean;
 };
 
 export type EnrollmentCommand = {
@@ -236,9 +238,23 @@ export async function getAttendance(startDate?: string, endDate?: string) {
 
 export async function updateAttendanceRecord(id: number, checkIn: string) {
   const client = requireSupabase();
+  const { data: existing, error: lookupError } = await client
+    .from("attendance")
+    .select("id, zk_user_id, check_in, device_id, device_log_id")
+    .eq("id", id)
+    .single();
+  if (lookupError) throw lookupError;
+
+  const originalCheckIn = new Date(existing.check_in).toISOString();
   const { data, error } = await client
     .from("attendance")
-    .update({ check_in: checkIn })
+    .update({
+      check_in: checkIn,
+      manual_override: true,
+      ...(existing.device_id != null && existing.device_log_id == null
+        ? { device_log_id: punchLogId(Number(existing.zk_user_id), originalCheckIn) }
+        : {}),
+    })
     .eq("id", id)
     .select()
     .single();
@@ -268,6 +284,7 @@ export async function createManualAttendanceRecord(
       zk_user_id: employee.zk_device_uid,
       check_in: checkIn,
       status: "present",
+      manual_override: true,
     })
     .select()
     .single();
@@ -406,6 +423,7 @@ export async function upsertAttendanceRecords(rows: AttendanceUpsertRow[]) {
               : Math.min(599999, Math.max(0, Math.round(Number(row.worked_minutes)))),
           session_start: row.session_start ?? null,
           session_end: row.session_end ?? null,
+          device_log_id: row.device_log_id ?? null,
         },
       ];
     }),

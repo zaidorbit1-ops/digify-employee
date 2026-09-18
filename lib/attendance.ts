@@ -33,7 +33,7 @@ const officeOffsetMinutes = Number(
 );
 const duplicatePunchWindowMs = 60_000;
 const SESSION_LEAD_MINUTES = 4 * 60;
-const SESSION_TAIL_MINUTES = 4 * 60;
+const SESSION_TAIL_MINUTES = 12 * 60;
 
 function timeToMinutes(value: string) {
   const [hours, minutes] = value.slice(0, 5).split(":").map(Number);
@@ -72,7 +72,7 @@ export function sessionWindow(date: string, shift?: Shift) {
   if (!shift) {
     return {
       start: officeDateTimeToUtc(date, 0),
-      end: officeDateTimeToUtc(addDays(date, 1), 0),
+      end: officeDateTimeToUtc(addDays(date, 1), SESSION_TAIL_MINUTES),
     };
   }
   const startMinutes = timeToMinutes(shift.start_time);
