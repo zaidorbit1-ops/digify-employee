@@ -17,6 +17,8 @@ import {
   IconBriefcase,
   IconWallet,
   IconSettings,
+  IconFile,
+  IconRefresh,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -40,6 +42,20 @@ const navItems = [
   { label: "Lookup lists", href: "/dashboard/lookups", icon: IconLists },
 ];
 
+const crmNavItems = [
+  { label: "CRM Overview", href: "/dashboard/crm", icon: IconOverview },
+  { label: "Companies", href: "/dashboard/crm/companies", icon: IconBriefcase },
+  { label: "Leads", href: "/dashboard/crm/leads", icon: IconEmployees },
+  { label: "Contacts", href: "/dashboard/crm/contacts", icon: IconEmployees },
+  { label: "Segments", href: "/dashboard/crm/segments", icon: IconLists },
+  { label: "Webmail", href: "/dashboard/crm/webmail", icon: IconBell },
+  { label: "Email Templates", href: "/dashboard/crm/templates", icon: IconFile },
+  { label: "Campaigns", href: "/dashboard/crm/campaigns", icon: IconWallet },
+  { label: "Automations", href: "/dashboard/crm/automations", icon: IconRefresh },
+  { label: "Analytics", href: "/dashboard/crm/analytics", icon: IconOverview },
+  { label: "CRM Settings", href: "/dashboard/crm/settings", icon: IconSettings },
+];
+
 export function Sidebar({
   open,
   onClose,
@@ -51,8 +67,10 @@ export function Sidebar({
   const { profile, user, signOut } = useAuth();
   const [grantedModules, setGrantedModules] = useState<string[]>([]);
   const [pendingNotes, setPendingNotes] = useState(0);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const workspaceMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleWindowWheel = (event: WheelEvent) => {
@@ -113,6 +131,14 @@ export function Sidebar({
     };
   }, [user, pathname]);
 
+  useEffect(() => {
+    function closeWorkspaceMenu(event: MouseEvent) {
+      if (!workspaceMenuRef.current?.contains(event.target as Node)) setWorkspaceMenuOpen(false);
+    }
+    document.addEventListener("mousedown", closeWorkspaceMenu);
+    return () => document.removeEventListener("mousedown", closeWorkspaceMenu);
+  }, []);
+
   const moduleForHref: Record<string, string> = {
     "/dashboard/devices": "devices",
     "/dashboard/employees": "employees",
@@ -158,7 +184,9 @@ export function Sidebar({
       grantedModules.includes(moduleForHref[item.href]),
   );
   const visibleNavItems =
-    profile?.role === "employee"
+    profile?.role === "superadmin" && pathname.startsWith("/dashboard/crm")
+      ? crmNavItems
+      : profile?.role === "employee"
       ? [...employeeDefaultItems, ...employeeGrantedItems]
       : navItems;
 
@@ -210,10 +238,22 @@ export function Sidebar({
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-5"
         >
           <p className="mb-2 px-3 text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">
-            {profile?.role === "employee"
+            {pathname.startsWith("/dashboard/crm")
+              ? "Business CRM"
+              : profile?.role === "employee"
               ? "Employee workspace"
               : "Admin workspace"}
           </p>
+          {profile?.role === "superadmin" ? (
+            <div ref={workspaceMenuRef} className="relative mb-5">
+              <button type="button" onClick={() => setWorkspaceMenuOpen((open) => !open)} aria-expanded={workspaceMenuOpen} className="flex w-full items-center gap-3 rounded-2xl border border-border bg-white px-3 py-2.5 text-left shadow-[0_6px_20px_rgba(28,20,18,0.05)] transition hover:border-primary/30 hover:shadow-[0_8px_24px_rgba(28,20,18,0.09)]">
+                <span className="grid h-9 w-9 place-items-center rounded-xl bg-primary-soft text-primary"><IconBriefcase className="h-[18px] w-[18px]" /></span>
+                <span className="min-w-0 flex-1"><span className="block text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">Workspace</span><span className="mt-0.5 block truncate text-sm font-bold text-foreground">{pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Employee Management"}</span></span>
+                <span className={cn("text-xs text-stone-400 transition-transform", workspaceMenuOpen && "rotate-180")}>⌄</span>
+              </button>
+              {workspaceMenuOpen ? <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-border bg-white p-2 shadow-[0_18px_45px_rgba(28,20,18,0.14)]"><Link href={pathname.startsWith("/dashboard/crm") ? "/dashboard" : "/dashboard/crm"} onClick={() => { setWorkspaceMenuOpen(false); onClose(); }} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-foreground transition hover:bg-primary-soft hover:text-primary"><span className="grid h-8 w-8 place-items-center rounded-lg bg-stone-100 text-stone-500"><IconBriefcase className="h-4 w-4" /></span><span>{pathname.startsWith("/dashboard/crm") ? "Employee Management" : "Business CRM"}</span></Link></div> : null}
+            </div>
+          ) : null}
           <nav className="space-y-1">
             {visibleNavItems.map((item) => {
               const active =

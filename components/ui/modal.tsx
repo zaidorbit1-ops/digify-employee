@@ -7,19 +7,21 @@ export function Modal({
   description,
   children,
   onClose,
+  size = "default",
 }: {
   open: boolean;
   title: string;
   description?: string;
   children: ReactNode;
   onClose: () => void;
+  size?: "default" | "wide";
 }) {
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-stone-950/35 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <button type="button" className="absolute inset-0 cursor-default" aria-label="Close dialog" onClick={onClose} />
-      <div className="relative max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border bg-white shadow-[0_30px_90px_rgba(28,20,18,0.2)]">
+      <div className={`relative max-h-[94vh] w-full overflow-y-auto rounded-2xl border border-border bg-white shadow-[0_30px_90px_rgba(28,20,18,0.2)] ${size === "wide" ? "max-w-6xl" : "max-w-2xl"}`}>
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-border bg-white/95 px-5 py-4 backdrop-blur sm:px-6">
           <div>
             <h2 id="modal-title" className="text-lg font-bold tracking-tight">{title}</h2>

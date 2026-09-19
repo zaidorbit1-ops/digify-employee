@@ -18,12 +18,13 @@ const titles: Record<string, string> = {
   "/dashboard/lookups": "Lookup lists",
   "/dashboard/employee": "Employee portal",
   "/dashboard/settings": "Settings",
+  "/dashboard/crm": "Business CRM",
 };
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
-  const title = titles[pathname] ?? "Dashboard";
+  const title = titles[pathname] ?? (pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Dashboard");
   const { profile, user, loading, profileError, signOut } = useAuth();
 
   if (loading) {
