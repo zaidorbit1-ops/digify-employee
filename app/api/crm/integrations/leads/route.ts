@@ -22,12 +22,20 @@ function text(value: unknown, maxLength = 10000) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
 
+function withCorsHeaders(response: NextResponse) {
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-crm-integration-id, x-crm-integration-secret");
+  response.headers.set("Access-Control-Max-Age", "86400");
+  return response;
+}
+
 function errorResponse(error: unknown, fallback: string, status = 500) {
   const databaseError = error as { message?: string; details?: string; hint?: string };
-  return NextResponse.json(
+  return withCorsHeaders(NextResponse.json(
     { ok: false, error: error instanceof Error ? error.message : databaseError.message || fallback, details: databaseError.details, hint: databaseError.hint },
     { status },
-  );
+  ));
 }
 
 function validSecret(supplied: string, storedHash: string) {
@@ -84,6 +92,10 @@ function parsePayload(body: unknown) {
   };
 }
 
+export async function OPTIONS() {
+  return withCorsHeaders(new NextResponse(null, { status: 204 }));
+}
+
 export async function POST(request: Request) {
   const { identifier, secret } = getCredentials(request);
   if (!identifier || !secret) return errorResponse("Integration identifier and secret are required.", "Integration credentials are required.", 401);
@@ -123,7 +135,7 @@ export async function POST(request: Request) {
     const { data, error } = await client.from("crm_leads").insert({ company_id: integration.company_id, website_id: integration.website_id, integration_id: integration.id, ...lead }).select("id, company_id, website_id, name, email, status, created_at").single();
     if (error) throw error;
     await client.from("crm_website_integrations").update({ last_received_at: new Date().toISOString() }).eq("id", integration.id);
-    return NextResponse.json({ ok: true, lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 });
+    return withCorsHeaders(NextResponse.json({ ok: true, lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 }));
   } catch (error) {
     return errorResponse(error, "Could not create CRM lead.");
   }
