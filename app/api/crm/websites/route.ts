@@ -16,12 +16,51 @@ function errorResponse(error: unknown, fallback: string) {
   return NextResponse.json({ error: message, details: databaseError.details, hint: databaseError.hint }, { status });
 }
 
+function normalizeCustomFieldName(value: string) {
+  return value
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function parseCustomFields(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const validFields = value
+    .map((item) => {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
+      const name = text((item as Record<string, unknown>).name);
+      const label = text((item as Record<string, unknown>).label) || name;
+      if (!name) return null;
+      const normalized = normalizeCustomFieldName(name) || normalizeCustomFieldName(label);
+      if (!normalized) return null;
+      const aliasValues = Array.isArray((item as Record<string, unknown>).aliases)
+        ? ((item as Record<string, unknown>).aliases as unknown[])
+        : [];
+      const aliases = aliasValues
+        .filter((alias): alias is string => typeof alias === "string")
+        .map((alias: string) => alias.trim())
+        .filter(Boolean)
+        .map((alias: string) => normalizeCustomFieldName(alias))
+        .filter(Boolean);
+      return {
+        name: normalized,
+        label,
+        aliases: Array.from(new Set([normalized, ...aliases])),
+      };
+    })
+    .filter((field): field is { name: string; label: string; aliases: string[] } => Boolean(field));
+  return validFields.slice(0, 50);
+}
+
 function parseWebsite(body: Record<string, unknown>) {
   const name = text(body.name);
   const websiteUrl = text(body.website_url);
   const technology = text(body.technology) || "other";
   const hostingProvider = text(body.hosting_provider) || "other";
   const status = text(body.status) || "active";
+  const customFields = parseCustomFields(body.custom_fields);
   if (!name || !websiteUrl) throw new Error("Website name and URL are required.");
   try {
     const parsed = new URL(websiteUrl);
@@ -32,7 +71,7 @@ function parseWebsite(body: Record<string, unknown>) {
   if (!technologies.includes(technology)) throw new Error("Choose a valid website technology.");
   if (!hostingProviders.includes(hostingProvider)) throw new Error("Choose a valid hosting provider.");
   if (!statuses.includes(status)) throw new Error("Choose a valid website status.");
-  return { name, website_url: websiteUrl, technology, hosting_provider: hostingProvider, status };
+  return { name, website_url: websiteUrl, technology, hosting_provider: hostingProvider, status, custom_fields: customFields };
 }
 
 export async function GET(request: Request) {

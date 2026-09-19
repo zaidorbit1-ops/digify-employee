@@ -45,6 +45,7 @@ const navItems = [
 const crmNavItems = [
   { label: "CRM Overview", href: "/dashboard/crm", icon: IconOverview },
   { label: "Companies", href: "/dashboard/crm/companies", icon: IconBriefcase },
+  { label: "Custom fields", href: "/dashboard/crm/custom-fields", icon: IconLists },
   { label: "Leads", href: "/dashboard/crm/leads", icon: IconEmployees },
   { label: "Contacts", href: "/dashboard/crm/contacts", icon: IconEmployees },
   { label: "Segments", href: "/dashboard/crm/segments", icon: IconLists },
