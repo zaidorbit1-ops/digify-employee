@@ -40,13 +40,20 @@ export async function middleware(request: NextRequest) {
   const isConnectorCommand = request.nextUrl.pathname.startsWith(
     "/api/attendance/commands",
   );
+  const isCrmLeadIngest =
+    request.nextUrl.pathname === "/api/crm/integrations/leads";
+  const isCrmTracking = request.nextUrl.pathname.startsWith(
+    "/api/crm/tracking/",
+  );
 
   if (
     isApi &&
     !user &&
     !isWorkerSync &&
     !isConnectorIngest &&
-    !isConnectorCommand
+    !isConnectorCommand &&
+    !isCrmLeadIngest &&
+    !isCrmTracking
   ) {
     return NextResponse.json(
       { error: "Authentication required." },
