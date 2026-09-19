@@ -63,7 +63,11 @@ export default function CrmLeadsPage() {
   const [websiteColumnSelections, setWebsiteColumnSelections] = useState<Record<string, string[]>>({});
 
   const selectedCompany = companies.find((company) => String(company.id) === companyId);
-  const activeWebsite = (selectedCompany?.crm_websites ?? []).find((website) => String(website.id) === websiteId) ?? null;
+  const allWebsites = useMemo(() => companies.flatMap((company) => company.crm_websites ?? []), [companies]);
+  const activeWebsite = useMemo(() => {
+    const candidates = companyId ? (selectedCompany?.crm_websites ?? []) : allWebsites;
+    return candidates.find((website) => String(website.id) === websiteId) ?? null;
+  }, [allWebsites, companyId, selectedCompany, websiteId]);
   const customFieldColumns = useMemo(
     () => Array.isArray(activeWebsite?.custom_fields)
       ? activeWebsite.custom_fields
