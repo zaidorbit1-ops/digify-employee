@@ -1,25 +1,51 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { IconRefresh } from "@/components/icons";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import { Alert } from "@/components/ui/empty-state";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Field, TextInput } from "@/components/ui/field";
-import { Modal } from "@/components/ui/modal";
 import { useParams } from "next/navigation";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+
+/* ==========================================================================
+   Types
+   ========================================================================== */
+type EmailAttachment = {
+  id?: number;
+  file_name: string;
+  content_type?: string | null;
+  storage_path?: string | null;
+  file_size?: number | null;
+};
+
+type UploadingAttachment = {
+  name: string;
+  size: number;
+  type: string;
+  base64: string;
+};
 
 type Message = {
   id: number;
+  thread_id?: number;
   sender: string | null;
   recipients: string[];
+  cc?: string[];
   subject: string | null;
   text_body: string | null;
+  html_body?: string | null;
   is_read: boolean;
   received_at: string | null;
   sent_at: string | null;
+  crm_email_attachments?: EmailAttachment[];
 };
 
 type Thread = {
@@ -31,50 +57,1264 @@ type Thread = {
   crm_email_messages: Message[];
 };
 
-type Mailbox = { id: number; email_address: string; display_name: string; status: string };
-const folders = ["inbox", "sent", "drafts", "starred", "archive", "trash", "spam"];
-
-const folderLabels: Record<string, string> = {
-  inbox: "Inbox",
-  sent: "Sent",
-  drafts: "Drafts",
-  starred: "Starred",
-  archive: "Archive",
-  trash: "Trash",
-  spam: "Spam",
+type Mailbox = {
+  id: number;
+  company_id: number;
+  email_address: string;
+  display_name: string;
+  status: string;
+  provider?: string;
+  imap_host?: string;
+  smtp_host?: string;
 };
 
-const folderMarks: Record<string, string> = {
-  inbox: "IN",
-  sent: "SE",
-  drafts: "DR",
-  starred: "ST",
-  archive: "AR",
-  trash: "TR",
-  spam: "SP",
-};
+/* ==========================================================================
+   Constants & Data
+   ========================================================================== */
+const FOLDERS = [
+  { id: "inbox", label: "Inbox", icon: "📥", badgeTone: "bg-primary text-white" },
+  { id: "starred", label: "Starred", icon: "⭐", badgeTone: "bg-amber-400 text-amber-950" },
+  { id: "sent", label: "Sent", icon: "📤", badgeTone: "bg-emerald-500 text-white" },
+  { id: "drafts", label: "Drafts", icon: "📝", badgeTone: "bg-slate-500 text-white" },
+  { id: "archive", label: "Archive", icon: "🗄️", badgeTone: "bg-slate-400 text-white" },
+  { id: "spam", label: "Spam", icon: "⚠️", badgeTone: "bg-orange-500 text-white" },
+  { id: "trash", label: "Trash", icon: "🗑️", badgeTone: "bg-rose-500 text-white" },
+] as const;
 
-function formatDate(value: string | null | undefined) {
+const EMOJI_CATEGORIES = [
+  {
+    name: "Smiles & People",
+    icon: "😀",
+    emojis: [
+      "😀","😃","😄","😁","😆","😅","😂","🤣","🥲","🥹","😊","😇","🙂","🙃","😉","😌",
+      "😍","🥰","😘","😗","😙","😚","😋","😛","😝","😜","🤪","🤨","🧐","🤓","😎","🥸",
+      "🤩","🥳","😏","😒","😞","😔","😟","😕","🙁","😣","😖","😫","😩","🥺","😢","😭",
+      "😮‍💨","😤","😠","😡","🤬","🤯","😳","🥵","🥶","😱","😨","😰","😥","😓","🤗","🤔",
+      "🫣","🤭","🤫","🤥","😶","😐","😑","😬","🙄","😯","😦","😧","😮","😲","🥱","😴",
+    ],
+  },
+  {
+    name: "Gestures & Body",
+    icon: "👍",
+    emojis: [
+      "👍","👎","👊","✊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","👋","🤚","🖐️",
+      "✋","🖖","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","✌️","🤞","🫰","🤌","🤏",
+      "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❤️‍🔥","❤️‍🩹","❣️","💕","💞","💓",
+    ],
+  },
+  {
+    name: "Office & Work",
+    icon: "💼",
+    emojis: [
+      "💼","📁","📂","🗂️","📅","📆","📋","📊","📈","📉","📜","📑","📌","📍","📎","🖇️",
+      "📏","📐","✂️","🖊️","🖋️","✒️","📝","✏️","🔍","🔎","🔒","🔓","🔏","🔐","🔑","✉️",
+      "📧","📨","📩","📤","📥","📦","📫","📪","🚀","⚡","🔥","💡","⭐","🌟","✨","🎯",
+      "✅","❌","❓","❗","💯","🏆","🥇","🔔","🔕","⚙️","🛠️","💻","🖥️","📱","📞","☎️",
+    ],
+  },
+];
+
+const TEXT_COLORS = [
+  { name: "Black", color: "#111827" },
+  { name: "Slate", color: "#475569" },
+  { name: "Primary Red", color: "#e45a5a" },
+  { name: "Orange", color: "#ea580c" },
+  { name: "Amber", color: "#d97706" },
+  { name: "Emerald", color: "#059669" },
+  { name: "Blue", color: "#2563eb" },
+  { name: "Indigo", color: "#4f46e5" },
+  { name: "Purple", color: "#7c3aed" },
+  { name: "Pink", color: "#db2777" },
+];
+
+const HIGHLIGHT_COLORS = [
+  { name: "None", color: "transparent" },
+  { name: "Soft Red", color: "#fdecec" },
+  { name: "Yellow", color: "#fef08a" },
+  { name: "Green", color: "#bbf7d0" },
+  { name: "Blue", color: "#bfdbfe" },
+  { name: "Pink", color: "#fbcfe8" },
+  { name: "Purple", color: "#e9d5ff" },
+  { name: "Orange", color: "#fed7aa" },
+];
+
+/* ==========================================================================
+   Utilities
+   ========================================================================== */
+function formatSmartDate(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const isThisYear = date.getFullYear() === now.getFullYear();
+  if (isToday) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (isThisYear) return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "2-digit" });
 }
 
+function formatFullDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], {
+    weekday: "short",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatFileSize(bytes?: number | null): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileIcon(filename: string): string {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  if (["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext)) return "🖼️";
+  if (["pdf"].includes(ext)) return "📄";
+  if (["xls", "xlsx", "csv"].includes(ext)) return "📊";
+  if (["doc", "docx", "txt", "rtf"].includes(ext)) return "📝";
+  if (["zip", "rar", "7z", "tar", "gz"].includes(ext)) return "🗜️";
+  return "📎";
+}
+
+function getSenderName(sender: string | null): string {
+  if (!sender) return "Unknown sender";
+  const emailMatch = sender.match(/^(.*?)\s*<.*?>$/);
+  if (emailMatch && emailMatch[1].trim()) {
+    return emailMatch[1].replace(/["']/g, "").trim();
+  }
+  return sender.split("@")[0] || sender;
+}
+
+function getSenderEmail(sender: string | null): string {
+  if (!sender) return "";
+  const emailMatch = sender.match(/<(.*?)>/);
+  if (emailMatch) return emailMatch[1];
+  return sender;
+}
+
+function getInitials(nameOrEmail: string | null): string {
+  if (!nameOrEmail) return "?";
+  const cleaned = nameOrEmail.replace(/<.*?>/, "").trim();
+  const parts = cleaned.split(/[\s._-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return (cleaned[0] || "?").toUpperCase();
+}
+
+const AVATAR_PALETTE = [
+  { bg: "bg-primary", text: "text-white" },
+  { bg: "bg-slate-800", text: "text-white" },
+  { bg: "bg-indigo-600", text: "text-white" },
+  { bg: "bg-sky-600", text: "text-white" },
+  { bg: "bg-emerald-600", text: "text-white" },
+  { bg: "bg-amber-600", text: "text-white" },
+  { bg: "bg-rose-600", text: "text-white" },
+  { bg: "bg-violet-600", text: "text-white" },
+];
+
+function getAvatarStyle(str: string | null) {
+  if (!str) return AVATAR_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
+
+/* ==========================================================================
+   Rich Text Compose Toolbar
+   ========================================================================== */
+function RichTextToolbar({
+  onInsertEmoji,
+  editorRef,
+  onAttachClick,
+}: {
+  onInsertEmoji: (emoji: string) => void;
+  editorRef: React.RefObject<HTMLDivElement | null>;
+  onAttachClick: () => void;
+}) {
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [emojiTab, setEmojiTab] = useState(0);
+  const [colorMenuOpen, setColorMenuOpen] = useState(false);
+  const [highlightMenuOpen, setHighlightMenuOpen] = useState(false);
+  const [linkInputOpen, setLinkInputOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("https://");
+
+  const exec = (command: string, value: string | undefined = undefined) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+  };
+
+  const handleInsertLink = () => {
+    if (linkUrl && linkUrl !== "https://") {
+      exec("createLink", linkUrl);
+      setLinkUrl("https://");
+    }
+    setLinkInputOpen(false);
+  };
+
+  return (
+    <div className="relative flex flex-wrap items-center gap-1 border-b border-slate-200 bg-slate-50/90 px-3 py-1.5 backdrop-blur">
+      {/* Font Size */}
+      <select
+        onChange={(e) => exec("fontSize", e.target.value)}
+        defaultValue="3"
+        className="h-7 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 shadow-sm outline-none transition hover:border-slate-300 focus:border-primary"
+        title="Font Size"
+      >
+        <option value="1">Tiny</option>
+        <option value="2">Small</option>
+        <option value="3">Normal</option>
+        <option value="4">Large</option>
+        <option value="5">Huge</option>
+      </select>
+
+      <div className="mx-1 h-4 w-px bg-slate-200" />
+
+      {/* Basic Formatting */}
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("bold"); }}
+        title="Bold (Ctrl+B)"
+        className="flex h-7 w-7 items-center justify-center rounded-lg font-bold text-slate-700 transition hover:bg-slate-200"
+      >
+        B
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("italic"); }}
+        title="Italic (Ctrl+I)"
+        className="flex h-7 w-7 items-center justify-center rounded-lg font-serif italic text-slate-700 transition hover:bg-slate-200"
+      >
+        I
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("underline"); }}
+        title="Underline (Ctrl+U)"
+        className="flex h-7 w-7 items-center justify-center rounded-lg underline text-slate-700 transition hover:bg-slate-200"
+      >
+        U
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("strikeThrough"); }}
+        title="Strikethrough"
+        className="flex h-7 w-7 items-center justify-center rounded-lg line-through text-slate-700 transition hover:bg-slate-200 text-xs font-bold"
+      >
+        S
+      </button>
+
+      <div className="mx-1 h-4 w-px bg-slate-200" />
+
+      {/* Text Color Picker */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setColorMenuOpen(!colorMenuOpen);
+            setHighlightMenuOpen(false);
+            setEmojiOpen(false);
+          }}
+          title="Text Color"
+          className="flex h-7 items-center gap-1 rounded-lg px-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+        >
+          <span className="flex flex-col items-center">
+            <span>A</span>
+            <span className="h-0.5 w-3 rounded-full bg-primary" />
+          </span>
+          <span className="text-[9px] text-slate-400">▾</span>
+        </button>
+
+        {colorMenuOpen && (
+          <div className="absolute left-0 top-full z-50 mt-1 grid w-48 grid-cols-5 gap-1.5 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl">
+            {TEXT_COLORS.map((c) => (
+              <button
+                key={c.color}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  exec("foreColor", c.color);
+                  setColorMenuOpen(false);
+                }}
+                title={c.name}
+                className="h-6 w-6 rounded-full border border-slate-200 transition hover:scale-125 focus:ring-2 focus:ring-primary"
+                style={{ backgroundColor: c.color }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Highlight Color Picker */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setHighlightMenuOpen(!highlightMenuOpen);
+            setColorMenuOpen(false);
+            setEmojiOpen(false);
+          }}
+          title="Highlight Color"
+          className="flex h-7 items-center gap-1 rounded-lg px-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+        >
+          <span className="rounded bg-primary-soft text-primary px-1 py-0.5 text-[10px] font-bold">H</span>
+          <span className="text-[9px] text-slate-400">▾</span>
+        </button>
+
+        {highlightMenuOpen && (
+          <div className="absolute left-0 top-full z-50 mt-1 flex w-44 flex-wrap gap-1.5 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl">
+            {HIGHLIGHT_COLORS.map((c) => (
+              <button
+                key={c.name}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  exec("hiliteColor", c.color);
+                  setHighlightMenuOpen(false);
+                }}
+                title={c.name}
+                className="h-6 w-6 rounded-lg border border-slate-300 transition hover:scale-125"
+                style={{ backgroundColor: c.color }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mx-1 h-4 w-px bg-slate-200" />
+
+      {/* Alignments */}
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("justifyLeft"); }}
+        title="Align Left"
+        className="flex h-7 w-7 items-center justify-center rounded-lg text-xs text-slate-700 transition hover:bg-slate-200"
+      >
+        ⇠
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("justifyCenter"); }}
+        title="Align Center"
+        className="flex h-7 w-7 items-center justify-center rounded-lg text-xs text-slate-700 transition hover:bg-slate-200"
+      >
+        ≡
+      </button>
+
+      {/* Lists */}
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("insertUnorderedList"); }}
+        title="Bullet List"
+        className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+      >
+        •—
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("insertOrderedList"); }}
+        title="Numbered List"
+        className="flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold text-slate-700 transition hover:bg-slate-200"
+      >
+        1.
+      </button>
+
+      {/* Link */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setLinkInputOpen(!linkInputOpen)}
+          title="Insert Link"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-sm text-slate-700 transition hover:bg-slate-200"
+        >
+          🔗
+        </button>
+
+        {linkInputOpen && (
+          <div className="absolute left-0 top-full z-50 mt-1 flex w-64 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+            <input
+              type="url"
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              placeholder="https://example.com"
+              className="flex-1 rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:border-primary"
+            />
+            <button
+              type="button"
+              onClick={handleInsertLink}
+              className="rounded-lg bg-primary px-2.5 py-1 text-xs font-semibold text-white transition hover:bg-primary-hover"
+            >
+              Add
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Emoji Picker */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => {
+            setEmojiOpen(!emojiOpen);
+            setColorMenuOpen(false);
+            setHighlightMenuOpen(false);
+          }}
+          title="Insert Emoji"
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-base transition hover:bg-slate-200 hover:scale-110 active:scale-95"
+        >
+          😊
+        </button>
+
+        {emojiOpen && (
+          <div className="absolute left-0 top-full z-50 mt-1 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-100">
+            <div className="flex border-b border-slate-100 bg-slate-50 px-2 py-1">
+              {EMOJI_CATEGORIES.map((cat, idx) => (
+                <button
+                  key={cat.name}
+                  type="button"
+                  onClick={() => setEmojiTab(idx)}
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                    emojiTab === idx
+                      ? "bg-white text-primary shadow-sm"
+                      : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  <span>{cat.icon}</span>
+                  <span className="hidden sm:inline">{cat.name.split(" ")[0]}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="max-h-52 overflow-y-auto p-2.5">
+              <div className="grid grid-cols-8 gap-1">
+                {EMOJI_CATEGORIES[emojiTab].emojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      onInsertEmoji(emoji);
+                      setEmojiOpen(false);
+                    }}
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-lg transition hover:bg-primary-soft hover:scale-125 active:scale-95"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mx-1 h-4 w-px bg-slate-200" />
+
+      {/* Attach Files Button */}
+      <button
+        type="button"
+        onClick={onAttachClick}
+        title="Attach Files (Images, PDF, Docs)"
+        className="flex h-7 items-center gap-1 rounded-lg bg-primary-soft px-2.5 text-xs font-bold text-primary transition hover:bg-primary hover:text-white"
+      >
+        <span>📎</span>
+        <span>Attach</span>
+      </button>
+
+      {/* Clear Formatting */}
+      <button
+        type="button"
+        onMouseDown={(e) => { e.preventDefault(); exec("removeFormat"); }}
+        title="Clear Formatting"
+        className="ml-auto flex h-7 items-center rounded-lg px-2 text-[11px] font-semibold text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+      >
+        Clear
+      </button>
+    </div>
+  );
+}
+
+/* ==========================================================================
+   Docked Floating Compose Drawer with Attachments
+   ========================================================================== */
+function ComposeDrawer({
+  mailbox,
+  initialTo = "",
+  initialSubject = "",
+  onClose,
+  onSent,
+}: {
+  mailbox: Mailbox | null;
+  initialTo?: string;
+  initialSubject?: string;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [to, setTo] = useState(initialTo);
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  const [subject, setSubject] = useState(initialSubject);
+  const [showCc, setShowCc] = useState(false);
+  const [showBcc, setShowBcc] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Attachments State
+  const [attachments, setAttachments] = useState<UploadingAttachment[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  const handleInsertEmoji = (emoji: string) => {
+    if (!editorRef.current) return;
+    editorRef.current.focus();
+    document.execCommand("insertText", false, emoji);
+  };
+
+  const handleFileAttach = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    Array.from(files).forEach((file) => {
+      // 15MB limit check per file
+      if (file.size > 15 * 1024 * 1024) {
+        setError(`File "${file.name}" exceeds 15MB size limit.`);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target?.result as string;
+        setAttachments((prev) => [
+          ...prev,
+          {
+            name: file.name,
+            size: file.size,
+            type: file.type || "application/octet-stream",
+            base64,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDragOver = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files) {
+      handleFileAttach(e.dataTransfer.files);
+    }
+  };
+
+  async function handleSend(e: FormEvent) {
+    e.preventDefault();
+    if (!to.trim()) {
+      setError("Please specify at least one recipient.");
+      return;
+    }
+    if (!subject.trim()) {
+      setError("Please enter an email subject.");
+      return;
+    }
+    const htmlContent = editorRef.current?.innerHTML ?? "";
+    const textContent = editorRef.current?.innerText ?? "";
+    if (!textContent.trim() && !htmlContent.trim() && attachments.length === 0) {
+      setError("Please enter a message body or attach a file.");
+      return;
+    }
+
+    setSending(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/crm/webmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mailbox_id: mailbox?.id,
+          action: "send",
+          to,
+          cc: cc.trim() || undefined,
+          subject,
+          text: textContent,
+          html: htmlContent,
+          attachments,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Failed to send email.");
+      onSent();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send email.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLFormElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      handleSend(e as unknown as FormEvent);
+    }
+  };
+
+  return (
+    <div
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`fixed z-50 flex flex-col overflow-hidden border border-slate-300 bg-white shadow-2xl transition-all duration-200 ${
+        maximized
+          ? "inset-4 rounded-2xl md:inset-10"
+          : minimized
+          ? "bottom-0 right-6 w-80 rounded-t-2xl shadow-lg"
+          : "bottom-0 right-6 w-[640px] max-w-[calc(100vw-2rem)] rounded-t-2xl max-h-[85vh]"
+      } ${isDragging ? "ring-4 ring-primary ring-offset-2" : ""}`}
+    >
+      {/* Hidden file input */}
+      <input
+        type="file"
+        multiple
+        ref={fileInputRef}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          handleFileAttach(e.target.files);
+          e.target.value = "";
+        }}
+        className="hidden"
+      />
+
+      {/* Header */}
+      <div className="flex items-center justify-between bg-slate-900 px-5 py-3 text-white select-none">
+        <div className="flex items-center gap-2 truncate">
+          <span className="flex h-2 w-2 rounded-full bg-primary" />
+          <span className="truncate text-sm font-semibold tracking-wide">
+            {subject || "New Message"}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setMinimized(!minimized)}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white"
+            title={minimized ? "Restore" : "Minimize"}
+          >
+            {minimized ? "▢" : "—"}
+          </button>
+          {!minimized && (
+            <button
+              type="button"
+              onClick={() => setMaximized(!maximized)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white text-xs"
+              title={maximized ? "Exit Fullscreen" : "Fullscreen"}
+            >
+              {maximized ? "⧉" : "⛶"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/10 hover:text-white text-lg"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+
+      {!minimized && (
+        <form onSubmit={handleSend} onKeyDown={handleKeyDown} className="flex flex-1 flex-col overflow-hidden">
+          {/* Email Headers Form */}
+          <div className="divide-y divide-slate-100 bg-white">
+            <div className="flex items-center px-4 py-2 text-xs">
+              <span className="w-16 font-semibold text-slate-400">From:</span>
+              <span className="font-semibold text-slate-800">{mailbox?.email_address}</span>
+            </div>
+
+            <div className="flex items-center px-4 py-2">
+              <span className="w-16 text-xs font-semibold text-slate-400">To:</span>
+              <input
+                required
+                type="text"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                placeholder="recipient@example.com (comma separated)"
+                className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none"
+              />
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                {!showCc && (
+                  <button
+                    type="button"
+                    onClick={() => setShowCc(true)}
+                    className="rounded px-1.5 py-0.5 hover:bg-slate-100 hover:text-slate-800"
+                  >
+                    Cc
+                  </button>
+                )}
+                {!showBcc && (
+                  <button
+                    type="button"
+                    onClick={() => setShowBcc(true)}
+                    className="rounded px-1.5 py-0.5 hover:bg-slate-100 hover:text-slate-800"
+                  >
+                    Bcc
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {showCc && (
+              <div className="flex items-center px-4 py-2 animate-in fade-in">
+                <span className="w-16 text-xs font-semibold text-slate-400">Cc:</span>
+                <input
+                  type="text"
+                  value={cc}
+                  onChange={(e) => setCc(e.target.value)}
+                  placeholder="cc@example.com"
+                  className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none"
+                />
+              </div>
+            )}
+
+            {showBcc && (
+              <div className="flex items-center px-4 py-2 animate-in fade-in">
+                <span className="w-16 text-xs font-semibold text-slate-400">Bcc:</span>
+                <input
+                  type="text"
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  placeholder="bcc@example.com"
+                  className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center px-4 py-2.5">
+              <span className="w-16 text-xs font-semibold text-slate-400">Subject:</span>
+              <input
+                required
+                type="text"
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="What's this email about?"
+                className="flex-1 bg-transparent text-sm font-semibold text-slate-900 placeholder-slate-400 outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Rich Editor Toolbar */}
+          <RichTextToolbar
+            onInsertEmoji={handleInsertEmoji}
+            editorRef={editorRef}
+            onAttachClick={() => fileInputRef.current?.click()}
+          />
+
+          {/* Editable Content Area */}
+          <div
+            ref={editorRef}
+            contentEditable
+            suppressContentEditableWarning
+            data-placeholder="Write your email here... Drag and drop files to attach."
+            className="compose-body-editor flex-1 overflow-y-auto px-5 py-4 text-[15px] leading-7 text-slate-800 outline-none"
+            style={{ minHeight: maximized ? "360px" : "200px" }}
+          />
+
+          {/* Attachments Chips List */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 border-t border-slate-100 bg-slate-50/70 p-3">
+              {attachments.map((att, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs shadow-sm"
+                >
+                  <span>{getFileIcon(att.name)}</span>
+                  <span className="max-w-[160px] truncate font-semibold text-slate-700">
+                    {att.name}
+                  </span>
+                  <span className="text-[10px] text-slate-400">({formatFileSize(att.size)})</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(idx)}
+                    className="flex h-4 w-4 items-center justify-center rounded-full text-slate-400 transition hover:bg-rose-100 hover:text-rose-600"
+                    title="Remove attachment"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-center gap-2 border-t border-rose-100 bg-rose-50 px-4 py-2 text-xs font-medium text-rose-700">
+              <span>⚠️</span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Action Footer */}
+          <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <button
+                type="submit"
+                disabled={sending}
+                className="flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-white shadow-md shadow-primary/25 transition hover:bg-primary-hover active:scale-95 disabled:opacity-60"
+              >
+                {sending ? (
+                  <>
+                    <span className="animate-spin text-base">🔄</span>
+                    <span>Sending email…</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Send</span>
+                    <span className="text-xs opacity-90">🚀</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                <span>📎</span>
+                <span>Attach Files</span>
+              </button>
+              <span className="hidden text-[11px] text-slate-400 sm:inline">Ctrl+Enter to send</span>
+            </div>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-slate-200 hover:text-slate-700"
+              title="Discard draft"
+            >
+              🗑️
+            </button>
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
+/* ==========================================================================
+   Master Email Reader (Viewing Experience with Attachments)
+   ========================================================================== */
+function EmailReaderView({
+  thread,
+  mailbox,
+  onClose,
+  onReply,
+  onToggleStar,
+  onMoveFolder,
+}: {
+  thread: Thread;
+  mailbox: Mailbox | null;
+  onClose: () => void;
+  onReply: (recipient: string, subject: string) => void;
+  onToggleStar: (threadId: number, current: boolean) => void;
+  onMoveFolder: (threadId: number, folder: string) => void;
+}) {
+  const [viewMode, setViewMode] = useState<"html" | "text">("html");
+  const [showHeaders, setShowHeaders] = useState(false);
+  const [quickReplyText, setQuickReplyText] = useState("");
+  const [sendingQuickReply, setSendingQuickReply] = useState(false);
+  const [quickReplySuccess, setQuickReplySuccess] = useState(false);
+
+  const messages = thread.crm_email_messages || [];
+  const latestMessage = messages[messages.length - 1];
+
+  if (!latestMessage) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center p-8 text-center text-slate-400">
+        <span className="text-4xl">📭</span>
+        <p className="mt-2 text-sm font-medium">No messages found in this conversation.</p>
+      </div>
+    );
+  }
+
+  const senderName = getSenderName(latestMessage.sender);
+  const senderEmail = getSenderEmail(latestMessage.sender);
+  const avatarStyle = getAvatarStyle(latestMessage.sender);
+  const dateFormatted = formatFullDate(latestMessage.received_at || latestMessage.sent_at);
+
+  // Attachments collected from messages in thread
+  const allAttachments = messages.flatMap((m) => m.crm_email_attachments || []);
+
+  const handleQuickReplySubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!quickReplyText.trim()) return;
+    setSendingQuickReply(true);
+
+    try {
+      const repTo = senderEmail || latestMessage.sender || "";
+      const repSubject = thread.subject?.startsWith("Re:")
+        ? thread.subject
+        : `Re: ${thread.subject || "(no subject)"}`;
+
+      const response = await fetch("/api/crm/webmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mailbox_id: mailbox?.id,
+          action: "send",
+          to: repTo,
+          subject: repSubject,
+          text: quickReplyText,
+          html: `<p>${quickReplyText.replace(/\n/g, "<br/>")}</p>`,
+        }),
+      });
+      if (!response.ok) throw new Error("Failed to send reply.");
+      setQuickReplyText("");
+      setQuickReplySuccess(true);
+      setTimeout(() => setQuickReplySuccess(false), 4000);
+    } catch {
+      alert("Failed to send quick reply.");
+    } finally {
+      setSendingQuickReply(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full flex-col bg-white">
+      {/* Top Action Toolbar */}
+      <div className="flex flex-wrap items-center justify-between border-b border-slate-200 bg-slate-50/70 px-6 py-3 backdrop-blur">
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
+            title="Back to inbox"
+          >
+            ←
+          </button>
+          <div className="h-4 w-px bg-slate-200" />
+          <button
+            type="button"
+            onClick={() => onToggleStar(thread.id, thread.is_starred)}
+            className={`flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-slate-200 ${
+              thread.is_starred ? "text-amber-500" : "text-slate-400 hover:text-amber-500"
+            }`}
+            title={thread.is_starred ? "Unstar" : "Star"}
+          >
+            {thread.is_starred ? "⭐" : "☆"}
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveFolder(thread.id, "archive")}
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
+            title="Move to Archive"
+          >
+            🗄️
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveFolder(thread.id, "spam")}
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-200 hover:text-slate-800"
+            title="Report Spam"
+          >
+            ⚠️
+          </button>
+          <button
+            type="button"
+            onClick={() => onMoveFolder(thread.id, "trash")}
+            className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-rose-50 hover:text-rose-600"
+            title="Delete / Move to Trash"
+          >
+            🗑️
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {latestMessage.html_body && (
+            <div className="flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setViewMode("html")}
+                className={`rounded-md px-2.5 py-1 transition ${
+                  viewMode === "html" ? "bg-primary text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                HTML
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("text")}
+                className={`rounded-md px-2.5 py-1 transition ${
+                  viewMode === "text" ? "bg-primary text-white shadow-sm" : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Plain Text
+              </button>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
+            className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800 active:scale-95"
+          >
+            <span>↩</span>
+            <span>Reply</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Subject Line & Tags */}
+      <div className="border-b border-slate-100 px-8 py-5">
+        <div>
+          <h1 className="text-xl font-black tracking-tight text-slate-900 md:text-2xl">
+            {thread.subject || "(No Subject)"}
+          </h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-600">
+              Folder: {thread.folder}
+            </span>
+            {thread.is_starred && (
+              <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200">
+                Starred
+              </span>
+            )}
+            {allAttachments.length > 0 && (
+              <span className="rounded-full bg-primary-soft px-2.5 py-0.5 text-[11px] font-bold text-primary">
+                📎 {allAttachments.length} Attachment{allAttachments.length === 1 ? "" : "s"}
+              </span>
+            )}
+            <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+              TLS Encrypted
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Sender Profile Card */}
+      <div className="border-b border-slate-100 bg-slate-50/40 px-8 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold shadow-sm ${avatarStyle.bg} ${avatarStyle.text}`}
+            >
+              {getInitials(senderName)}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-900">{senderName}</span>
+                <span className="text-xs text-slate-400">&lt;{senderEmail}&gt;</span>
+              </div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-500">
+                <span>To: {latestMessage.recipients?.join(", ") || mailbox?.email_address}</span>
+                <button
+                  type="button"
+                  onClick={() => setShowHeaders(!showHeaders)}
+                  className="rounded text-[11px] font-semibold text-primary hover:underline"
+                >
+                  {showHeaders ? "Hide details" : "Show details"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-right text-xs text-slate-400">
+            <span>{dateFormatted}</span>
+          </div>
+        </div>
+
+        {/* Collapsible Full Headers */}
+        {showHeaders && (
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-white p-3.5 text-xs text-slate-600 shadow-sm animate-in fade-in">
+            <div className="grid grid-cols-[80px_1fr] gap-1.5">
+              <span className="font-semibold text-slate-400">From:</span>
+              <span className="font-mono text-slate-800">{latestMessage.sender}</span>
+              <span className="font-semibold text-slate-400">To:</span>
+              <span className="font-mono text-slate-800">{latestMessage.recipients?.join(", ")}</span>
+              {latestMessage.cc && latestMessage.cc.length > 0 && (
+                <>
+                  <span className="font-semibold text-slate-400">Cc:</span>
+                  <span className="font-mono text-slate-800">{latestMessage.cc.join(", ")}</span>
+                </>
+              )}
+              <span className="font-semibold text-slate-400">Date:</span>
+              <span>{dateFormatted}</span>
+              <span className="font-semibold text-slate-400">Security:</span>
+              <span className="text-emerald-600 font-medium">🔒 Standard encryption (TLS)</span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main Email Body */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+        {viewMode === "html" && latestMessage.html_body ? (
+          <div className="h-full min-h-[350px] w-full rounded-2xl border border-slate-100 bg-white p-2">
+            <iframe
+              srcDoc={`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1">
+                  <style>
+                    body {
+                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                      font-size: 14px;
+                      line-height: 1.65;
+                      color: #1e293b;
+                      margin: 16px;
+                      padding: 0;
+                    }
+                    a { color: #e45a5a; }
+                    img { max-width: 100%; height: auto; border-radius: 8px; }
+                    blockquote { border-left: 3px solid #e2e8f0; margin-left: 0; padding-left: 12px; color: #64748b; }
+                  </style>
+                </head>
+                <body>${latestMessage.html_body}</body>
+                </html>
+              `}
+              className="h-full min-h-[400px] w-full border-0"
+              sandbox="allow-same-origin allow-popups"
+              title="Email Message Preview"
+            />
+          </div>
+        ) : (
+          <div className="max-w-4xl text-[15px] leading-8 text-slate-800 whitespace-pre-wrap font-sans">
+            {latestMessage.text_body || (
+              <span className="italic text-slate-400">This message has no plain text content.</span>
+            )}
+          </div>
+        )}
+
+        {/* Attachments Section in Reader */}
+        {allAttachments.length > 0 && (
+          <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm">📎</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                Attachments ({allAttachments.length})
+              </span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+              {allAttachments.map((att, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="text-xl">{getFileIcon(att.file_name)}</span>
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-bold text-slate-800" title={att.file_name}>
+                        {att.file_name}
+                      </p>
+                      <p className="text-[10px] text-slate-400">
+                        {formatFileSize(att.file_size)}
+                      </p>
+                    </div>
+                  </div>
+                  {att.storage_path && (
+                    <a
+                      href={att.storage_path}
+                      download={att.file_name}
+                      className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 transition hover:bg-primary hover:text-white"
+                      title="Download file"
+                    >
+                      ⬇️
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Quick Inline Reply Card at Bottom */}
+      <div className="border-t border-slate-200 bg-slate-50/80 p-6">
+        {quickReplySuccess && (
+          <div className="mb-3 rounded-xl bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+            ✓ Quick reply sent successfully!
+          </div>
+        )}
+        <form onSubmit={handleQuickReplySubmit} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5 text-xs text-slate-500">
+            <span className="font-semibold">Quick Reply to:</span>
+            <span className="font-medium text-slate-800">{senderName}</span>
+          </div>
+          <textarea
+            rows={3}
+            value={quickReplyText}
+            onChange={(e) => setQuickReplyText(e.target.value)}
+            placeholder="Write a quick reply..."
+            className="w-full resize-none p-4 text-sm text-slate-800 outline-none placeholder:text-slate-400"
+          />
+          <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/50 px-4 py-2.5">
+            <button
+              type="button"
+              onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
+              className="text-xs font-bold text-primary hover:underline"
+            >
+              Open in full composer ↗
+            </button>
+            <button
+              type="submit"
+              disabled={sendingQuickReply || !quickReplyText.trim()}
+              className="flex items-center gap-1.5 rounded-xl bg-primary px-5 py-2 text-xs font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover disabled:opacity-50"
+            >
+              {sendingQuickReply ? "Sending…" : "Send Reply 🚀"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ==========================================================================
+   Main Webmail Workspace Component
+   ========================================================================== */
 export default function MailboxWorkspace() {
   const params = useParams<{ mailboxId: string }>();
   const mailboxId = Number(params.mailboxId);
+
   const [mailbox, setMailbox] = useState<Mailbox | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
-  const [folder, setFolder] = useState("inbox");
-  const [search, setSearch] = useState("");
-  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<string>("inbox");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterUnreadOnly, setFilterUnreadOnly] = useState(false);
+  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [composeOpen, setComposeOpen] = useState(false);
-  const [message, setMessage] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
-  const [compose, setCompose] = useState({ to: "", cc: "", subject: "", text: "" });
+  const [autoSyncInterval, setAutoSyncInterval] = useState<number>(5);
+  const [notification, setNotification] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
 
+  // Compose Drawer State
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeInitialTo, setComposeInitialTo] = useState("");
+  const [composeInitialSubject, setComposeInitialSubject] = useState("");
+
+  // Load Mailbox Data
   async function loadMailbox() {
     setLoading(true);
     try {
@@ -84,111 +1324,652 @@ export default function MailboxWorkspace() {
       setMailbox(result.mailbox);
       setThreads(result.threads ?? []);
     } catch (error) {
-      setMessage({ text: error instanceof Error ? error.message : "Could not load mailbox.", tone: "danger" });
+      setNotification({
+        text: error instanceof Error ? error.message : "Could not load mailbox.",
+        tone: "danger",
+      });
     } finally {
       setLoading(false);
     }
   }
 
+  // Reload threads silently without page flicker
+  async function reloadThreadsSilently() {
+    try {
+      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}`, { cache: "no-store" });
+      const result = await response.json();
+      if (response.ok && result.threads) {
+        setThreads(result.threads);
+      }
+    } catch {
+      // silent ignore
+    }
+  }
+
+  // Silent background sync from IMAP
+  const isSilentSyncingRef = useRef(false);
+  async function silentSyncInbox() {
+    if (isSilentSyncingRef.current || syncing) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    isSilentSyncingRef.current = true;
+    try {
+      const response = await fetch("/api/crm/webmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mailbox_id: mailboxId }),
+      });
+      const result = await response.json();
+      if (result.imported && result.imported > 0) {
+        await reloadThreadsSilently();
+        setNotification({
+          text: `📬 ${result.imported} new email(s) received!`,
+          tone: "success",
+        });
+      }
+    } catch {
+      // silent ignore
+    } finally {
+      isSilentSyncingRef.current = false;
+    }
+  }
+
+  // Initial load
   useEffect(() => {
-    if (Number.isInteger(mailboxId) && mailboxId > 0) loadMailbox();
+    if (Number.isInteger(mailboxId) && mailboxId > 0) {
+      loadMailbox();
+    }
   }, [mailboxId]);
 
-  const visibleThreads = useMemo(() => threads.filter((thread) => {
-    const latest = thread.crm_email_messages.at(-1);
-    const haystack = `${thread.subject ?? ""} ${latest?.sender ?? ""} ${latest?.text_body ?? ""}`.toLowerCase();
-    const matchesSearch = !search.trim() || haystack.includes(search.toLowerCase());
-    const matchesFolder = folder === "starred" ? thread.is_starred : thread.folder === folder;
-    return matchesFolder && matchesSearch;
-  }), [folder, search, threads]);
+  // Background poller (default: every 15s)
+  useEffect(() => {
+    if (!Number.isInteger(mailboxId) || mailboxId <= 0 || autoSyncInterval <= 0) return;
 
-  async function syncInbox() {
-    setSyncing(true);
-    setMessage(null);
+    const initialTimer = setTimeout(() => {
+      silentSyncInbox();
+    }, 4000);
+
+    const timer = setInterval(() => {
+      silentSyncInbox();
+    }, autoSyncInterval * 1000);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(timer);
+    };
+  }, [mailboxId, autoSyncInterval]);
+
+  // Supabase Realtime Channel
+  useEffect(() => {
+    if (!Number.isInteger(mailboxId) || mailboxId <= 0) return;
     try {
-      const response = await fetch("/api/crm/webmail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mailbox_id: mailboxId }) });
+      const supabase = getSupabaseBrowserClient();
+      const channel = supabase
+        .channel(`webmail-live-${mailboxId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "crm_email_threads",
+            filter: `mailbox_id=eq.${mailboxId}`,
+          },
+          () => {
+            reloadThreadsSilently();
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "crm_email_messages",
+            filter: `mailbox_id=eq.${mailboxId}`,
+          },
+          () => {
+            reloadThreadsSilently();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    } catch {
+      // ignore
+    }
+  }, [mailboxId]);
+
+  // Manual Sync Inbox
+  async function handleSyncInbox() {
+    setSyncing(true);
+    setNotification(null);
+    try {
+      const response = await fetch("/api/crm/webmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mailbox_id: mailboxId }),
+      });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not sync Inbox.");
-      setMessage({ text: result.message, tone: "success" });
+      if (!response.ok) throw new Error(result.error ?? "Sync failed.");
+      setNotification({ text: result.message, tone: "success" });
       await loadMailbox();
     } catch (error) {
-      setMessage({ text: error instanceof Error ? error.message : "Could not sync Inbox.", tone: "danger" });
+      setNotification({
+        text: error instanceof Error ? error.message : "Sync failed.",
+        tone: "danger",
+      });
     } finally {
       setSyncing(false);
     }
   }
 
-  async function openMessage(item: Message) {
-    setSelectedMessage(item);
-    if (item.is_read) return;
-    await fetch("/api/crm/webmail", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message_id: item.id, is_read: true }) });
-    setThreads((current) => current.map((thread) => ({ ...thread, crm_email_messages: thread.crm_email_messages.map((messageItem) => messageItem.id === item.id ? { ...messageItem, is_read: true } : messageItem) })));
-  }
-
-  async function sendEmail(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSending(true);
-    setMessage(null);
-    try {
-      const response = await fetch("/api/crm/webmail", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mailbox_id: mailboxId, action: "send", ...compose }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not send email.");
-      setComposeOpen(false);
-      setCompose({ to: "", cc: "", subject: "", text: "" });
-      setMessage({ text: result.message, tone: "success" });
-      await loadMailbox();
-    } catch (error) {
-      setMessage({ text: error instanceof Error ? error.message : "Could not send email.", tone: "danger" });
-    } finally {
-      setSending(false);
+  // Open Message & Mark Read
+  async function handleSelectThread(thread: Thread) {
+    setSelectedThreadId(thread.id);
+    const unreadMessages = thread.crm_email_messages.filter((m) => !m.is_read);
+    if (unreadMessages.length > 0) {
+      setThreads((current) =>
+        current.map((t) =>
+          t.id === thread.id
+            ? {
+                ...t,
+                crm_email_messages: t.crm_email_messages.map((m) => ({ ...m, is_read: true })),
+              }
+            : t
+        )
+      );
+      for (const msg of unreadMessages) {
+        await fetch("/api/crm/webmail", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message_id: msg.id, is_read: true }),
+        });
+      }
     }
   }
 
-  const unread = threads.filter((thread) => thread.folder === "inbox" && thread.crm_email_messages.at(-1)?.is_read === false).length;
+  // Toggle Star
+  async function handleToggleStar(threadId: number, currentStar: boolean) {
+    const nextStar = !currentStar;
+    setThreads((current) =>
+      current.map((t) => (t.id === threadId ? { ...t, is_starred: nextStar } : t))
+    );
+    await fetch("/api/crm/webmail", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: threadId, is_starred: nextStar }),
+    });
+  }
 
-  return <>
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
-      <div className="flex items-center gap-3">
-        <Link href="/dashboard/crm/webmail" className="grid h-10 w-10 place-items-center rounded-xl border border-border bg-white text-muted shadow-sm transition hover:border-primary/30 hover:text-primary" aria-label="Back to mailboxes">←</Link>
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-primary">CRM Webmail</p>
-          <h1 className="mt-1 text-2xl font-extrabold tracking-tight">{mailbox?.display_name || mailbox?.email_address || "Mailbox"}</h1>
-          <p className="mt-0.5 text-sm text-muted">{mailbox?.email_address || "Secure company mailbox"}</p>
+  // Move Folder
+  async function handleMoveFolder(threadId: number, newFolder: string) {
+    setThreads((current) =>
+      current.map((t) => (t.id === threadId ? { ...t, folder: newFolder } : t))
+    );
+    await fetch("/api/crm/webmail", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: threadId, folder: newFolder }),
+    });
+    if (selectedThreadId === threadId) {
+      setSelectedThreadId(null);
+    }
+  }
+
+  // Filtered Threads
+  const visibleThreads = useMemo(() => {
+    return threads.filter((thread) => {
+      const matchesFolder =
+        selectedFolder === "starred"
+          ? thread.is_starred
+          : thread.folder === selectedFolder;
+
+      if (!matchesFolder) return false;
+
+      if (filterUnreadOnly) {
+        const hasUnread = thread.crm_email_messages.some((m) => !m.is_read);
+        if (!hasUnread) return false;
+      }
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const latest = thread.crm_email_messages.at(-1);
+        const haystack = `${thread.subject ?? ""} ${latest?.sender ?? ""} ${latest?.text_body ?? ""}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+
+      return true;
+    });
+  }, [threads, selectedFolder, filterUnreadOnly, searchQuery]);
+
+  const selectedThread = useMemo(() => {
+    return threads.find((t) => t.id === selectedThreadId) || null;
+  }, [threads, selectedThreadId]);
+
+  const inboxUnreadCount = useMemo(() => {
+    return threads.filter((t) => t.folder === "inbox" && t.crm_email_messages.some((m) => !m.is_read))
+      .length;
+  }, [threads]);
+
+  const starredCount = useMemo(() => {
+    return threads.filter((t) => t.is_starred).length;
+  }, [threads]);
+
+  return (
+    <>
+      <style>{`
+        .compose-body-editor:empty:before {
+          content: attr(data-placeholder);
+          color: #94a3b8;
+          pointer-events: none;
+        }
+      `}</style>
+
+      {/* Top Header Bar */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Link
+            href="/dashboard/crm/webmail"
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-primary/40 hover:text-primary"
+            title="Back to Mailbox Directory"
+          >
+            ←
+          </Link>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-extrabold uppercase tracking-widest text-primary">
+                CRM Mailbox
+              </span>
+              <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            </div>
+            <h1 className="text-xl font-black tracking-tight text-slate-900 md:text-2xl">
+              {mailbox?.display_name || mailbox?.email_address || "Loading Mailbox..."}
+            </h1>
+            <p className="text-xs text-slate-500">{mailbox?.email_address}</p>
+          </div>
+          {mailbox?.status && (
+            <span
+              className={`ml-2 rounded-full px-3 py-1 text-xs font-bold ring-1 ${
+                mailbox.status === "connected"
+                  ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                  : "bg-amber-50 text-amber-700 ring-amber-200"
+              }`}
+            >
+              {mailbox.status === "connected" ? "🟢 Connected" : "🟡 Pending"}
+            </span>
+          )}
         </div>
-        {mailbox?.status ? <Badge tone={mailbox.status === "connected" ? "success" : "warning"}>{mailbox.status}</Badge> : null}
-      </div>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" loading={syncing} onClick={syncInbox}><IconRefresh className="h-4 w-4" />Sync inbox</Button>
-        <Button onClick={() => setComposeOpen(true)}>Compose</Button>
-      </div>
-    </div>
-    {message ? <div className="mb-4"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
-    <div className="overflow-hidden rounded-2xl border border-[#d9e1e6] bg-white shadow-[0_18px_55px_rgba(24,50,74,0.08)]">
-      <div className="grid min-h-[700px] lg:grid-cols-[218px_minmax(310px,0.78fr)_minmax(360px,1.22fr)]">
-        <aside className="border-b border-[#e3e8eb] bg-[#f5f8fa] p-4 lg:border-b-0 lg:border-r">
-          <Button className="mb-5 w-full justify-center bg-[#18324a] shadow-[0_10px_20px_rgba(24,50,74,0.16)] hover:bg-[#254b69]" onClick={() => setComposeOpen(true)}>Compose email</Button>
-          <p className="mb-2 px-3 text-[10px] font-bold uppercase tracking-[0.18em] text-[#81919c]">Folders</p>
-          <nav className="space-y-1" aria-label="Mailbox folders">
-            {folders.map((item) => <button key={item} className={`group flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${folder === item ? "bg-white text-[#18324a] shadow-sm ring-1 ring-[#dbe4e9]" : "text-[#637580] hover:bg-white hover:text-[#18324a]"}`} onClick={() => setFolder(item)}><span className="flex items-center gap-3"><span className={`grid h-6 w-6 place-items-center rounded-md text-[9px] font-extrabold ${folder === item ? "bg-[#e8f0f4] text-[#18324a]" : "bg-[#e9eef1] text-[#81919c] group-hover:text-[#18324a]"}`}>{folderMarks[item]}</span>{folderLabels[item]}</span>{item === "inbox" && unread ? <span className="rounded-full bg-[#e95d5d] px-2 py-0.5 text-[11px] font-bold text-white">{unread}</span> : null}</button>)}
-          </nav>
-          <div className="mt-8 rounded-xl border border-[#dbe5ea] bg-white p-3.5"><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#81919c]">Mailbox health</p><p className="mt-2 text-sm font-bold text-[#18324a]">{mailbox?.status === "connected" ? "Connected and ready" : "Needs attention"}</p><p className="mt-1 text-xs leading-5 text-[#7b8b95]">Your credentials stay encrypted on the server.</p></div>
-        </aside>
-        <section className="min-w-0 border-b border-[#e3e8eb] lg:border-b-0 lg:border-r">
-          <div className="border-b border-[#e3e8eb] bg-white p-4">
-            <div className="mb-3 flex items-center justify-between"><div><p className="text-lg font-extrabold text-[#18324a]">{folderLabels[folder]}</p><p className="mt-0.5 text-xs text-[#84939d]">{visibleThreads.length} conversation{visibleThreads.length === 1 ? "" : "s"}</p></div><button className="rounded-lg px-2 py-1 text-xs font-bold text-[#637580] hover:bg-[#f0f5f7]" onClick={loadMailbox}>Refresh</button></div>
-            <div className="relative"><span className="pointer-events-none absolute left-3 top-2.5 text-xs text-[#91a0a9]">⌕</span><TextInput className="w-full bg-[#f5f8fa] pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search conversations" /></div>
-          </div>
-          <div className="max-h-[620px] overflow-y-auto">
-            {loading ? <div className="p-6 text-sm text-[#81919c]">Loading your mailbox...</div> : visibleThreads.length ? <div className="divide-y divide-[#edf1f3]">{visibleThreads.map((thread) => { const item = thread.crm_email_messages.at(-1); if (!item) return null; return <button key={thread.id} className={`group flex w-full items-start gap-3 p-4 text-left transition hover:bg-[#f5f8fa] ${item.is_read ? "" : "border-l-2 border-[#e95d5d] bg-[#fff8f7]"}`} onClick={() => openMessage(item)}><span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#e6eef2] text-xs font-extrabold text-[#18324a]">{(item.sender || "?").slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1"><span className="flex items-center justify-between gap-2"><span className={`truncate text-sm ${item.is_read ? "font-semibold text-[#304654]" : "font-extrabold text-[#18324a]"}`}>{item.sender || item.recipients.join(", ") || "Unknown sender"}</span><span className="shrink-0 text-[10px] text-[#94a1a8]">{formatDate(item.received_at || item.sent_at)}</span></span><span className={`mt-1 block truncate text-sm ${item.is_read ? "text-[#71818a]" : "font-semibold text-[#405560]"}`}>{thread.subject || "(no subject)"}</span><span className="mt-1 block truncate text-xs text-[#9aa7ad]">{item.text_body || "No message preview"}</span></span></button>; })}</div> : <div className="p-8 text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-[#edf3f5] text-xl text-[#81919c]">✉</div><p className="mt-4 font-bold text-[#304654]">No messages here</p><p className="mt-1 text-sm leading-6 text-[#81919c]">Sync your inbox or compose a new email.</p></div>}
-          </div>
-        </section>
-        <section className="hidden min-w-0 bg-[#fbfcfc] lg:block">
-          {selectedMessage ? <div className="h-full"><div className="flex items-center justify-between border-b border-[#e3e8eb] bg-white px-6 py-5"><div><p className="text-[10px] font-bold uppercase tracking-[0.18em] text-primary">Message</p><h2 className="mt-1 text-xl font-extrabold text-[#18324a]">{selectedMessage.subject || "(no subject)"}</h2></div><button className="grid h-9 w-9 place-items-center rounded-lg text-[#81919c] hover:bg-[#f0f5f7]" onClick={() => setSelectedMessage(null)} aria-label="Close message">×</button></div><div className="border-b border-[#e3e8eb] px-6 py-5"><div className="flex items-start gap-3"><span className="grid h-11 w-11 place-items-center rounded-full bg-[#18324a] text-sm font-extrabold text-white">{(selectedMessage.sender || "?").slice(0, 1).toUpperCase()}</span><div><p className="font-bold text-[#304654]">{selectedMessage.sender || "Unknown sender"}</p><p className="mt-1 text-xs text-[#8998a1]">To: {selectedMessage.recipients.join(", ") || mailbox?.email_address}</p><p className="mt-1 text-xs text-[#8998a1]">{formatDate(selectedMessage.received_at || selectedMessage.sent_at)}</p></div></div></div><div className="max-h-[480px] overflow-y-auto px-6 py-7"><p className="whitespace-pre-wrap text-[15px] leading-8 text-[#425762]">{selectedMessage.text_body || "This message has no plain-text body."}</p></div></div> : <div className="grid h-full place-items-center p-10 text-center"><div><div className="mx-auto grid h-16 w-16 place-items-center rounded-3xl bg-[#edf3f5] text-2xl text-[#8da0aa]">✉</div><p className="mt-5 text-lg font-extrabold text-[#304654]">Select a message</p><p className="mt-2 max-w-xs text-sm leading-6 text-[#81919c]">Choose a conversation from your inbox to read it here.</p></div></div>}
-        </section>
-      </div>
-    </div>
 
-    {selectedMessage ? <Modal open={true} onClose={() => setSelectedMessage(null)} title={selectedMessage.subject || "(no subject)"} description={`${selectedMessage.sender || "Unknown sender"} · ${formatDate(selectedMessage.received_at || selectedMessage.sent_at)}`}><div className="max-h-[60vh] overflow-auto whitespace-pre-wrap text-sm leading-7">{selectedMessage.text_body || "This message has no plain-text body."}</div></Modal> : null}
-    <Modal open={composeOpen} onClose={() => setComposeOpen(false)} title="Compose email" description={`Send from ${mailbox?.email_address || "this mailbox"}`}><form className="space-y-4" onSubmit={sendEmail}><Field label="To"><TextInput required value={compose.to} onChange={(event) => setCompose({ ...compose, to: event.target.value })} placeholder="recipient@example.com" /></Field><Field label="Cc"><TextInput value={compose.cc} onChange={(event) => setCompose({ ...compose, cc: event.target.value })} placeholder="Optional, comma-separated" /></Field><Field label="Subject"><TextInput required value={compose.subject} onChange={(event) => setCompose({ ...compose, subject: event.target.value })} placeholder="Subject" /></Field><Field label="Message"><textarea required className="min-h-44 w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm outline-none focus:border-primary" value={compose.text} onChange={(event) => setCompose({ ...compose, text: event.target.value })} placeholder="Write your email..." /></Field><div className="flex justify-end gap-2 border-t border-border pt-4"><Button type="button" variant="secondary" onClick={() => setComposeOpen(false)}>Cancel</Button><Button type="submit" loading={sending}>Send email</Button></div></form></Modal>
-  </>;
+        <div className="flex items-center gap-2.5">
+          {/* Auto-Sync status badge */}
+          <div className="hidden sm:flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm">
+            <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="font-semibold text-slate-500">Auto:</span>
+            <select
+              value={autoSyncInterval}
+              onChange={(e) => setAutoSyncInterval(Number(e.target.value))}
+              className="bg-transparent font-bold text-slate-800 outline-none cursor-pointer hover:text-primary transition"
+              title="Change Background Auto-fetch Interval"
+            >
+              <option value={3}>⚡ 3s (Instant OTP)</option>
+              <option value={5}>🚀 5s (Ultra Fast)</option>
+              <option value={10}>10s (Fast)</option>
+              <option value={15}>15s (Standard)</option>
+              <option value={30}>30s (Relaxed)</option>
+              <option value={0}>Off</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSyncInbox}
+            disabled={syncing}
+            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-95 disabled:opacity-60"
+          >
+            <span className={`text-base ${syncing ? "animate-spin" : ""}`}>🔄</span>
+            <span>{syncing ? "Syncing Inbox..." : "Sync Inbox"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setComposeInitialTo("");
+              setComposeInitialSubject("");
+              setComposeOpen(true);
+            }}
+            className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover active:scale-95"
+          >
+            <span>✏️</span>
+            <span>Compose</span>
+          </button>
+        </div>
+      </div>
+
+      {notification && (
+        <div className="mb-4">
+          <Alert tone={notification.tone}>{notification.text}</Alert>
+        </div>
+      )}
+
+      {/* Main 3-Column Workstation */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+        <div className="grid min-h-[780px] lg:grid-cols-[230px_minmax(330px,0.78fr)_minmax(380px,1.22fr)]">
+
+          {/* ════════════ Column 1: Left Navigation ════════════ */}
+          <aside className="border-b border-slate-200 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r">
+            <button
+              type="button"
+              onClick={() => {
+                setComposeInitialTo("");
+                setComposeInitialSubject("");
+                setComposeOpen(true);
+              }}
+              className="mb-5 flex w-full items-center justify-center gap-2.5 rounded-xl bg-primary py-3 text-sm font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover active:scale-95"
+            >
+              <span>✏️</span>
+              <span>Compose Email</span>
+            </button>
+
+            <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              Folders
+            </div>
+            <nav className="space-y-1">
+              {FOLDERS.map((f) => {
+                const isActive = selectedFolder === f.id;
+                let badgeCount = 0;
+                if (f.id === "inbox") badgeCount = inboxUnreadCount;
+                if (f.id === "starred") badgeCount = starredCount;
+
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedFolder(f.id);
+                      setSelectedThreadId(null);
+                    }}
+                    className={`group flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                      isActive
+                        ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
+                        : "text-slate-600 hover:bg-white/80 hover:text-slate-900"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <span className="text-base">{f.icon}</span>
+                      <span>{f.label}</span>
+                    </span>
+                    {badgeCount > 0 && (
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${f.badgeTone}`}>
+                        {badgeCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {/* Status Widget */}
+            <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <span className="flex h-2 w-2 rounded-full bg-emerald-500" />
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  Mailbox Status
+                </span>
+              </div>
+              <p className="mt-1.5 text-sm font-bold text-slate-800">
+                {mailbox?.status === "connected" ? "Connected & Ready" : "Sync Required"}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                Encrypted via TLS on server.
+              </p>
+            </div>
+          </aside>
+
+          {/* ════════════ Column 2: Conversation Thread List ════════════ */}
+          <section className="flex flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r">
+            <div className="border-b border-slate-100 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-black tracking-tight text-slate-900 capitalize">
+                    {selectedFolder}
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    {visibleThreads.length} conversation{visibleThreads.length === 1 ? "" : "s"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setFilterUnreadOnly(!filterUnreadOnly)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                      filterUnreadOnly
+                        ? "bg-primary text-white shadow-sm"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    Unread only
+                  </button>
+                  <button
+                    type="button"
+                    onClick={loadMailbox}
+                    className="rounded-lg p-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    title="Refresh"
+                  >
+                    🔄
+                  </button>
+                </div>
+              </div>
+
+              {/* Search Bar */}
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">
+                  🔍
+                </span>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search sender, subject, text…"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50/70 py-2 pl-9 pr-8 text-sm outline-none transition placeholder:text-slate-400 focus:border-primary focus:bg-white focus:ring-1 focus:ring-primary"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-700"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Threads List Items */}
+            <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+              {loading ? (
+                <div className="space-y-3 p-4">
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <div key={i} className="flex animate-pulse gap-3 p-2">
+                      <div className="h-10 w-10 shrink-0 rounded-2xl bg-slate-100" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-3 w-1/3 rounded bg-slate-100" />
+                        <div className="h-3 w-3/4 rounded bg-slate-100" />
+                        <div className="h-2.5 w-1/2 rounded bg-slate-100" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : visibleThreads.length > 0 ? (
+                visibleThreads.map((thread) => {
+                  const latest = thread.crm_email_messages.at(-1);
+                  const isSelected = selectedThreadId === thread.id;
+                  const isUnread = latest ? !latest.is_read : false;
+                  const senderName = getSenderName(latest?.sender ?? "");
+                  const avatarStyle = getAvatarStyle(latest?.sender ?? "");
+                  const dateText = formatSmartDate(latest?.received_at || latest?.sent_at);
+                  const hasAttachments = thread.crm_email_messages.some(
+                    (m) => m.crm_email_attachments && m.crm_email_attachments.length > 0
+                  );
+
+                  return (
+                    <div
+                      key={thread.id}
+                      onClick={() => handleSelectThread(thread)}
+                      className={`group relative flex cursor-pointer items-start gap-3 px-4 py-3.5 transition select-none ${
+                        isSelected
+                          ? "bg-primary-soft/50"
+                          : isUnread
+                          ? "bg-primary-soft/20 hover:bg-primary-soft/30"
+                          : "hover:bg-slate-50/80"
+                      }`}
+                    >
+                      {/* Active Indicator */}
+                      {isUnread && (
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary" />
+                      )}
+
+                      {/* Avatar */}
+                      <div
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-xs font-black shadow-sm ${avatarStyle.bg} ${avatarStyle.text}`}
+                      >
+                        {getInitials(senderName)}
+                      </div>
+
+                      {/* Content preview */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className={`truncate text-sm ${
+                              isUnread ? "font-extrabold text-slate-900" : "font-semibold text-slate-700"
+                            }`}
+                          >
+                            {senderName}
+                          </span>
+                          <span className="shrink-0 text-[11px] font-medium text-slate-400">
+                            {dateText}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {hasAttachments && (
+                            <span className="text-xs text-primary" title="Contains attachments">
+                              📎
+                            </span>
+                          )}
+                          <span
+                            className={`truncate text-[13px] ${
+                              isUnread ? "font-bold text-slate-900" : "font-medium text-slate-600"
+                            }`}
+                          >
+                            {thread.subject || "(no subject)"}
+                          </span>
+                        </div>
+
+                        <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">
+                          {latest?.text_body || "No preview content"}
+                        </p>
+                      </div>
+
+                      {/* Star Button */}
+                      <div className="flex shrink-0 items-center gap-1 self-center">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleStar(thread.id, thread.is_starred);
+                          }}
+                          className={`p-1 text-sm transition hover:scale-125 ${
+                            thread.is_starred
+                              ? "text-amber-500"
+                              : "text-slate-300 opacity-0 group-hover:opacity-100 hover:text-amber-500"
+                          }`}
+                          title={thread.is_starred ? "Unstar" : "Star"}
+                        >
+                          {thread.is_starred ? "⭐" : "☆"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="flex flex-col items-center justify-center p-12 text-center">
+                  <div className="flex h-16 w-16 items-center justify-center rounded-3xl bg-slate-100 text-3xl">
+                    ✉️
+                  </div>
+                  <h3 className="mt-4 text-base font-bold text-slate-800">No emails here</h3>
+                  <p className="mt-1 max-w-xs text-xs text-slate-500">
+                    {searchQuery
+                      ? "No conversations match your search terms."
+                      : "No messages found in this folder."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleSyncInbox}
+                    className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+                  >
+                    Check for new emails
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ════════════ Column 3: Full Interactive Email Reader ════════════ */}
+          <section className="hidden min-w-0 bg-white lg:block">
+            {selectedThread ? (
+              <EmailReaderView
+                thread={selectedThread}
+                mailbox={mailbox}
+                onClose={() => setSelectedThreadId(null)}
+                onReply={(repTo, repSub) => {
+                  setComposeInitialTo(repTo);
+                  setComposeInitialSubject(repSub.startsWith("Re:") ? repSub : `Re: ${repSub}`);
+                  setComposeOpen(true);
+                }}
+                onToggleStar={handleToggleStar}
+                onMoveFolder={handleMoveFolder}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center p-12 text-center">
+                <div className="flex h-24 w-24 items-center justify-center rounded-3xl bg-primary-soft text-5xl shadow-inner">
+                  📬
+                </div>
+                <h3 className="mt-6 text-xl font-black text-slate-800">Select an email to read</h3>
+                <p className="mt-2 max-w-sm text-sm text-slate-500">
+                  Pick any message from the conversation list on the left, or compose a brand-new email with attachments.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setComposeInitialTo("");
+                    setComposeInitialSubject("");
+                    setComposeOpen(true);
+                  }}
+                  className="mt-6 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-white shadow-lg shadow-primary/20 transition hover:bg-primary-hover active:scale-95"
+                >
+                  <span>✏️</span>
+                  <span>Compose New Email</span>
+                </button>
+              </div>
+            )}
+          </section>
+
+        </div>
+      </div>
+
+      {/* Floating Compose Drawer with Attachments */}
+      {composeOpen && (
+        <ComposeDrawer
+          mailbox={mailbox}
+          initialTo={composeInitialTo}
+          initialSubject={composeInitialSubject}
+          onClose={() => setComposeOpen(false)}
+          onSent={() => {
+            setNotification({ text: "Email sent successfully! 🚀", tone: "success" });
+            loadMailbox();
+          }}
+        />
+      )}
+    </>
+  );
 }

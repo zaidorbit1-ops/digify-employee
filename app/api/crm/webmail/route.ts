@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { decryptMailboxCredentials } from "@/lib/crm-mailboxes-crypto";
 
-type MailboxRecord = {
+export type MailboxRecord = {
   id: number;
   company_id: number;
   email_address: string;
@@ -47,7 +47,7 @@ async function getMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>[
   return data as MailboxRecord;
 }
 
-async function syncMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>["client"], mailbox: MailboxRecord) {
+export async function syncMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>["client"], mailbox: MailboxRecord) {
   const credentials = decryptMailboxCredentials(mailbox.encrypted_credentials ?? "");
   const imap = new ImapFlow({
     ...securityOptions(mailbox),
@@ -127,6 +127,22 @@ async function syncMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>
             received_at: receivedAt,
           }, { onConflict: "mailbox_id,provider_message_id" }).select("id").single();
         if (messageError) throw messageError;
+        if (parsed.attachments && parsed.attachments.length > 0 && storedMessage) {
+          for (const att of parsed.attachments) {
+            try {
+              await client.from("crm_email_attachments").insert({
+                company_id: mailbox.company_id,
+                message_id: storedMessage.id,
+                file_name: att.filename || "attachment",
+                content_type: att.contentType || "application/octet-stream",
+                storage_path: `data:${att.contentType || "application/octet-stream"};base64,${att.content ? att.content.toString("base64") : ""}`,
+                file_size: att.size || (att.content ? att.content.length : 0),
+              });
+            } catch {
+              // Ignore insert error
+            }
+          }
+        }
         if (contactId && storedMessage) {
           const eventType = matchedMessage?.thread_id ? "email_replied" : "email_received";
           const { data: existingTimeline } = await client.from("crm_contact_timeline").select("id").eq("company_id", mailbox.company_id).eq("contact_id", contactId).eq("event_type", eventType).contains("event_data", { provider_message_id: providerMessageId }).maybeSingle();
@@ -160,7 +176,7 @@ export async function GET(request: Request) {
     const mailbox = await getMailbox(client, mailboxId);
     const { data, error } = await client
       .from("crm_email_threads")
-      .select("*, crm_email_messages(*)")
+      .select("*, crm_email_messages(*, crm_email_attachments(*))")
       .eq("mailbox_id", mailboxId)
       .order("updated_at", { ascending: false });
     if (error) throw error;
@@ -174,15 +190,25 @@ export async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
-    const body = await request.json() as { mailbox_id?: number; action?: string; to?: string; cc?: string; subject?: string; text?: string };
+    const body = await request.json() as {
+      mailbox_id?: number;
+      action?: string;
+      to?: string;
+      cc?: string;
+      subject?: string;
+      text?: string;
+      html?: string;
+      attachments?: Array<{ name: string; size: number; type: string; base64: string }>;
+    };
     const mailboxId = Number(body.mailbox_id);
     if (!Number.isInteger(mailboxId) || mailboxId <= 0) return fail("A valid mailbox is required.", "A valid mailbox is required.", 400);
     const mailbox = await getMailbox(client, mailboxId);
     if (body.action === "send") {
       const to = body.to?.trim();
       const subject = body.subject?.trim();
-      const textBody = body.text?.trim();
-      if (!to || !subject || !textBody) return fail("Recipient, subject, and message are required.", "Recipient, subject, and message are required.", 400);
+      const textBody = body.text?.trim() || "";
+      const htmlBody = body.html?.trim() || undefined;
+      if (!to || !subject || (!textBody && !htmlBody)) return fail("Recipient, subject, and message are required.", "Recipient, subject, and message are required.", 400);
       const credentials = decryptMailboxCredentials(mailbox.encrypted_credentials ?? "");
       const transporter = nodemailer.createTransport({
         host: mailbox.smtp_host,
@@ -192,12 +218,63 @@ export async function POST(request: Request) {
         tls: { rejectUnauthorized: false },
         auth: { user: credentials.username, pass: credentials.password },
       });
-      const sent = await transporter.sendMail({ from: mailbox.email_address, to, cc: body.cc?.trim() || undefined, subject, text: textBody });
+
+      const rawAttachments = (body.attachments || []).map((att) => {
+        const base64Data = att.base64.includes(",") ? att.base64.split(",")[1] : att.base64;
+        return {
+          filename: att.name,
+          content: Buffer.from(base64Data, "base64"),
+          contentType: att.type || undefined,
+        };
+      });
+
+      const sent = await transporter.sendMail({
+        from: mailbox.email_address,
+        to,
+        cc: body.cc?.trim() || undefined,
+        subject,
+        text: textBody,
+        html: htmlBody,
+        attachments: rawAttachments.length > 0 ? rawAttachments : undefined,
+      });
       const providerMessageId = sent.messageId || `sent:${Date.now()}`;
       const { data: thread, error: threadError } = await client.from("crm_email_threads").insert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, subject, provider_thread_id: providerMessageId, folder: "sent", updated_at: new Date().toISOString() }).select("id").single();
       if (threadError) throw threadError;
-      const { error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: to.split(",").map((value) => value.trim()).filter(Boolean), cc: body.cc ? body.cc.split(",").map((value) => value.trim()).filter(Boolean) : [], subject, text_body: textBody, is_read: true, sent_at: new Date().toISOString() });
+      const { data: storedMessage, error: messageError } = await client.from("crm_email_messages").insert({
+        company_id: mailbox.company_id,
+        thread_id: thread.id,
+        mailbox_id: mailbox.id,
+        direction: "outbound",
+        provider_message_id: providerMessageId,
+        message_id: providerMessageId,
+        sender: mailbox.email_address,
+        recipients: to.split(",").map((value) => value.trim()).filter(Boolean),
+        cc: body.cc ? body.cc.split(",").map((value) => value.trim()).filter(Boolean) : [],
+        subject,
+        text_body: textBody,
+        html_body: htmlBody ?? null,
+        is_read: true,
+        sent_at: new Date().toISOString(),
+      }).select("id").single();
       if (messageError) throw messageError;
+
+      if (body.attachments && body.attachments.length > 0 && storedMessage) {
+        for (const att of body.attachments) {
+          try {
+            const rawData = att.base64.includes(",") ? att.base64.split(",")[1] : att.base64;
+            await client.from("crm_email_attachments").insert({
+              company_id: mailbox.company_id,
+              message_id: storedMessage.id,
+              file_name: att.name || "attachment",
+              content_type: att.type || "application/octet-stream",
+              storage_path: `data:${att.type || "application/octet-stream"};base64,${rawData}`,
+              file_size: att.size || 0,
+            });
+          } catch {
+            // Ignore insert error
+          }
+        }
+      }
       const recipientEmail = to.split(",")[0]?.trim().toLowerCase();
       if (recipientEmail) {
         const { data: contact } = await client.from("crm_contacts").select("id").eq("company_id", mailbox.company_id).eq("normalized_email", recipientEmail).maybeSingle();
@@ -219,13 +296,33 @@ export async function PATCH(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
-    const body = await request.json() as { message_id?: number; is_read?: boolean };
-    const messageId = Number(body.message_id);
-    if (!Number.isInteger(messageId) || messageId <= 0) return fail("A valid message is required.", "A valid message is required.", 400);
-    const { error } = await client.from("crm_email_messages").update({ is_read: body.is_read !== false }).eq("id", messageId);
-    if (error) throw error;
+    const body = await request.json() as {
+      message_id?: number;
+      is_read?: boolean;
+      thread_id?: number;
+      is_starred?: boolean;
+      folder?: string;
+    };
+
+    if (body.thread_id) {
+      const threadUpdate: Record<string, any> = {};
+      if (typeof body.is_starred === "boolean") threadUpdate.is_starred = body.is_starred;
+      if (typeof body.folder === "string") threadUpdate.folder = body.folder;
+      if (Object.keys(threadUpdate).length > 0) {
+        const { error: tErr } = await client.from("crm_email_threads").update(threadUpdate).eq("id", body.thread_id);
+        if (tErr) throw tErr;
+      }
+    }
+
+    if (body.message_id) {
+      const messageId = Number(body.message_id);
+      if (!Number.isInteger(messageId) || messageId <= 0) return fail("A valid message is required.", "A valid message is required.", 400);
+      const { error } = await client.from("crm_email_messages").update({ is_read: body.is_read !== false }).eq("id", messageId);
+      if (error) throw error;
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
-    return fail(error, "Could not update message.");
+    return fail(error, "Could not update message or thread.");
   }
 }
