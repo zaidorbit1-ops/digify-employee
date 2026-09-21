@@ -47,7 +47,7 @@ async function getMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>[
   return data as MailboxRecord;
 }
 
-export async function syncMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>["client"], mailbox: MailboxRecord) {
+async function syncMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>["client"], mailbox: MailboxRecord) {
   const credentials = decryptMailboxCredentials(mailbox.encrypted_credentials ?? "");
   const imap = new ImapFlow({
     ...securityOptions(mailbox),
