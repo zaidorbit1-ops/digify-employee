@@ -51,11 +51,11 @@ const emptyForm: MailboxForm = {
   company_id: "",
   email_address: "",
   display_name: "",
-  provider: "other",
-  imap_host: "",
+  provider: "hostinger",
+  imap_host: "imap.hostinger.com",
   imap_port: "993",
   imap_security: "ssl",
-  smtp_host: "",
+  smtp_host: "smtp.hostinger.com",
   smtp_port: "465",
   smtp_security: "ssl",
   username: "",
@@ -63,11 +63,68 @@ const emptyForm: MailboxForm = {
   status: "pending",
 };
 
+const PROVIDER_PRESETS: Record<string, Partial<MailboxForm>> = {
+  hostinger: {
+    imap_host: "imap.hostinger.com",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "smtp.hostinger.com",
+    smtp_port: "465",
+    smtp_security: "ssl",
+  },
+  orangehost: {
+    imap_host: "mail.orangehost.com",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "mail.orangehost.com",
+    smtp_port: "465",
+    smtp_security: "ssl",
+  },
+  gmail: {
+    imap_host: "imap.gmail.com",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "smtp.gmail.com",
+    smtp_port: "465",
+    smtp_security: "ssl",
+  },
+  outlook: {
+    imap_host: "outlook.office365.com",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "smtp.office365.com",
+    smtp_port: "587",
+    smtp_security: "starttls",
+  },
+  office365: {
+    imap_host: "outlook.office365.com",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "smtp.office365.com",
+    smtp_port: "587",
+    smtp_security: "starttls",
+  },
+  other: {
+    imap_host: "",
+    imap_port: "993",
+    imap_security: "ssl",
+    smtp_host: "",
+    smtp_port: "465",
+    smtp_security: "ssl",
+  },
+};
+
 function formatDate(value?: string | null) {
   if (!value) return "Not synced yet";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Not synced yet";
-  return date.toLocaleString();
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export default function CrmWebmailPage() {
@@ -84,7 +141,7 @@ export default function CrmWebmailPage() {
 
   const selectedCompany = useMemo(
     () => companies.find((company) => String(company.id) === selectedCompanyId) ?? null,
-    [companies, selectedCompanyId],
+    [companies, selectedCompanyId]
   );
 
   async function loadCompanies() {
@@ -113,14 +170,35 @@ export default function CrmWebmailPage() {
   }
 
   useEffect(() => {
-    loadCompanies().catch((error) => setMessage({ text: error instanceof Error ? error.message : "Could not load companies.", tone: "danger" }));
+    loadCompanies().catch((error) =>
+      setMessage({
+        text: error instanceof Error ? error.message : "Could not load companies.",
+        tone: "danger",
+      })
+    );
   }, []);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
     setLoading(true);
-    loadMailboxes().catch((error) => setMessage({ text: error instanceof Error ? error.message : "Could not load mailboxes.", tone: "danger" })).finally(() => setLoading(false));
+    loadMailboxes()
+      .catch((error) =>
+        setMessage({
+          text: error instanceof Error ? error.message : "Could not load mailboxes.",
+          tone: "danger",
+        })
+      )
+      .finally(() => setLoading(false));
   }, [selectedCompanyId]);
+
+  function handleProviderChange(providerKey: string) {
+    const preset = PROVIDER_PRESETS[providerKey] || {};
+    setForm((current) => ({
+      ...current,
+      provider: providerKey,
+      ...preset,
+    }));
+  }
 
   function openAdd() {
     if (!selectedCompanyId) {
@@ -128,7 +206,12 @@ export default function CrmWebmailPage() {
       return;
     }
     setEditingId(null);
-    setForm({ ...emptyForm, company_id: selectedCompanyId, username: "", password: "" });
+    setForm({
+      ...emptyForm,
+      company_id: selectedCompanyId,
+      username: "",
+      password: "",
+    });
     setModalOpen(true);
   }
 
@@ -185,7 +268,7 @@ export default function CrmWebmailPage() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save mailbox.");
       setModalOpen(false);
-      setMessage({ text: editingId ? "Mailbox updated." : "Mailbox saved.", tone: "success" });
+      setMessage({ text: editingId ? "Mailbox updated successfully." : "Mailbox created successfully.", tone: "success" });
       await loadMailboxes();
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : "Could not save mailbox.", tone: "danger" });
@@ -206,7 +289,7 @@ export default function CrmWebmailPage() {
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Mailbox connection test failed.");
-      setMessage({ text: result.message ?? "Mailbox connection successful.", tone: "success" });
+      setMessage({ text: result.message ?? "Mailbox connection verified successfully.", tone: "success" });
       await loadMailboxes();
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : "Mailbox connection test failed.", tone: "danger" });
@@ -250,7 +333,7 @@ export default function CrmWebmailPage() {
   }
 
   async function deleteMailbox(mailbox: Mailbox) {
-    if (!window.confirm(`Delete ${mailbox.email_address}?`)) return;
+    if (!window.confirm(`Are you sure you want to delete ${mailbox.email_address}?`)) return;
     setLoading(true);
     try {
       const response = await fetch(`/api/crm/mailboxes?id=${mailbox.id}`, { method: "DELETE" });
@@ -265,163 +348,453 @@ export default function CrmWebmailPage() {
     }
   }
 
-  return <>
-    <PageHeader eyebrow="Business CRM / Webmail" title="Webmail mailboxes" description="Connect and validate company mailboxes using IMAP and SMTP, while keeping credentials encrypted on the server." actions={<Button onClick={openAdd} disabled={!selectedCompanyId}><IconPlus className="h-4 w-4" />Add mailbox</Button>} />
-    {message ? <div className="mb-5"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
+  const connectedCount = mailboxes.filter((m) => m.status === "connected").length;
 
-    <Card className="mb-5">
-      <div className="grid gap-5 md:grid-cols-[1.5fr_1fr]">
-        <Field label="Company">
-          <SelectInput value={selectedCompanyId} onChange={(event) => setSelectedCompanyId(event.target.value)}>
-            {companies.map((company) => (
-              <option key={company.id} value={String(company.id)}>{company.name}</option>
-            ))}
-          </SelectInput>
-        </Field>
-        {selectedCompany ? <div className="rounded-xl border border-border bg-[#fcfaf9] p-3"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Selected company</p><p className="mt-2 text-lg font-bold">{selectedCompany.name}</p><Badge tone={selectedCompany.status === "active" ? "success" : "warning"}>{selectedCompany.status}</Badge></div> : null}
-      </div>
-    </Card>
+  return (
+    <>
+      {/* Header */}
+      <PageHeader
+        eyebrow="Business CRM / Webmail"
+        title="Webmail Mailboxes"
+        description="Connect and validate company email accounts using secure IMAP and SMTP, with server-side encrypted credentials."
+        actions={
+          <Button
+            onClick={openAdd}
+            disabled={!selectedCompanyId}
+            className="bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover active:scale-95 transition"
+          >
+            <IconPlus className="h-4 w-4" />
+            <span>Add mailbox</span>
+          </Button>
+        }
+      />
 
-    {loading && !mailboxes.length ? <Card><p className="text-sm text-muted">Loading mailboxes…</p></Card> : null}
-
-    {!selectedCompanyId ? <Card><p className="text-sm text-muted">Create a CRM company to start connecting mailboxes.</p></Card> : null}
-
-    {selectedCompanyId && !loading && !mailboxes.length ? (
-      <Card className="overflow-hidden p-0">
-        <div className="h-1.5 bg-primary" />
-        <div className="p-6 sm:p-8">
-          <p className="text-lg font-bold">No mailboxes connected yet</p>
-          <p className="mt-2 max-w-xl text-sm leading-6 text-muted">Add the first mailbox for this company and test IMAP/SMTP connectivity before syncing inbound or sending outbound mail.</p>
-          <Button className="mt-5" onClick={openAdd}><IconPlus className="h-4 w-4" />Add mailbox</Button>
+      {message && (
+        <div className="mb-5 animate-in fade-in">
+          <Alert tone={message.tone}>{message.text}</Alert>
         </div>
-      </Card>
-    ) : null}
+      )}
 
-    {mailboxes.length ? <div className="grid gap-5 xl:grid-cols-2">{mailboxes.map((mailbox) => (
-      <Card key={mailbox.id} className="overflow-hidden p-0">
-        <div className="border-b border-border px-5 py-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <Link href={`/dashboard/crm/webmail/${mailbox.id}`} className="text-xl font-bold tracking-tight hover:text-primary">{mailbox.display_name || mailbox.email_address}</Link>
-              <p className="mt-1 text-sm text-muted">{mailbox.email_address}</p>
+      {/* Top Company Selector & Overview Metrics */}
+      <div className="mb-6 grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+        <Card className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="flex h-2 w-2 rounded-full bg-primary animate-pulse" />
+            <span className="text-[11px] font-extrabold uppercase tracking-widest text-primary">
+              Active Company
+            </span>
+          </div>
+          <Field label="Switch Company">
+            <SelectInput
+              value={selectedCompanyId}
+              onChange={(event) => setSelectedCompanyId(event.target.value)}
+              className="mt-1 font-semibold text-slate-800"
+            >
+              {companies.map((company) => (
+                <option key={company.id} value={String(company.id)}>
+                  {company.name}
+                </option>
+              ))}
+            </SelectInput>
+          </Field>
+        </Card>
+
+        {selectedCompany && (
+          <Card className="flex flex-col justify-between rounded-2xl border border-primary/20 bg-gradient-to-br from-primary-soft/60 to-white p-5 shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Company Status
+                </p>
+                <p className="mt-1 text-xl font-black text-slate-900">{selectedCompany.name}</p>
+              </div>
+              <Badge tone={selectedCompany.status === "active" ? "success" : "warning"}>
+                {selectedCompany.status}
+              </Badge>
             </div>
-            <Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : mailbox.status === "disconnected" ? "neutral" : "warning"}>{mailbox.status}</Badge>
+            <div className="mt-4 flex items-center gap-4 text-xs font-semibold text-slate-600">
+              <span className="flex items-center gap-1.5">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                <span>{connectedCount} Connected Mailbox{connectedCount === 1 ? "" : "es"}</span>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span>🔒 TLS/SSL Encrypted</span>
+              </span>
+            </div>
+          </Card>
+        )}
+      </div>
+
+      {loading && !mailboxes.length ? (
+        <Card className="p-8 text-center rounded-2xl border border-slate-200 bg-white">
+          <div className="flex justify-center mb-2">
+            <span className="text-2xl animate-spin">🔄</span>
           </div>
-        </div>
-        <div className="space-y-4 p-5">
-          <div className="flex flex-wrap gap-2 text-xs text-muted">
-            <span className="rounded-full bg-primary-soft px-2.5 py-1 font-semibold text-primary">{mailbox.provider}</span>
-            <span className="rounded-full border border-border px-2.5 py-1">IMAP {mailbox.imap_host}:{mailbox.imap_port}</span>
-            <span className="rounded-full border border-border px-2.5 py-1">SMTP {mailbox.smtp_host}:{mailbox.smtp_port}</span>
+          <p className="text-sm font-semibold text-slate-600">Loading your mailboxes…</p>
+        </Card>
+      ) : null}
+
+      {!selectedCompanyId ? (
+        <Card className="p-8 text-center rounded-2xl border border-slate-200 bg-white">
+          <p className="text-sm font-semibold text-slate-600">
+            Create or select a CRM company to start connecting mailboxes.
+          </p>
+        </Card>
+      ) : null}
+
+      {selectedCompanyId && !loading && !mailboxes.length ? (
+        <Card className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-0 shadow-sm">
+          <div className="h-1.5 bg-gradient-to-r from-primary to-primary-hover" />
+          <div className="p-8 text-center sm:p-12">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-3xl bg-primary-soft text-3xl">
+              ✉️
+            </div>
+            <h3 className="mt-4 text-xl font-black text-slate-900">No mailboxes connected yet</h3>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-500">
+              Connect your domain email (Hostinger, OrangeHost, Google Workspace, or custom IMAP) to send campaigns and manage customer inbox threads.
+            </p>
+            <Button
+              className="mt-6 bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover"
+              onClick={openAdd}
+            >
+              <IconPlus className="h-4 w-4" />
+              <span>Connect First Mailbox</span>
+            </Button>
           </div>
-          <div className="grid gap-3 text-sm sm:grid-cols-2">
-            <div className="rounded-xl border border-border bg-[#fcfaf9] p-3"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Last sync</p><p className="mt-2 font-medium">{formatDate(mailbox.last_sync_at)}</p></div>
-            <div className="rounded-xl border border-border bg-[#fcfaf9] p-3"><p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">Status</p><p className="mt-2 font-medium">{mailbox.last_error ? "Needs attention" : "Healthy"}</p></div>
+        </Card>
+      ) : null}
+
+      {/* Mailbox Cards Grid */}
+      {mailboxes.length > 0 && (
+        <div className="grid gap-6 md:grid-cols-2">
+          {mailboxes.map((mailbox) => (
+            <Card
+              key={mailbox.id}
+              className="group overflow-hidden rounded-2xl border border-slate-200/90 bg-white p-0 shadow-sm transition hover:border-primary/40 hover:shadow-lg"
+            >
+              {/* Card Header */}
+              <div className="border-b border-slate-100 bg-slate-50/50 px-6 py-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      href={`/dashboard/crm/webmail/${mailbox.id}`}
+                      className="group-hover:text-primary flex items-center gap-2 text-lg font-black tracking-tight text-slate-900 transition"
+                    >
+                      <span className="truncate">{mailbox.display_name || mailbox.email_address}</span>
+                      <span className="text-sm font-normal text-primary">↗</span>
+                    </Link>
+                    <p className="mt-0.5 truncate text-xs font-medium text-slate-500">
+                      {mailbox.email_address}
+                    </p>
+                  </div>
+                  <Badge
+                    tone={
+                      mailbox.status === "connected"
+                        ? "success"
+                        : mailbox.status === "error"
+                        ? "danger"
+                        : mailbox.status === "disconnected"
+                        ? "neutral"
+                        : "warning"
+                    }
+                  >
+                    {mailbox.status === "connected" ? "🟢 Connected" : mailbox.status}
+                  </Badge>
+                </div>
+              </div>
+
+              {/* Card Body */}
+              <div className="space-y-4 p-6">
+                {/* Badges / Protocols */}
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-primary-soft px-3 py-1 font-bold text-primary capitalize">
+                    {mailbox.provider}
+                  </span>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-slate-600">
+                    IMAP: {mailbox.imap_host}:{mailbox.imap_port}
+                  </span>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-slate-600">
+                    SMTP: {mailbox.smtp_host}:{mailbox.smtp_port}
+                  </span>
+                </div>
+
+                {/* Status & Sync Stats */}
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-3.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Last Sync
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-800">
+                      {formatDate(mailbox.last_sync_at)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-3.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Connection Health
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-800">
+                      {mailbox.last_error ? (
+                        <span className="text-rose-600 font-bold">Needs attention</span>
+                      ) : (
+                        <span className="text-emerald-600 font-bold">Verified & Healthy</span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {mailbox.last_error && (
+                  <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-800">
+                    ⚠️ {mailbox.last_error}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="secondary"
+                      loading={testingMailboxId === mailbox.id}
+                      disabled={loading}
+                      onClick={() => testMailbox(mailbox)}
+                      className="text-xs"
+                    >
+                      <IconRefresh className="h-3.5 w-3.5" />
+                      <span>{testingMailboxId === mailbox.id ? "Testing…" : "Test"}</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => openEdit(mailbox)}
+                      className="text-xs"
+                    >
+                      <IconEdit className="h-3.5 w-3.5" />
+                      <span>Edit</span>
+                    </Button>
+                    {mailbox.status === "connected" || mailbox.status === "pending" ? (
+                      <Button
+                        variant="secondary"
+                        onClick={() => disconnectMailbox(mailbox)}
+                        className="text-xs text-slate-600"
+                      >
+                        Disconnect
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="ghost"
+                      className="text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                      onClick={() => deleteMailbox(mailbox)}
+                    >
+                      <IconTrash className="h-3.5 w-3.5" />
+                      <span>Delete</span>
+                    </Button>
+                  </div>
+
+                  {/* Direct Open Inbox Link */}
+                  <Link
+                    href={`/dashboard/crm/webmail/${mailbox.id}`}
+                    className="flex items-center gap-1.5 rounded-xl bg-primary-soft px-3.5 py-1.5 text-xs font-bold text-primary transition hover:bg-primary hover:text-white"
+                  >
+                    <span>Open Inbox</span>
+                    <span>→</span>
+                  </Link>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Add / Edit Mailbox Modal */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={editingId ? "Edit Mailbox" : "Connect Mailbox"}
+        description="Credentials are kept secure on the server using AES-256 encryption."
+      >
+        <form className="space-y-4" onSubmit={saveMailbox}>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Company">
+              <SelectInput
+                value={form.company_id}
+                onChange={(event) => setForm({ ...form, company_id: event.target.value })}
+              >
+                {companies.map((company) => (
+                  <option key={company.id} value={String(company.id)}>
+                    {company.name}
+                  </option>
+                ))}
+              </SelectInput>
+            </Field>
+            <Field label="Status">
+              <SelectInput
+                value={form.status}
+                onChange={(event) => setForm({ ...form, status: event.target.value })}
+              >
+                <option value="pending">Pending</option>
+                <option value="connected">Connected</option>
+                <option value="error">Error</option>
+                <option value="disconnected">Disconnected</option>
+              </SelectInput>
+            </Field>
           </div>
-          {mailbox.last_error ? <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{mailbox.last_error}</div> : null}
-          <div className="flex flex-wrap gap-2 border-t border-border pt-4">
-            <Button variant="secondary" loading={testingMailboxId === mailbox.id} disabled={loading} onClick={() => testMailbox(mailbox)}><IconRefresh className="h-4 w-4" />{testingMailboxId === mailbox.id ? "Testing IMAP/SMTP..." : "Test"}</Button>
-            <Button variant="secondary" onClick={() => openEdit(mailbox)}><IconEdit className="h-4 w-4" />Edit</Button>
-            {mailbox.status === "connected" || mailbox.status === "pending" ? <Button variant="secondary" onClick={() => disconnectMailbox(mailbox)}>Disconnect</Button> : null}
-            <Button variant="ghost" className="text-rose-600 hover:bg-rose-50 hover:text-rose-700" onClick={() => deleteMailbox(mailbox)}><IconTrash className="h-4 w-4" />Delete</Button>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Provider Preset">
+              <SelectInput
+                value={form.provider}
+                onChange={(event) => handleProviderChange(event.target.value)}
+              >
+                <option value="hostinger">Hostinger (Auto-configured)</option>
+                <option value="orangehost">OrangeHost (Auto-configured)</option>
+                <option value="gmail">Google Workspace / Gmail</option>
+                <option value="outlook">Outlook / Microsoft 365</option>
+                <option value="other">Custom IMAP / SMTP</option>
+              </SelectInput>
+            </Field>
+            <Field label="Display Name">
+              <TextInput
+                value={form.display_name}
+                onChange={(event) => setForm({ ...form, display_name: event.target.value })}
+                placeholder="e.g. Digify Support"
+              />
+            </Field>
           </div>
-          {testingMailboxId === mailbox.id ? <p className="text-sm font-medium text-primary" role="status">Testing IMAP and SMTP connection. Please wait for the final result...</p> : null}
-        </div>
-      </Card>
-    ))}</div> : null}
 
-    <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? "Edit mailbox" : "Add mailbox"} description="Server-side encryption keeps the mailbox credentials protected. Browser JavaScript never receives the password value.">
-      <form className="space-y-5" onSubmit={saveMailbox}>
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Company">
-            <SelectInput value={form.company_id} onChange={(event) => setForm({ ...form, company_id: event.target.value })}>
-              {companies.map((company) => <option key={company.id} value={String(company.id)}>{company.name}</option>)}
-            </SelectInput>
-          </Field>
-          <Field label="Status">
-            <SelectInput value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
-              <option value="pending">Pending</option>
-              <option value="connected">Connected</option>
-              <option value="error">Error</option>
-              <option value="disconnected">Disconnected</option>
-            </SelectInput>
-          </Field>
-        </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Mailbox Email Address">
+              <TextInput
+                required
+                type="email"
+                value={form.email_address}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    email_address: event.target.value,
+                    username: form.username || event.target.value,
+                  })
+                }
+                placeholder="info@yourcompany.com"
+              />
+            </Field>
+            <Field label="IMAP/SMTP Username">
+              <TextInput
+                required
+                value={form.username}
+                onChange={(event) => setForm({ ...form, username: event.target.value })}
+                placeholder="info@yourcompany.com"
+              />
+            </Field>
+          </div>
 
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Mailbox email">
-            <TextInput required value={form.email_address} onChange={(event) => setForm({ ...form, email_address: event.target.value })} placeholder="info@company.com" />
-          </Field>
-          <Field label="Display name">
-            <TextInput value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="Customer Support" />
-          </Field>
-        </div>
+          {/* Password field */}
+          <div>
+            <Field label="Password">
+              <TextInput
+                type="password"
+                value={form.password}
+                onChange={(event) => setForm({ ...form, password: event.target.value })}
+                placeholder={editingId ? "•••••••••••• (Leave blank to keep current)" : "Enter password"}
+                required={!editingId}
+              />
+            </Field>
+            <p className="mt-1 text-xs text-slate-500">
+              {editingId
+                ? "Leave blank to keep your currently stored encrypted password."
+                : "Enter the email mailbox password."}
+            </p>
+          </div>
 
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Provider">
-            <SelectInput value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })}>
-              <option value="hostinger">Hostinger</option>
-              <option value="orangehost">OrangeHost</option>
-              <option value="gmail">Gmail</option>
-              <option value="outlook">Outlook</option>
-              <option value="office365">Office 365</option>
-              <option value="other">Other</option>
-            </SelectInput>
-          </Field>
-          <Field label="Username">
-            <TextInput required value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} placeholder="info@company.com" />
-          </Field>
-        </div>
+          {/* IMAP Config */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
+              IMAP Configuration (Incoming)
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <Field label="Host">
+                  <TextInput
+                    required
+                    value={form.imap_host}
+                    onChange={(event) => setForm({ ...form, imap_host: event.target.value })}
+                    placeholder="imap.hostinger.com"
+                  />
+                </Field>
+              </div>
+              <div>
+                <Field label="Port">
+                  <TextInput
+                    type="number"
+                    value={form.imap_port}
+                    onChange={(event) => setForm({ ...form, imap_port: event.target.value })}
+                    placeholder="993"
+                  />
+                </Field>
+              </div>
+            </div>
+            <Field label="Security">
+              <SelectInput
+                value={form.imap_security}
+                onChange={(event) => setForm({ ...form, imap_security: event.target.value })}
+              >
+                <option value="ssl">SSL / TLS (Recommended - Port 993)</option>
+                <option value="starttls">STARTTLS</option>
+                <option value="none">None</option>
+              </SelectInput>
+            </Field>
+          </div>
 
-        <div className="rounded-xl border border-primary/20 bg-primary-soft/40 p-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-primary">Credentials</p>
-          <p className="mt-2 text-sm text-muted">Leave the password blank when editing an existing mailbox to keep the current stored password.</p>
-        </div>
+          {/* SMTP Config */}
+          <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-3">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-600">
+              SMTP Configuration (Outgoing)
+            </p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="sm:col-span-2">
+                <Field label="Host">
+                  <TextInput
+                    required
+                    value={form.smtp_host}
+                    onChange={(event) => setForm({ ...form, smtp_host: event.target.value })}
+                    placeholder="smtp.hostinger.com"
+                  />
+                </Field>
+              </div>
+              <div>
+                <Field label="Port">
+                  <TextInput
+                    type="number"
+                    value={form.smtp_port}
+                    onChange={(event) => setForm({ ...form, smtp_port: event.target.value })}
+                    placeholder="465"
+                  />
+                </Field>
+              </div>
+            </div>
+            <Field label="Security">
+              <SelectInput
+                value={form.smtp_security}
+                onChange={(event) => setForm({ ...form, smtp_security: event.target.value })}
+              >
+                <option value="ssl">SSL / TLS (Recommended - Port 465)</option>
+                <option value="starttls">STARTTLS (Port 587)</option>
+                <option value="none">None</option>
+              </SelectInput>
+            </Field>
+          </div>
 
-        <Field label="Password">
-          <TextInput type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} placeholder={editingId ? "Leave blank to keep current password" : "Enter mailbox password"} />
-        </Field>
-
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="IMAP host">
-            <TextInput required value={form.imap_host} onChange={(event) => setForm({ ...form, imap_host: event.target.value })} placeholder="mail.company.com" />
-          </Field>
-          <Field label="IMAP port">
-            <TextInput type="number" min={1} max={65535} value={form.imap_port} onChange={(event) => setForm({ ...form, imap_port: event.target.value })} placeholder="993" />
-          </Field>
-        </div>
-
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="IMAP security">
-            <SelectInput value={form.imap_security} onChange={(event) => setForm({ ...form, imap_security: event.target.value })}>
-              <option value="ssl">SSL</option>
-              <option value="starttls">STARTTLS</option>
-              <option value="none">None</option>
-            </SelectInput>
-          </Field>
-          <Field label="SMTP host">
-            <TextInput required value={form.smtp_host} onChange={(event) => setForm({ ...form, smtp_host: event.target.value })} placeholder="mail.company.com" />
-          </Field>
-        </div>
-
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="SMTP port">
-            <TextInput type="number" min={1} max={65535} value={form.smtp_port} onChange={(event) => setForm({ ...form, smtp_port: event.target.value })} placeholder="465" />
-          </Field>
-          <Field label="SMTP security">
-            <SelectInput value={form.smtp_security} onChange={(event) => setForm({ ...form, smtp_security: event.target.value })}>
-              <option value="ssl">SSL</option>
-              <option value="starttls">STARTTLS</option>
-              <option value="none">None</option>
-            </SelectInput>
-          </Field>
-        </div>
-
-        <div className="flex justify-end gap-3 border-t border-border pt-5">
-          <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button>
-          <Button type="submit" loading={saving}>{editingId ? "Save mailbox" : "Create mailbox"}</Button>
-        </div>
-      </form>
-    </Modal>
-  </>;
+          <div className="flex justify-end gap-3 border-t border-slate-100 pt-4">
+            <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              loading={saving}
+              className="bg-primary text-white hover:bg-primary-hover"
+            >
+              {editingId ? "Save Changes" : "Connect Mailbox"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
 }

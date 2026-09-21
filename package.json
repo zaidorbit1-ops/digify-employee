@@ -6,6 +6,7 @@
     "start": "next start",
     "lint": "eslint",
     "crm:campaign-worker": "node --env-file=.env.local scripts/crm-campaign-worker.cjs",
+    "crm:webmail-worker": "node --env-file=.env.local scripts/crm-webmail-worker.cjs",
     "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs",
     "office:sync": "scripts\\start-office-sync.bat",
     "office:autostart": "powershell -ExecutionPolicy Bypass -File scripts\\install-windows-autostart.ps1",
