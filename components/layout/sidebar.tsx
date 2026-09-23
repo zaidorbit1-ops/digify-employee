@@ -47,6 +47,8 @@ const crmNavItems = [
   { label: "Companies", href: "/dashboard/crm/companies", icon: IconBriefcase },
   { label: "Custom fields", href: "/dashboard/crm/custom-fields", icon: IconLists },
   { label: "Leads", href: "/dashboard/crm/leads", icon: IconEmployees },
+  { label: "Experts", href: "/dashboard/crm/experts", icon: IconEmployees },
+  { label: "Orders", href: "/dashboard/crm/orders", icon: IconWallet },
   { label: "Contacts", href: "/dashboard/crm/contacts", icon: IconEmployees },
   { label: "Segments", href: "/dashboard/crm/segments", icon: IconLists },
   { label: "Webmail", href: "/dashboard/crm/webmail", icon: IconBell },
@@ -257,9 +259,10 @@ export function Sidebar({
           ) : null}
           <nav className="space-y-1">
             {visibleNavItems.map((item) => {
-              const active =
-                item.href === "/dashboard"
-                  ? pathname === "/dashboard"
+              const active = item.href === "/dashboard"
+                ? pathname === "/dashboard"
+                : item.href === "/dashboard/crm"
+                  ? pathname === "/dashboard/crm"
                   : pathname.startsWith(item.href);
               const Icon = item.icon;
 
