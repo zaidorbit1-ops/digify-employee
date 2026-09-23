@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { IconRefresh, IconSearch } from "@/components/icons";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { IconEdit, IconPlus, IconRefresh, IconSearch, IconTrash } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -25,21 +27,25 @@ type Lead = {
   source_url?: string | null;
   status: string;
   custom_data?: Record<string, unknown> | { notes?: { text: string; created_at: string }[] };
+  source?: string | null;
+  updated_at?: string;
   created_at: string;
   crm_websites?: { name: string; website_url: string } | null;
+  crm_orders?: { id: number; public_order_id: string; service_name: string; status: string; created_at: string; completed_at?: string | null }[];
   crm_contacts?: { id: number; full_name: string; email: string } | null;
   crm_contact_timeline?: { event_type: string; created_at: string; event_data: Record<string, unknown> }[];
 };
 type Message = { text: string; tone?: "success" | "danger" };
+type LeadForm = { name: string; email: string; phone: string; company_id: string; website_id: string; message: string; source_name: string; source_url: string };
 type Stage = { id: string; label: string; hint: string; tone: string; ring: string; fill: string };
 
 const hiddenTableColumns = new Set(["email", "form"]);
 
 const defaultColumnOptions = [
   { id: "name", label: "Name" },
-  { id: "phone", label: "Phone" },
   { id: "website", label: "Website" },
   { id: "received", label: "Received" },
+  { id: "orders", label: "Order status" },
 ];
 
 const stages: Stage[] = [
@@ -51,7 +57,8 @@ const stages: Stage[] = [
 ];
 
 const statuses = stages.map((stage) => stage.id);
-const defaultVisibleColumns = ["name", "phone", "website", "received"];
+const defaultVisibleColumns = ["name", "website", "received", "orders"];
+const emptyLeadForm: LeadForm = { name: "", email: "", phone: "", company_id: "", website_id: "", message: "", source_name: "", source_url: "" };
 
 function statusTone(status: string): "primary" | "success" | "warning" | "danger" | "neutral" {
   if (status === "new") return "primary";
@@ -180,6 +187,7 @@ function StageTrack({
 }
 
 export default function CrmLeadsPage() {
+  const searchParams = useSearchParams();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [companyId, setCompanyId] = useState("");
@@ -198,6 +206,11 @@ export default function CrmLeadsPage() {
   const [columnModalOpen, setColumnModalOpen] = useState(false);
   const [pendingColumns, setPendingColumns] = useState<string[]>(defaultVisibleColumns);
   const [websiteColumnSelections, setWebsiteColumnSelections] = useState<Record<string, string[]>>({});
+  const [leadForm, setLeadForm] = useState<LeadForm>(emptyLeadForm);
+  const [leadModalOpen, setLeadModalOpen] = useState(false);
+  const [editingLeadId, setEditingLeadId] = useState<number | null>(null);
+  const [leadFormMessage, setLeadFormMessage] = useState<Message | null>(null);
+  const [leadFormLoading, setLeadFormLoading] = useState(false);
 
   const selectedCompany = companies.find((company) => String(company.id) === companyId);
   const allWebsites = useMemo(() => companies.flatMap((company) => company.crm_websites ?? []), [companies]);
@@ -268,6 +281,25 @@ export default function CrmLeadsPage() {
   }, [companyId, websiteId, from, to]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadLeads();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    const editId = searchParams.get("edit");
+    if (!editId) return;
+    fetch(`/api/crm/leads/${editId}`, { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not load lead.");
+        openLeadEditor(result.lead);
+      })
+      .catch((error) => setMessage({ text: error instanceof Error ? error.message : "Could not load lead.", tone: "danger" }));
+  }, [searchParams]);
+
+  useEffect(() => {
     if (!websiteId) {
       setVisibleColumns(defaultVisibleColumns);
       setPendingColumns(defaultVisibleColumns);
@@ -307,6 +339,40 @@ export default function CrmLeadsPage() {
 
   function toggleColumn(columnId: string) {
     setPendingColumns((current) => (current.includes(columnId) ? current.filter((column) => column !== columnId) : [...current, columnId]));
+  }
+
+  function openLeadEditor(lead?: Lead) {
+    setEditingLeadId(lead?.id ?? null);
+    setLeadForm(lead ? { name: lead.name, email: lead.email, phone: lead.phone ?? "", company_id: String(lead.company_id), website_id: String(lead.website_id ?? ""), message: lead.message ?? "", source_name: lead.source ?? "", source_url: lead.source_url ?? "" } : emptyLeadForm);
+    setLeadFormMessage(null);
+    setLeadModalOpen(true);
+  }
+
+  async function saveLead(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLeadFormLoading(true);
+    setLeadFormMessage(null);
+    try {
+      const response = await fetch(editingLeadId ? `/api/crm/leads/${editingLeadId}` : "/api/crm/leads", { method: editingLeadId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(leadForm) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not save lead.");
+      setLeadModalOpen(false);
+      setMessage({ text: editingLeadId ? "Lead updated." : result.duplicate ? "Lead created and flagged as a duplicate." : "Lead created.", tone: "success" });
+      await loadLeads();
+    } catch (error) {
+      setLeadFormMessage({ text: error instanceof Error ? error.message : "Could not save lead.", tone: "danger" });
+    } finally {
+      setLeadFormLoading(false);
+    }
+  }
+
+  async function trashLead(lead: Lead) {
+    if (!window.confirm("Are you sure you want to move this lead to Trash?")) return;
+    const response = await fetch(`/api/crm/leads/${lead.id}`, { method: "DELETE" });
+    const result = await response.json();
+    if (!response.ok) { setMessage({ text: result.error ?? "Could not move lead to Trash.", tone: "danger" }); return; }
+    setMessage({ text: "Lead moved to Trash.", tone: "success" });
+    await loadLeads();
   }
 
   const customEntryList = selectedLead ? getCustomEntries(selectedLead.custom_data as Record<string, unknown> | undefined) : [];
@@ -375,7 +441,6 @@ export default function CrmLeadsPage() {
           </div>
           <div className="min-w-0">
             <p className="truncate font-semibold text-foreground">{lead.name}</p>
-            <p className="mt-0.5 truncate text-xs text-muted">{lead.email}</p>
           </div>
         </div>
       );
@@ -391,6 +456,11 @@ export default function CrmLeadsPage() {
           {formatRelative(lead.created_at)}
         </span>
       );
+    }
+    if (columnId === "orders") {
+      const orders = [...(lead.crm_orders ?? [])].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const latestOrder = orders[0];
+      return latestOrder ? <Link href={`/dashboard/crm/orders/${latestOrder.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center gap-2" title={`Order #${latestOrder.public_order_id}`}><Badge tone={latestOrder.status === "completed" ? "success" : latestOrder.status === "cancelled" ? "danger" : "warning"}>{latestOrder.status}</Badge><span className="text-xs text-muted">{orders.length} order{orders.length === 1 ? "" : "s"}</span></Link> : <span className="text-xs text-muted">No order</span>;
     }
     const value = (lead.custom_data as Record<string, unknown> | undefined)?.[columnId];
     return <span className="text-muted">{value !== undefined && value !== null && value !== "" ? String(value) : "—"}</span>;
@@ -412,10 +482,7 @@ export default function CrmLeadsPage() {
         title="Leads"
         description="Review every enquiry across the pipeline, move stages in place, and open a profile when you need the full conversation."
         actions={
-          <Button variant="secondary" onClick={loadLeads}>
-            <IconRefresh className="h-4 w-4" />
-            Refresh
-          </Button>
+          <><Button onClick={() => openLeadEditor()}><IconPlus className="h-4 w-4" />Create Lead</Button><Link href="/dashboard/crm/leads/trash" className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm font-semibold text-muted transition hover:border-primary/30 hover:text-primary"><IconTrash className="h-4 w-4" />Trash</Link><Button variant="secondary" onClick={loadLeads}><IconRefresh className="h-4 w-4" />Refresh</Button></>
         }
       />
       {message ? (
@@ -502,10 +569,7 @@ export default function CrmLeadsPage() {
                 className="pl-9"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") loadLeads();
-                }}
-                placeholder="Name, email, or phone"
+                placeholder="Name, email, or Order ID"
               />
             </div>
           </Field>
@@ -531,24 +595,25 @@ export default function CrmLeadsPage() {
               {loading ? "Loading pipeline..." : currentStage ? currentStage.hint : "Every enquiry in the current filters."}
             </p>
           </div>
-          <p className="text-xs text-muted">Click a stage to move the lead. Open the profile for notes and conversion.</p>
+          <p className="text-xs text-muted">Open a lead profile for notes, conversion, and full history.</p>
         </div>
         {visibleLeads.length ? (
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
+            <table className="w-full min-w-[1000px] table-fixed text-left text-sm">
               <thead className="bg-[#fff7f4] text-[11px] uppercase tracking-[0.14em] text-stone-400">
                 <tr>
                   {tableColumns.map((columnId) => {
                     const option = allAvailableColumns.find((entry) => entry.id === columnId);
                     if (!option) return null;
+                    const columnWidth = columnId === "name" ? "w-[16%]" : columnId === "website" ? "w-[16%]" : columnId === "received" ? "w-[12%]" : columnId === "orders" ? "w-[12%]" : "w-[12%]";
                     return (
-                      <th key={columnId} className={`px-5 py-3 font-semibold ${columnId === "name" ? "sticky left-0 z-10 bg-[#fff7f4]" : ""}`}>
+                      <th key={columnId} className={`${columnWidth} px-4 py-3 font-semibold ${columnId === "name" ? "sticky left-0 z-10 bg-[#fff7f4]" : ""}`}>
                         {option.label}
                       </th>
                     );
                   })}
-                  <th className="px-5 py-3 font-semibold">Stage</th>
-                  <th className="px-5 py-3" />
+                  <th className="w-[12%] px-4 py-3 font-semibold">Stage status</th>
+                  <th className="w-[32%] px-4 py-3 text-right font-semibold">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -556,35 +621,19 @@ export default function CrmLeadsPage() {
                   <tr
                     key={lead.id}
                     className="group cursor-pointer border-t border-border transition hover:bg-[#fff8f6]"
-                    onClick={() => openLead(lead.id)}
+                    onClick={() => { window.location.href = `/dashboard/crm/leads/${lead.id}`; }}
                   >
                     {tableColumns.map((columnId) => (
                       <td
                         key={columnId}
-                        className={`px-5 py-3.5 align-middle ${columnId === "name" ? "sticky left-0 z-10 bg-white group-hover:bg-[#fff8f6]" : "whitespace-nowrap"}`}
+                        className={`px-4 py-3.5 align-middle ${columnId === "name" ? "sticky left-0 z-10 bg-white group-hover:bg-[#fff8f6]" : "whitespace-nowrap"}`}
                       >
                         {cellValue(lead, columnId)}
                       </td>
                     ))}
-                    <td className="px-5 py-3.5 align-middle">
-                      <StageTrack
-                        compact
-                        current={lead.status}
-                        disabled={Boolean(busyAction)}
-                        onSelect={(next) => updateLead("status", next, lead.id)}
-                      />
-                    </td>
-                    <td className="px-5 py-3.5 text-right align-middle">
-                      <Button
-                        variant="secondary"
-                        className="px-3 py-2"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openLead(lead.id);
-                        }}
-                      >
-                        Profile
-                      </Button>
+                    <td className="px-4 py-3.5 align-middle"><Badge tone={statusTone(lead.status)}>{lead.status}</Badge></td>
+                    <td className="px-3 py-3.5 text-right align-middle">
+                      <div className="flex items-center justify-end gap-1 whitespace-nowrap"><Link href={`/dashboard/crm/leads/${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs font-semibold text-stone-600 transition hover:border-primary/25 hover:bg-primary-soft hover:text-primary">View</Link><button type="button" title="Edit lead" onClick={(event) => { event.stopPropagation(); openLeadEditor(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-primary/15 bg-primary-soft px-2 py-1.5 text-xs font-semibold text-primary transition hover:border-primary/30 hover:bg-primary/10"><IconEdit className="h-3.5 w-3.5" />Edit</button><Link href={`/dashboard/crm/orders?lead_id=${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100">Create order</Link><button type="button" title="Move lead to Trash" onClick={(event) => { event.stopPropagation(); trashLead(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"><IconTrash className="h-3.5 w-3.5" />Delete</button></div>
                     </td>
                   </tr>
                 ))}
@@ -598,6 +647,18 @@ export default function CrmLeadsPage() {
         )}
       </Card>
 
+      <Modal open={leadModalOpen} onClose={() => setLeadModalOpen(false)} title={editingLeadId ? "Edit lead" : "Create lead"} description="Keep the lead connected to a valid company website.">
+        <form className="space-y-5" onSubmit={saveLead}>
+          {leadFormMessage ? <Alert tone={leadFormMessage.tone}>{leadFormMessage.text}</Alert> : null}
+          <div className="grid gap-4 sm:grid-cols-2"><Field label="Lead name"><TextInput required value={leadForm.name} onChange={(event) => setLeadForm({ ...leadForm, name: event.target.value })} /></Field><Field label="Email"><TextInput required type="email" value={leadForm.email} onChange={(event) => setLeadForm({ ...leadForm, email: event.target.value })} /></Field></div>
+          <div className="grid gap-4 sm:grid-cols-2"><Field label="Phone"><TextInput value={leadForm.phone} onChange={(event) => setLeadForm({ ...leadForm, phone: event.target.value })} /></Field><Field label="Company"><SelectInput required value={leadForm.company_id} onChange={(event) => setLeadForm({ ...leadForm, company_id: event.target.value, website_id: "" })}><option value="">Select company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field></div>
+          <Field label="Website"><SelectInput required disabled={!leadForm.company_id} value={leadForm.website_id} onChange={(event) => setLeadForm({ ...leadForm, website_id: event.target.value })}><option value="">Select website</option>{(companies.find((company) => String(company.id) === leadForm.company_id)?.crm_websites ?? []).map((website) => <option key={website.id} value={website.id}>{website.name}</option>)}</SelectInput></Field>
+          <div className="grid gap-4 sm:grid-cols-2"><Field label="Source name (optional)"><TextInput value={leadForm.source_name} onChange={(event) => setLeadForm({ ...leadForm, source_name: event.target.value })} placeholder="Referral, WhatsApp, Walk-in" /></Field><Field label="Source page URL (optional)"><TextInput type="url" value={leadForm.source_url} onChange={(event) => setLeadForm({ ...leadForm, source_url: event.target.value })} placeholder="https://example.com/page" /></Field></div>
+          <Field label="Message"><textarea className="min-h-28 w-full rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/12" value={leadForm.message} onChange={(event) => setLeadForm({ ...leadForm, message: event.target.value })} /></Field>
+          <div className="flex justify-end gap-3 border-t border-border pt-4"><Button type="button" variant="secondary" onClick={() => setLeadModalOpen(false)}>Cancel</Button><Button type="submit" loading={leadFormLoading}>{editingLeadId ? "Save changes" : "Create lead"}</Button></div>
+        </form>
+      </Modal>
+
       <Modal
         open={columnModalOpen}
         onClose={() => setColumnModalOpen(false)}
@@ -608,7 +669,7 @@ export default function CrmLeadsPage() {
           <div className="space-y-3">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">Default fields</p>
             <div className="grid gap-2 sm:grid-cols-2">
-              {defaultColumnOptions.map((option) => (
+                  {defaultColumnOptions.map((option) => (
                 <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-[#fffaf9] px-3 py-2 text-sm">
                   <input type="checkbox" checked={pendingColumns.includes(option.id)} onChange={() => toggleColumn(option.id)} className="h-4 w-4 rounded border-border text-primary focus:ring-primary" />
                   {option.label}

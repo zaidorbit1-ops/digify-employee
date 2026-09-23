@@ -14,7 +14,7 @@ export function Button({
   children,
   ...props
 }: ButtonProps) {
-  const showSpinner = loading || Boolean(props.disabled);
+  const showSpinner = loading;
 
   return (
     <button
