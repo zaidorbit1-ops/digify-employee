@@ -125,7 +125,8 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith("/dashboard/internal-chat") ||
         request.nextUrl.pathname.startsWith("/api/me") ||
         request.nextUrl.pathname.startsWith("/api/notes") ||
-        request.nextUrl.pathname.startsWith("/api/chat");
+        request.nextUrl.pathname.startsWith("/api/chat") ||
+        /^\/api\/salaries\/[^/]+\/receipt$/.test(request.nextUrl.pathname);
       const employeeManagementModules = [
         "devices",
         "employees",
