@@ -374,6 +374,43 @@ select {
   }
 }
 
+@keyframes chat-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.chat-toast-in {
+  animation: chat-toast-in 280ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.chat-message-in {
+  animation: chat-message-in 220ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-toast-in,
+  .chat-message-in {
+    animation: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .loader-panel,
   .loader-orbit,

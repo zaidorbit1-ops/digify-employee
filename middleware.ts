@@ -27,6 +27,7 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  const isRoot = request.nextUrl.pathname === "/";
   const isLogin = request.nextUrl.pathname === "/login";
   const isDashboard = request.nextUrl.pathname.startsWith("/dashboard");
   const isApi = request.nextUrl.pathname.startsWith("/api/");
@@ -59,6 +60,14 @@ export async function middleware(request: NextRequest) {
       { error: "Authentication required." },
       { status: 401 },
     );
+  }
+
+  if (isRoot && !user) {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+
+  if (isRoot && user) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
   if (isDashboard && !user) {
@@ -113,8 +122,50 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith("/dashboard/notes") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee/holidays") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee") ||
+        request.nextUrl.pathname.startsWith("/dashboard/internal-chat") ||
         request.nextUrl.pathname.startsWith("/api/me") ||
-        request.nextUrl.pathname.startsWith("/api/notes");
+        request.nextUrl.pathname.startsWith("/api/notes") ||
+        request.nextUrl.pathname.startsWith("/api/chat");
+      const employeeManagementModules = [
+        "devices",
+        "employees",
+        "attendance",
+        "leave",
+        "holidays",
+        "salary",
+        "company_accounts",
+        "payment_tracking",
+        "lookups",
+      ];
+      const hasEmployeeManagementAccess =
+        !!profile.employee_id &&
+        (await supabase
+          .from("permissions")
+          .select("module, can_read, can_add, can_edit, can_delete")
+          .eq("employee_id", profile.employee_id)
+          .in("module", employeeManagementModules)
+          .or("can_read.eq.true,can_add.eq.true,can_edit.eq.true,can_delete.eq.true")
+          .maybeSingle()).data !== null;
+      const crmRoutes = [
+        "/dashboard/crm",
+        "/dashboard/crm/companies",
+        "/dashboard/crm/custom-fields",
+        "/dashboard/crm/leads",
+        "/dashboard/crm/experts",
+        "/dashboard/crm/orders",
+        "/dashboard/crm/contacts",
+        "/dashboard/crm/segments",
+        "/dashboard/crm/webmail",
+        "/dashboard/crm/templates",
+        "/dashboard/crm/campaigns",
+        "/dashboard/crm/automations",
+        "/dashboard/crm/analytics",
+        "/dashboard/crm/settings",
+      ];
+      const isCrmRoute = crmRoutes.some((route) =>
+        request.nextUrl.pathname === route ||
+        request.nextUrl.pathname.startsWith(`${route}/`),
+      );
       const module = permissionModule(request.nextUrl.pathname);
       const permission =
         module && profile.employee_id
@@ -125,9 +176,43 @@ export async function middleware(request: NextRequest) {
               .eq("module", module)
               .maybeSingle()
           : { data: null };
+      const crmPermissions =
+        profile.employee_id && isCrmRoute
+          ? await supabase
+              .from("permissions")
+              .select("module, can_read, can_add, can_edit, can_delete")
+              .eq("employee_id", profile.employee_id)
+          : { data: [] };
       const requiredPermission = requiredAction(request);
+      const hasAnyCrmAccess =
+        (crmPermissions.data ?? []).some(
+          (row) =>
+            [
+              "crm_companies",
+              "crm_custom_fields",
+              "crm_leads",
+              "crm_experts",
+              "crm_orders",
+              "crm_contacts",
+              "crm_segments",
+              "crm_webmail",
+              "crm_email_templates",
+              "crm_campaigns",
+              "crm_automations",
+              "crm_analytics",
+              "crm_settings",
+            ].includes(row.module) &&
+            (row.can_read || row.can_add || row.can_edit || row.can_delete),
+        );
       const allowed =
-        employeeDefaultRoute || permission.data?.[requiredPermission] === true;
+        employeeDefaultRoute ||
+        permission.data?.[requiredPermission] === true ||
+        (isCrmRoute && hasAnyCrmAccess && requiredPermission === "can_read") ||
+        (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess);
+
+      if (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess) {
+        return NextResponse.redirect(new URL("/dashboard/crm/companies", request.url));
+      }
 
       if (!allowed && isApi)
         return NextResponse.json(
@@ -148,6 +233,27 @@ function withCookies(target: NextResponse, source: NextResponse) {
 }
 
 function permissionModule(pathname: string) {
+  if (pathname.startsWith("/dashboard/crm/") || pathname.startsWith("/api/crm/")) {
+    const match = pathname.match(/^\/(?:dashboard|api)\/crm\/([^/]+)/);
+    const segment = match?.[1];
+    const crmModules: Record<string, string> = {
+      companies: "crm_companies",
+      "custom-fields": "crm_custom_fields",
+      leads: "crm_leads",
+      experts: "crm_experts",
+      orders: "crm_orders",
+      contacts: "crm_contacts",
+      segments: "crm_segments",
+      webmail: "crm_webmail",
+      templates: "crm_email_templates",
+      campaigns: "crm_campaigns",
+      automations: "crm_automations",
+      analytics: "crm_analytics",
+      settings: "crm_settings",
+    };
+    return segment ? crmModules[segment] : "crm_overview";
+  }
+
   const match = pathname.match(/^\/(?:dashboard|api)\/([^/]+)/);
   const segment = match?.[1];
   const modules: Record<string, string> = {
@@ -155,6 +261,7 @@ function permissionModule(pathname: string) {
     employees: "employees",
     attendance: "attendance",
     leaves: "leave",
+    leave: "leave",
     salary: "salary",
     salaries: "salary",
     "company-accounts": "company_accounts",
@@ -176,5 +283,5 @@ function requiredAction(
 }
 
 export const config = {
-  matcher: ["/login", "/dashboard/:path*", "/api/:path*"],
+  matcher: ["/", "/login", "/dashboard/:path*", "/api/:path*"],
 };

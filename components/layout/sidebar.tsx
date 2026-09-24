@@ -29,6 +29,7 @@ const navItems = [
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
   { label: "Notes & Reminders", href: "/dashboard/notes", icon: IconBell },
+  { label: "Internal Chat", href: "/dashboard/internal-chat", icon: IconBell },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
   { label: "Holidays", href: "/dashboard/holidays", icon: IconCalendar },
   { label: "Salary", href: "/dashboard/salary", icon: IconSalary },
@@ -147,10 +148,27 @@ export function Sidebar({
     "/dashboard/employees": "employees",
     "/dashboard/attendance": "attendance",
     "/dashboard/leave": "leave",
+    "/dashboard/holidays": "holidays",
     "/dashboard/salary": "salary",
     "/dashboard/company-accounts": "company_accounts",
     "/dashboard/payments": "payment_tracking",
     "/dashboard/lookups": "lookups",
+  };
+  const crmModuleForHref: Record<string, string> = {
+    "/dashboard/crm": "crm_overview",
+    "/dashboard/crm/companies": "crm_companies",
+    "/dashboard/crm/custom-fields": "crm_custom_fields",
+    "/dashboard/crm/leads": "crm_leads",
+    "/dashboard/crm/experts": "crm_experts",
+    "/dashboard/crm/orders": "crm_orders",
+    "/dashboard/crm/contacts": "crm_contacts",
+    "/dashboard/crm/segments": "crm_segments",
+    "/dashboard/crm/webmail": "crm_webmail",
+    "/dashboard/crm/templates": "crm_email_templates",
+    "/dashboard/crm/campaigns": "crm_campaigns",
+    "/dashboard/crm/automations": "crm_automations",
+    "/dashboard/crm/analytics": "crm_analytics",
+    "/dashboard/crm/settings": "crm_settings",
   };
   const employeeDefaultItems = [
     { label: "Dashboard", href: "/dashboard", icon: IconOverview },
@@ -162,6 +180,11 @@ export function Sidebar({
     {
       label: "Notes & Reminders",
       href: "/dashboard/notes",
+      icon: IconBell,
+    },
+    {
+      label: "Internal Chat",
+      href: "/dashboard/internal-chat",
       icon: IconBell,
     },
     {
@@ -186,11 +209,24 @@ export function Sidebar({
       moduleForHref[item.href] &&
       grantedModules.includes(moduleForHref[item.href]),
   );
+  const employeeCrmItems = crmNavItems.filter(
+    (item) =>
+      item.href !== "/dashboard/crm" &&
+      crmModuleForHref[item.href] &&
+      grantedModules.includes(crmModuleForHref[item.href]),
+  );
+  const firstCrmRoute = employeeCrmItems[0]?.href ?? "/dashboard/crm";
+  const canAccessCrmWorkspace = grantedModules.some((module) =>
+    module.startsWith("crm_"),
+  );
+  const isCrmWorkspace = pathname.startsWith("/dashboard/crm");
   const visibleNavItems =
-    profile?.role === "superadmin" && pathname.startsWith("/dashboard/crm")
+    profile?.role === "superadmin" && isCrmWorkspace
       ? crmNavItems
       : profile?.role === "employee"
-      ? [...employeeDefaultItems, ...employeeGrantedItems]
+      ? isCrmWorkspace
+        ? employeeCrmItems
+        : [...employeeDefaultItems, ...employeeGrantedItems]
       : navItems;
 
   return (
@@ -247,14 +283,14 @@ export function Sidebar({
               ? "Employee workspace"
               : "Admin workspace"}
           </p>
-          {profile?.role === "superadmin" ? (
+          {profile?.role === "superadmin" || (profile?.role === "employee" && canAccessCrmWorkspace) ? (
             <div ref={workspaceMenuRef} className="relative mb-5">
               <button type="button" onClick={() => setWorkspaceMenuOpen((open) => !open)} aria-expanded={workspaceMenuOpen} className="flex w-full items-center gap-3 rounded-2xl border border-border bg-white px-3 py-2.5 text-left shadow-[0_6px_20px_rgba(28,20,18,0.05)] transition hover:border-primary/30 hover:shadow-[0_8px_24px_rgba(28,20,18,0.09)]">
                 <span className="grid h-9 w-9 place-items-center rounded-xl bg-primary-soft text-primary"><IconBriefcase className="h-[18px] w-[18px]" /></span>
                 <span className="min-w-0 flex-1"><span className="block text-[10px] font-bold uppercase tracking-[0.16em] text-stone-400">Workspace</span><span className="mt-0.5 block truncate text-sm font-bold text-foreground">{pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Employee Management"}</span></span>
                 <span className={cn("text-xs text-stone-400 transition-transform", workspaceMenuOpen && "rotate-180")}>⌄</span>
               </button>
-              {workspaceMenuOpen ? <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-border bg-white p-2 shadow-[0_18px_45px_rgba(28,20,18,0.14)]"><Link href={pathname.startsWith("/dashboard/crm") ? "/dashboard" : "/dashboard/crm"} onClick={() => { setWorkspaceMenuOpen(false); onClose(); }} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-foreground transition hover:bg-primary-soft hover:text-primary"><span className="grid h-8 w-8 place-items-center rounded-lg bg-stone-100 text-stone-500"><IconBriefcase className="h-4 w-4" /></span><span>{pathname.startsWith("/dashboard/crm") ? "Employee Management" : "Business CRM"}</span></Link></div> : null}
+              {workspaceMenuOpen ? <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 rounded-2xl border border-border bg-white p-2 shadow-[0_18px_45px_rgba(28,20,18,0.14)]"><Link href={pathname.startsWith("/dashboard/crm") ? "/dashboard" : firstCrmRoute} onClick={() => { setWorkspaceMenuOpen(false); onClose(); }} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold text-foreground transition hover:bg-primary-soft hover:text-primary"><span className="grid h-8 w-8 place-items-center rounded-lg bg-stone-100 text-stone-500"><IconBriefcase className="h-4 w-4" /></span><span>{pathname.startsWith("/dashboard/crm") ? "Employee Management" : "Business CRM"}</span></Link></div> : null}
             </div>
           ) : null}
           <nav className="space-y-1">
