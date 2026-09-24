@@ -73,6 +73,7 @@ export function AttendanceNotifier() {
     };
   }, [profile?.role, user]);
 
+  if (profile?.role !== "superadmin") return null;
   if (!voiceEnabled) return <button type="button" onClick={async () => { window.localStorage.setItem("attendance-voice-enabled", "true"); setVoiceEnabled(true); if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission().catch(() => undefined); speak("Attendance voice alerts enabled"); }} className="fixed bottom-5 right-5 z-[60] rounded-xl border border-primary/20 bg-white px-4 py-3 text-sm font-semibold text-primary shadow-[0_14px_35px_rgba(228,90,90,0.18)]">Enable voice alerts</button>;
   if (!event) return null;
   const { kind, name, checkIn } = event;

@@ -1,26 +1,43 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 
-async function getAdminClient() {
+async function getAccessClient() {
   const client = await getSupabaseServerClient();
   const {
     data: { user },
   } = await client.auth.getUser();
 
-  if (!user) return { client, error: "Authentication required." } as const;
+  if (!user) return { client, user: null, profile: null, error: "Authentication required." } as const;
 
   const { data: profile, error } = await client
     .from("profiles")
-    .select("role, is_active")
+    .select("role, employee_id, is_active")
     .eq("user_id", user.id)
     .maybeSingle();
 
   if (error) throw error;
-  if (profile?.role !== "superadmin" || profile.is_active === false) {
-    return { client, error: "Superadmin access required." } as const;
+  if (!profile || profile.is_active === false) {
+    return { client, user, profile: null, error: "Account access is not available." } as const;
   }
 
-  return { client, error: null } as const;
+  if (profile.role === "superadmin") {
+    return { client, user, profile, error: null } as const;
+  }
+
+  const { data: permission, error: permissionError } = await client
+    .from("permissions")
+    .select("can_read, can_add, can_edit, can_delete")
+    .eq("employee_id", profile.employee_id)
+    .eq("module", "crm_companies")
+    .maybeSingle();
+
+  if (permissionError) throw permissionError;
+
+  if (!permission || !permission.can_read) {
+    return { client, user, profile, error: "CRM company access required." } as const;
+  }
+
+  return { client, user, profile, permission, error: null } as const;
 }
 
 function responseForError(error: unknown, fallback: string) {
@@ -80,7 +97,7 @@ function parseCompanyForm(form: FormData) {
 
 export async function GET(request: Request) {
   try {
-    const { client, error: authError } = await getAdminClient();
+    const { client, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
 
     const idParam = new URL(request.url).searchParams.get("id");
@@ -100,8 +117,11 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { client, error: authError } = await getAdminClient();
+    const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
+    if (profile?.role !== "superadmin" && !permission?.can_add) {
+      return NextResponse.json({ error: "You do not have permission to add CRM companies." }, { status: 403 });
+    }
     const form = await request.formData();
     const companyForm = parseCompanyForm(form);
     const { data, error } = await client.from("crm_companies").insert(companyForm.values).select().single();
@@ -124,8 +144,11 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const { client, error: authError } = await getAdminClient();
+    const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
+    if (profile?.role !== "superadmin" && !permission?.can_edit) {
+      return NextResponse.json({ error: "You do not have permission to edit CRM companies." }, { status: 403 });
+    }
     const form = await request.formData();
     const id = Number(cleanText(form.get("id")));
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid company is required." }, { status: 400 });
@@ -152,8 +175,11 @@ export async function PATCH(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
-    const { client, error: authError } = await getAdminClient();
+    const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
+    if (profile?.role !== "superadmin" && !permission?.can_delete) {
+      return NextResponse.json({ error: "You do not have permission to delete CRM companies." }, { status: 403 });
+    }
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid company is required." }, { status: 400 });
     const { error } = await client.from("crm_companies").delete().eq("id", id);

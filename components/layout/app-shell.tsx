@@ -1,14 +1,15 @@
 "use client";
 
 import Image from "next/image";
-import { usePathname } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
 import { IconMenu } from "@/components/icons";
 import { AttendanceNotifier } from "@/components/attendance/attendance-notifier";
 import { NotesNotifier } from "@/components/notes/notes-notifier";
 import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 import { GlobalLoader } from "@/components/ui/global-loader";
+import { InternalChatLauncher, InternalChatNotifications } from "@/components/chat/internal-chat";
 
 const titles: Record<string, string> = {
   "/dashboard": "Overview",
@@ -24,11 +25,22 @@ const titles: Record<string, string> = {
 export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
   const title = titles[pathname] ?? (pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Dashboard");
   const { profile, user, loading, profileError, signOut } = useAuth();
 
+  useEffect(() => {
+    if (!loading && !user) {
+      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
+    }
+  }, [loading, pathname, router, user]);
+
   if (loading) {
     return <div className="grid min-h-screen place-items-center bg-background text-sm text-muted">Loading your workspace...</div>;
+  }
+
+  if (!user) {
+    return null;
   }
 
   return (
@@ -36,6 +48,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <GlobalLoader />
       <AttendanceNotifier />
       <NotesNotifier />
+      <InternalChatLauncher currentPath={pathname} />
+      <InternalChatNotifications currentPath={pathname} />
       <div className="flex h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />
 

@@ -19,7 +19,7 @@ type ProfileForm = { name: string; email: string; password: string };
 type PermissionKey = "can_read" | "can_add" | "can_edit" | "can_delete";
 
 const modules = [
-  ["devices", "Devices"], ["employees", "Employees"], ["attendance", "Attendance"], ["leave", "Leave"], ["salary", "Salary"], ["company_accounts", "Company accounts"], ["payment_tracking", "Payment tracking"], ["lookups", "Lookup lists"],
+  ["devices", "Devices"], ["employees", "Employees"], ["attendance", "Attendance"], ["leave", "Leave"], ["holidays", "Holidays"], ["salary", "Salary"], ["company_accounts", "Company accounts"], ["payment_tracking", "Payment tracking"], ["lookups", "Lookup lists"],
 ] as const;
 const permissionKeys: PermissionKey[] = ["can_read", "can_add", "can_edit", "can_delete"];
 
