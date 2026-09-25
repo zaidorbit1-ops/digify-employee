@@ -85,8 +85,10 @@ export async function POST(request: Request) {
     if (mailboxError) throw mailboxError;
     if (!mailbox) return fail("Configured Hostinger mailbox was not found.", 404);
     const suppliedSecret = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || request.headers.get("x-webhook-secret") || request.headers.get("x-hostinger-webhook-secret");
-    const expectedSecret = mailbox.encrypted_webhook_secret ? decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret) : process.env.HOSTINGER_WEBHOOK_SECRET;
-    if (!constantTimeSecretMatches(suppliedSecret, expectedSecret)) {
+    const storedSecret = mailbox.encrypted_webhook_secret ? decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret) : null;
+    const validStoredSecret = constantTimeSecretMatches(suppliedSecret, storedSecret);
+    const validConfiguredSecret = constantTimeSecretMatches(suppliedSecret, process.env.HOSTINGER_WEBHOOK_SECRET);
+    if (!validStoredSecret && !validConfiguredSecret) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
       return fail("Unauthorized", 401);
     }
