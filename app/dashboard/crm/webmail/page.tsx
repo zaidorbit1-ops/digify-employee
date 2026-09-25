@@ -93,8 +93,9 @@ export default function CrmWebmailPage() {
     try {
       const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, action: "test" }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not test mailbox.");
-      setMessage({ text: result.message, tone: "success" });
+      const details = Array.isArray(result.checks) ? result.checks.map((check: { ok: boolean; name: string; reason: string }) => `${check.ok ? "OK" : "FAIL"} ${check.name}: ${check.reason}`).join(" | ") : "";
+      if (!response.ok) throw new Error(details || result.error || "Could not test mailbox.");
+      setMessage({ text: `${result.message} ${details}`, tone: "success" });
     } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not test mailbox.", tone: "danger" }); }
     finally { setBusy(false); }
   }

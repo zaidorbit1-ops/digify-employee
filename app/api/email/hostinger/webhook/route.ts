@@ -1,4 +1,5 @@
 import sanitizeHtml from "sanitize-html";
+import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { constantTimeSecretMatches } from "@/lib/hostinger-mail";
@@ -44,16 +45,20 @@ function headerList(value: unknown): string[] {
   return result ? [result] : [];
 }
 
-function fail(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status });
+function fail(message: string, status: number, requestId?: string, code?: string) {
+  return NextResponse.json({ error: message, code, request_id: requestId }, { status });
 }
 
 export async function POST(request: Request) {
+  const requestId = randomUUID();
+  let stage = "payload.parse";
+  let mailboxId: number | null = null;
   let payload: RecordValue;
   try {
     payload = record(await request.json());
   } catch {
-    return fail("Malformed webhook payload.", 400);
+    console.error("[hostinger] webhook rejected", { request_id: requestId, stage, reason: "malformed_payload" });
+    return fail("Malformed webhook payload.", 400, requestId, "WEBHOOK_PAYLOAD_INVALID");
   }
 
   const event = firstString(payload.event, payload.type, record(payload.data).event);
@@ -73,26 +78,34 @@ export async function POST(request: Request) {
   const messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
   const inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
   const references = headerList(message.references ?? message.referencesHeaders);
-  if (!mailboxAddress || !providerMessageId || !sender) return fail("Webhook message payload is incomplete.", 400);
+  if (!mailboxAddress || !providerMessageId || !sender) {
+    console.error("[hostinger] webhook rejected", { request_id: requestId, stage: "payload.validate", has_mailbox: Boolean(mailboxAddress), has_message_id: Boolean(providerMessageId), has_sender: Boolean(sender) });
+    return fail("Webhook message payload is incomplete.", 400, requestId, "WEBHOOK_PAYLOAD_INCOMPLETE");
+  }
 
   try {
+    stage = "database.client";
     const { client, error: authError } = await getCrmAdminClient();
-    if (authError) return fail(authError, 500);
+    if (authError) return fail(authError, 500, requestId, "DATABASE_CLIENT_UNAVAILABLE");
+    stage = "database.mailbox.lookup";
     const mailboxQuery = client.from("crm_mailboxes").select("id, company_id, email_address, encrypted_webhook_secret");
     const { data: mailbox, error: mailboxError } = mailboxAddress
       ? await mailboxQuery.ilike("email_address", mailboxAddress).maybeSingle()
       : await mailboxQuery.eq("webhook_id", webhookId).maybeSingle();
     if (mailboxError) throw mailboxError;
-    if (!mailbox) return fail("Configured Hostinger mailbox was not found.", 404);
+    if (!mailbox) return fail("Configured Hostinger mailbox was not found.", 404, requestId, "MAILBOX_NOT_FOUND");
+    mailboxId = mailbox.id;
+    stage = "webhook.authentication";
     const suppliedSecret = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || request.headers.get("x-webhook-secret") || request.headers.get("x-hostinger-webhook-secret");
     const storedSecret = mailbox.encrypted_webhook_secret ? decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret) : null;
     const validStoredSecret = constantTimeSecretMatches(suppliedSecret, storedSecret);
     const validConfiguredSecret = constantTimeSecretMatches(suppliedSecret, process.env.HOSTINGER_WEBHOOK_SECRET);
     if (!validStoredSecret && !validConfiguredSecret) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
-      return fail("Unauthorized", 401);
+      return fail("Unauthorized", 401, requestId, "WEBHOOK_SECRET_INVALID");
     }
 
+    stage = "database.duplicate_check";
     const duplicateQuery = client.from("crm_email_messages").select("id").eq("mailbox_id", mailbox.id).eq("provider_message_id", providerMessageId).maybeSingle();
     const { data: duplicate, error: duplicateError } = await duplicateQuery;
     if (duplicateError) throw duplicateError;
@@ -101,6 +114,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, duplicate: true });
     }
 
+    stage = "database.thread_lookup";
     const headerCandidates = [messageId, inReplyTo, ...references].filter(Boolean);
     const { data: matchedMessageById } = headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("message_id", headerCandidates).limit(1).maybeSingle() : { data: null };
     const { data: matchedMessageByReply } = !matchedMessageById && headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("in_reply_to", headerCandidates).limit(1).maybeSingle() : { data: null };
@@ -114,26 +128,31 @@ export async function POST(request: Request) {
     }
     const threadId = matchedMessage?.thread_id ?? subjectThread?.id;
     const threadKey = inReplyTo || references[0] || messageId || providerMessageId;
+    stage = "database.thread_save";
     const threadResult = threadId
       ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
       : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: "inbox", updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
     if (threadResult.error) throw threadResult.error;
     const receivedAt = firstString(message.receivedAt, message.received_at, message.date) || new Date().toISOString();
+    stage = "database.message_save";
     const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
     if (messageError) throw messageError;
 
+    stage = "database.attachment_save";
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     if (stored && attachments.length) {
       const rows = attachments.map((item) => { const attachment = record(item); return { company_id: mailbox.company_id, message_id: stored.id, file_name: firstString(attachment.filename, attachment.fileName) || "attachment", content_type: firstString(attachment.contentType, attachment.content_type) || "application/octet-stream", storage_path: firstString(attachment.downloadUrl, attachment.url, attachment.id ? `hostinger:attachment:${attachment.id}` : "hostinger:attachment"), file_size: Number(attachment.size) || 0 }; });
       const { error } = await client.from("crm_email_attachments").insert(rows);
       if (error) console.error("[hostinger] incoming attachment metadata failed", error.message);
     }
+    stage = "database.status_update";
     await client.from("crm_mailboxes").update({ status: "connected", last_webhook_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {
-    console.error("[hostinger] webhook processing failed", error instanceof Error ? error.message : "unknown error");
-    return fail("Webhook processing failed.", 500);
+    const reason = error instanceof Error ? error.message : "unknown error";
+    console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, reason });
+    return fail(`Webhook processing failed at ${stage}.`, 500, requestId, "WEBHOOK_PROCESSING_FAILED");
   }
 }

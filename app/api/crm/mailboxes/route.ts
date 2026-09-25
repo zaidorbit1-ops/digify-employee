@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { getHostingerMailbox, registerHostingerWebhook } from "@/lib/hostinger-mail";
+import { getHostingerMailbox, getHostingerWebhook, registerHostingerWebhook } from "@/lib/hostinger-mail";
 import { encryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 
 const statuses = ["pending", "connected", "error", "disconnected"];
@@ -48,10 +48,49 @@ export async function POST(request: Request) {
       const { data: mailbox, error } = await client.from("crm_mailboxes").select("id, email_address, webhook_id, encrypted_webhook_secret").eq("id", id).maybeSingle();
       if (error) throw error;
       if (!mailbox) return errorResponse(null, "Mailbox not found.", 404);
-      const hostingerMailbox = await getHostingerMailbox(mailbox.email_address);
-      const registration = mailbox.webhook_id && mailbox.encrypted_webhook_secret ? null : await registerHostingerWebhook(mailbox.email_address);
-      await client.from("crm_mailboxes").update({ status: "connected", hostinger_resource_id: hostingerMailbox.resourceId, webhook_id: registration?.webhookId ?? mailbox.webhook_id, encrypted_webhook_secret: registration ? encryptHostingerWebhookSecret(registration.secret) : undefined, last_error: null, updated_at: new Date().toISOString() }).eq("id", id);
-      return NextResponse.json({ ok: true, message: registration ? "Hostinger API and webhook verified." : "Hostinger API connection verified." });
+      const checks: Array<{ name: string; ok: boolean; reason: string }> = [];
+      const addCheck = (name: string, ok: boolean, reason: string) => checks.push({ name, ok, reason });
+      addCheck("HOSTINGER_API_TOKEN", Boolean(process.env.HOSTINGER_API_TOKEN), process.env.HOSTINGER_API_TOKEN ? "Server token is configured." : "HOSTINGER_API_TOKEN is missing from the deployed server environment.");
+      addCheck("HOSTINGER_WEBHOOK_ENCRYPTION_KEY", Boolean(process.env.HOSTINGER_WEBHOOK_ENCRYPTION_KEY || process.env.HOSTINGER_API_TOKEN), process.env.HOSTINGER_WEBHOOK_ENCRYPTION_KEY || process.env.HOSTINGER_API_TOKEN ? "Encryption key is available." : "Set HOSTINGER_WEBHOOK_ENCRYPTION_KEY on the server.");
+      const webhookUrl = process.env.HOSTINGER_WEBHOOK_URL || `${String(process.env.CRM_PUBLIC_URL || "").replace(/\/$/, "")}/api/email/hostinger/webhook`;
+      let parsedUrl: URL | null = null;
+      try { parsedUrl = new URL(webhookUrl); } catch { parsedUrl = null; }
+      addCheck("HOSTINGER_WEBHOOK_URL", Boolean(parsedUrl?.protocol === "https:"), parsedUrl?.protocol === "https:" ? "HTTPS webhook URL is configured." : "Webhook URL is missing or is not HTTPS.");
+      let hostingerMailbox: Awaited<ReturnType<typeof getHostingerMailbox>> | null = null;
+      try {
+        hostingerMailbox = await getHostingerMailbox(mailbox.email_address);
+        addCheck("Hostinger mailbox access", true, `Token can access ${mailbox.email_address}.`);
+      } catch (hostingerError) {
+        addCheck("Hostinger mailbox access", false, hostingerError instanceof Error ? hostingerError.message : "Hostinger mailbox lookup failed.");
+      }
+      let registration: { resourceId: string; webhookId: string; secret: string } | null = null;
+      if (hostingerMailbox && (!mailbox.webhook_id || !mailbox.encrypted_webhook_secret)) {
+        try {
+          registration = await registerHostingerWebhook(mailbox.email_address);
+          addCheck("Webhook registration", true, "A webhook was registered and its secret was returned.");
+        } catch (registrationError) {
+          addCheck("Webhook registration", false, registrationError instanceof Error ? registrationError.message : "Hostinger webhook registration failed.");
+        }
+      } else if (hostingerMailbox && mailbox.webhook_id) {
+        try {
+          const result = await getHostingerWebhook(mailbox.email_address, mailbox.webhook_id);
+          const active = result.webhook?.status === "active";
+          addCheck("Webhook status", active, active ? "Registered webhook is active." : `Webhook status is ${result.webhook?.status || "unknown"}.`);
+          addCheck("Webhook target", result.webhook?.url === webhookUrl, result.webhook?.url === webhookUrl ? "Webhook points to the configured CRM URL." : `Webhook points to ${result.webhook?.url || "an unknown URL"}.`);
+        } catch (webhookError) {
+          addCheck("Webhook lookup", false, webhookError instanceof Error ? webhookError.message : "Hostinger webhook lookup failed.");
+        }
+      }
+      if (!registration) addCheck("Webhook secret storage", Boolean(mailbox.encrypted_webhook_secret), mailbox.encrypted_webhook_secret ? "Webhook secret is encrypted in CRM storage." : "No encrypted webhook secret is stored for this mailbox.");
+      const failed = checks.filter((check) => !check.ok);
+      if (failed.length) {
+        const reason = failed.map((check) => `${check.name}: ${check.reason}`).join(" | ");
+        await client.from("crm_mailboxes").update({ status: "error", last_error: reason, updated_at: new Date().toISOString() }).eq("id", id);
+        return NextResponse.json({ ok: false, error: "Mailbox health check failed.", checks }, { status: 400 });
+      }
+      const resourceId = registration?.resourceId ?? hostingerMailbox?.resourceId;
+      await client.from("crm_mailboxes").update({ status: "connected", hostinger_resource_id: resourceId, webhook_id: registration?.webhookId ?? mailbox.webhook_id, encrypted_webhook_secret: registration ? encryptHostingerWebhookSecret(registration.secret) : undefined, last_error: null, updated_at: new Date().toISOString() }).eq("id", id);
+      return NextResponse.json({ ok: true, message: "All Hostinger mailbox checks passed.", checks });
     }
     const companyId = Number(body.company_id);
     const email = mailboxEmail(body.email_address);
