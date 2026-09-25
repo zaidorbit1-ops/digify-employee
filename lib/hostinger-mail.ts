@@ -44,6 +44,12 @@ export async function registerHostingerWebhook(address: string) {
   return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
 }
 
+export async function getHostingerWebhook(address: string, webhookId: string) {
+  const mailbox = await getHostingerMailbox(address);
+  const response = await new WebhooksApi(configuration()).getWebhook(mailbox.resourceId, webhookId);
+  return { resourceId: mailbox.resourceId, webhook: response.data?.data };
+}
+
 function splitAddresses(value?: string) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 }
