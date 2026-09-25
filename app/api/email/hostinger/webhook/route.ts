@@ -1,9 +1,9 @@
 import sanitizeHtml from "sanitize-html";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { getCrmAdminClient } from "@/lib/crm-admin";
 import { constantTimeSecretMatches } from "@/lib/hostinger-mail";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
+import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
@@ -85,8 +85,7 @@ export async function POST(request: Request) {
 
   try {
     stage = "database.client";
-    const { client, error: authError } = await getCrmAdminClient();
-    if (authError) return fail(authError, 500, requestId, "DATABASE_CLIENT_UNAVAILABLE");
+    const client = getSupabaseServiceRoleClient();
     stage = "database.mailbox.lookup";
     const mailboxQuery = client.from("crm_mailboxes").select("id, company_id, email_address, encrypted_webhook_secret");
     const { data: mailbox, error: mailboxError } = mailboxAddress
