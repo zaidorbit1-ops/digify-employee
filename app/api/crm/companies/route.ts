@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSupabaseServerClient } from "@/lib/supabase-server";
+import { getSupabaseServerClient, getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
 async function getAccessClient() {
   const client = await getSupabaseServerClient();
@@ -24,20 +24,19 @@ async function getAccessClient() {
     return { client, user, profile, error: null } as const;
   }
 
-  const { data: permission, error: permissionError } = await client
+  const { data: permissions, error: permissionError } = await client
     .from("permissions")
-    .select("can_read, can_add, can_edit, can_delete")
+    .select("module, can_read, can_add, can_edit, can_delete")
     .eq("employee_id", profile.employee_id)
-    .eq("module", "crm_companies")
-    .maybeSingle();
+    .like("module", "crm_%");
 
   if (permissionError) throw permissionError;
 
-  if (!permission || !permission.can_read) {
-    return { client, user, profile, error: "CRM company access required." } as const;
+  if (!permissions?.some((permission) => permission.can_read || permission.can_add || permission.can_edit || permission.can_delete)) {
+    return { client, user, profile, error: "Business CRM access required." } as const;
   }
 
-  return { client, user, profile, permission, error: null } as const;
+  return { client, user, profile, permission: permissions.find((permission) => permission.module === "crm_companies"), error: null } as const;
 }
 
 function responseForError(error: unknown, fallback: string) {
@@ -97,11 +96,20 @@ function parseCompanyForm(form: FormData) {
 
 export async function GET(request: Request) {
   try {
-    const { client, error: authError } = await getAccessClient();
+    const { client, profile, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
 
-    const idParam = new URL(request.url).searchParams.get("id");
+    const searchParams = new URL(request.url).searchParams;
+    const idParam = searchParams.get("id");
+    const requestedModule = searchParams.get("module");
     let query = client.from("crm_companies").select("*, crm_websites(*)").order("name");
+    if (profile?.role === "employee" && profile.employee_id && requestedModule?.startsWith("crm_")) {
+      const service = getSupabaseServiceRoleClient();
+      const { data: access, error: accessError } = await service.from("employee_crm_module_company_access").select("company_id").eq("employee_id", profile.employee_id).eq("module", requestedModule);
+      if (accessError) throw accessError;
+      const companyIds = (access ?? []).map((item) => item.company_id);
+      query = companyIds.length ? query.in("id", companyIds) : query.in("id", [-1]);
+    }
     if (idParam) {
       const id = Number(idParam);
       if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid company is required." }, { status: 400 });

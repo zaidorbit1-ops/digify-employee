@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { canAccessCompany, getCompanyAccessContext } from "@/lib/company-access";
 import { supabase } from "@/lib/supabase";
 
 function client() {
@@ -10,7 +11,9 @@ export async function GET() {
   try {
     const { data, error } = await client().from("companies").select("*").order("name");
     if (error) throw error;
-    return NextResponse.json({ companies: data ?? [] });
+    const access = await getCompanyAccessContext();
+    if (!access) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    return NextResponse.json({ companies: access.isSuperadmin ? data ?? [] : (data ?? []).filter((company) => access.allowedCompanyIds.includes(company.id)) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load companies." }, { status: 500 });
   }
@@ -40,6 +43,7 @@ export async function PATCH(request: Request) {
     const id = Number(body.id);
     const name = String(body.name ?? "").trim();
     if (!Number.isInteger(id) || id <= 0 || !name) return NextResponse.json({ error: "A valid company and name are required." }, { status: 400 });
+    if (!(await canAccessCompany(id))) return NextResponse.json({ error: "You do not have access to this company." }, { status: 403 });
 
     const { data, error } = await client().from("companies").update({
       name,
@@ -58,6 +62,7 @@ export async function DELETE(request: Request) {
   try {
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid company is required." }, { status: 400 });
+    if (!(await canAccessCompany(id))) return NextResponse.json({ error: "You do not have access to this company." }, { status: 403 });
     const { error } = await client().from("companies").delete().eq("id", id);
     if (error) throw error;
     return NextResponse.json({ ok: true });

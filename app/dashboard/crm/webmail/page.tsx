@@ -10,6 +10,7 @@ import { Field, SelectInput, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/components/auth/auth-provider";
 
 type Company = { id: number; name: string; status: string };
 type Mailbox = {
@@ -128,6 +129,7 @@ function formatDate(value?: string | null) {
 }
 
 export default function CrmWebmailPage() {
+  const { profile } = useAuth();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>("");
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
@@ -138,6 +140,15 @@ export default function CrmWebmailPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [testingMailboxId, setTestingMailboxId] = useState<number | null>(null);
   const [form, setForm] = useState<MailboxForm>(emptyForm);
+  const [permissions, setPermissions] = useState<{ can_add: boolean; can_edit: boolean; can_delete: boolean }>({ can_add: true, can_edit: true, can_delete: true });
+
+  useEffect(() => {
+    if (profile?.role !== "employee") return;
+    fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => {
+      const permission = (result.permissions ?? []).find((item: { module: string }) => item.module === "crm_webmail");
+      setPermissions(permission ?? { can_add: false, can_edit: false, can_delete: false });
+    }).catch(() => setPermissions({ can_add: false, can_edit: false, can_delete: false }));
+  }, [profile?.role]);
 
   const selectedCompany = useMemo(
     () => companies.find((company) => String(company.id) === selectedCompanyId) ?? null,
@@ -145,7 +156,7 @@ export default function CrmWebmailPage() {
   );
 
   async function loadCompanies() {
-    const response = await fetch("/api/crm/companies", { cache: "no-store" });
+    const response = await fetch("/api/crm/companies?module=crm_webmail", { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? "Could not load companies.");
     const nextCompanies = result.companies ?? [];
@@ -349,6 +360,7 @@ export default function CrmWebmailPage() {
   }
 
   const connectedCount = mailboxes.filter((m) => m.status === "connected").length;
+  const isEmployee = profile?.role === "employee";
 
   return (
     <>
@@ -358,14 +370,15 @@ export default function CrmWebmailPage() {
         title="Webmail Mailboxes"
         description="Connect and validate company email accounts using secure IMAP and SMTP, with server-side encrypted credentials."
         actions={
-          <Button
-            onClick={openAdd}
-            disabled={!selectedCompanyId}
-            className="bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover active:scale-95 transition"
-          >
-            <IconPlus className="h-4 w-4" />
-            <span>Add mailbox</span>
-          </Button>
+          !isEmployee ? <Button
+              onClick={openAdd}
+              disabled={!selectedCompanyId || !permissions.can_add}
+              title={!permissions.can_add ? "Add permission required" : undefined}
+              className="bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover active:scale-95 transition"
+            >
+              <IconPlus className="h-4 w-4" />
+              <span>Add mailbox</span>
+            </Button> : null
         }
       />
 
@@ -456,6 +469,8 @@ export default function CrmWebmailPage() {
             <Button
               className="mt-6 bg-primary text-white shadow-md shadow-primary/20 hover:bg-primary-hover"
               onClick={openAdd}
+              disabled={!permissions.can_add}
+              title={!permissions.can_add ? "Add permission required" : undefined}
             >
               <IconPlus className="h-4 w-4" />
               <span>Connect First Mailbox</span>
@@ -506,7 +521,7 @@ export default function CrmWebmailPage() {
               {/* Card Body */}
               <div className="space-y-4 p-6">
                 {/* Badges / Protocols */}
-                <div className="flex flex-wrap gap-2 text-xs">
+                {!isEmployee ? <div className="flex flex-wrap gap-2 text-xs">
                   <span className="rounded-full bg-primary-soft px-3 py-1 font-bold text-primary capitalize">
                     {mailbox.provider}
                   </span>
@@ -516,7 +531,7 @@ export default function CrmWebmailPage() {
                   <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-slate-600">
                     SMTP: {mailbox.smtp_host}:{mailbox.smtp_port}
                   </span>
-                </div>
+                </div> : null}
 
                 {/* Status & Sync Stats */}
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -549,12 +564,13 @@ export default function CrmWebmailPage() {
                 )}
 
                 {/* Actions */}
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
+                {!isEmployee ? <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-4">
                   <div className="flex flex-wrap gap-2">
                     <Button
                       variant="secondary"
                       loading={testingMailboxId === mailbox.id}
-                      disabled={loading}
+                      disabled={loading || !permissions.can_edit}
+                      title={!permissions.can_edit ? "Edit permission required" : undefined}
                       onClick={() => testMailbox(mailbox)}
                       className="text-xs"
                     >
@@ -564,6 +580,8 @@ export default function CrmWebmailPage() {
                     <Button
                       variant="secondary"
                       onClick={() => openEdit(mailbox)}
+                      disabled={!permissions.can_edit}
+                      title={!permissions.can_edit ? "Edit permission required" : undefined}
                       className="text-xs"
                     >
                       <IconEdit className="h-3.5 w-3.5" />
@@ -573,6 +591,8 @@ export default function CrmWebmailPage() {
                       <Button
                         variant="secondary"
                         onClick={() => disconnectMailbox(mailbox)}
+                        disabled={!permissions.can_edit}
+                        title={!permissions.can_edit ? "Edit permission required" : undefined}
                         className="text-xs text-slate-600"
                       >
                         Disconnect
@@ -582,6 +602,8 @@ export default function CrmWebmailPage() {
                       variant="ghost"
                       className="text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700"
                       onClick={() => deleteMailbox(mailbox)}
+                      disabled={!permissions.can_delete}
+                      title={!permissions.can_delete ? "Delete permission required" : undefined}
                     >
                       <IconTrash className="h-3.5 w-3.5" />
                       <span>Delete</span>
@@ -596,7 +618,7 @@ export default function CrmWebmailPage() {
                     <span>Open Inbox</span>
                     <span>→</span>
                   </Link>
-                </div>
+                </div> : null}
               </div>
             </Card>
           ))}

@@ -228,6 +228,30 @@ function getAvatarStyle(str: string | null) {
   return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
 }
 
+function SenderAvatar({ sender, className }: { sender: string | null; className: string }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const email = getSenderEmail(sender).trim().toLowerCase();
+  const avatarStyle = getAvatarStyle(sender);
+
+  return (
+    <div className={`${className} relative overflow-hidden ${avatarStyle.bg} ${avatarStyle.text}`}>
+      {!imageFailed && email ? (
+        <img
+          src={`https://unavatar.io/${encodeURIComponent(email)}`}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setImageFailed(true)}
+        />
+      ) : null}
+      {(imageFailed || !email) && (
+        <span className="relative z-10">{getInitials(sender)}</span>
+      )}
+    </div>
+  );
+}
+
 /* ==========================================================================
    Rich Text Compose Toolbar
    ========================================================================== */
@@ -928,19 +952,24 @@ function EmailReaderView({
   mailbox,
   onClose,
   onReply,
+  onMessageSent,
   onToggleStar,
   onMoveFolder,
+  onDelete,
 }: {
   thread: Thread;
   mailbox: Mailbox | null;
   onClose: () => void;
   onReply: (recipient: string, subject: string) => void;
+  onMessageSent: () => Promise<void>;
   onToggleStar: (threadId: number, current: boolean) => void;
   onMoveFolder: (threadId: number, folder: string) => void;
+  onDelete: (threadId: number) => void;
 }) {
   const [viewMode, setViewMode] = useState<"html" | "text">("html");
   const [showHeaders, setShowHeaders] = useState(false);
   const [quickReplyText, setQuickReplyText] = useState("");
+  const [replyAttachments, setReplyAttachments] = useState<UploadingAttachment[]>([]);
   const [sendingQuickReply, setSendingQuickReply] = useState(false);
   const [quickReplySuccess, setQuickReplySuccess] = useState(false);
 
@@ -958,15 +987,30 @@ function EmailReaderView({
 
   const senderName = getSenderName(latestMessage.sender);
   const senderEmail = getSenderEmail(latestMessage.sender);
-  const avatarStyle = getAvatarStyle(latestMessage.sender);
   const dateFormatted = formatFullDate(latestMessage.received_at || latestMessage.sent_at);
 
   // Attachments collected from messages in thread
   const allAttachments = messages.flatMap((m) => m.crm_email_attachments || []);
 
+  const handleReplyFileAttach = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    Array.from(files).forEach((file) => {
+      if (file.size > 15 * 1024 * 1024) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const base64 = event.target?.result as string;
+        setReplyAttachments((current) => [
+          ...current,
+          { name: file.name, size: file.size, type: file.type || "application/octet-stream", base64 },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleQuickReplySubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!quickReplyText.trim()) return;
+    if (!quickReplyText.trim() && replyAttachments.length === 0) return;
     setSendingQuickReply(true);
 
     try {
@@ -981,14 +1025,18 @@ function EmailReaderView({
         body: JSON.stringify({
           mailbox_id: mailbox?.id,
           action: "send",
+          thread_id: thread.id,
           to: repTo,
           subject: repSubject,
           text: quickReplyText,
           html: `<p>${quickReplyText.replace(/\n/g, "<br/>")}</p>`,
+          attachments: replyAttachments,
         }),
       });
       if (!response.ok) throw new Error("Failed to send reply.");
       setQuickReplyText("");
+      setReplyAttachments([]);
+      await onMessageSent();
       setQuickReplySuccess(true);
       setTimeout(() => setQuickReplySuccess(false), 4000);
     } catch {
@@ -1038,14 +1086,35 @@ function EmailReaderView({
           >
             ⚠️
           </button>
-          <button
-            type="button"
-            onClick={() => onMoveFolder(thread.id, "trash")}
-            className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-rose-50 hover:text-rose-600"
-            title="Delete / Move to Trash"
-          >
-            🗑️
-          </button>
+          {thread.folder === "trash" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => onMoveFolder(thread.id, "inbox")}
+                className="flex h-8 items-center gap-1 rounded-xl px-2 text-xs font-bold text-emerald-700 transition hover:bg-emerald-50"
+                title="Restore to Inbox"
+              >
+                ↩ Restore
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(thread.id)}
+                className="flex h-8 items-center gap-1 rounded-xl px-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50"
+                title="Delete permanently"
+              >
+                🗑 Delete forever
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onMoveFolder(thread.id, "trash")}
+              className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-500 transition hover:bg-rose-50 hover:text-rose-600"
+              title="Delete / Move to Trash"
+            >
+              🗑️
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -1114,11 +1183,7 @@ function EmailReaderView({
       <div className="border-b border-slate-100 bg-slate-50/40 px-8 py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <div
-              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold shadow-sm ${avatarStyle.bg} ${avatarStyle.text}`}
-            >
-              {getInitials(senderName)}
-            </div>
+            <SenderAvatar sender={latestMessage.sender} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold shadow-sm" />
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-slate-900">{senderName}</span>
@@ -1165,88 +1230,110 @@ function EmailReaderView({
         )}
       </div>
 
-      {/* Main Email Body */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-        {viewMode === "html" && latestMessage.html_body ? (
-          <div className="h-full min-h-[350px] w-full rounded-2xl border border-slate-100 bg-white p-2">
-            <iframe
-              srcDoc={`
-                <!DOCTYPE html>
-                <html>
-                <head>
-                  <meta charset="utf-8">
-                  <meta name="viewport" content="width=device-width, initial-scale=1">
-                  <style>
-                    body {
-                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                      font-size: 14px;
-                      line-height: 1.65;
-                      color: #1e293b;
-                      margin: 16px;
-                      padding: 0;
-                    }
-                    a { color: #e45a5a; }
-                    img { max-width: 100%; height: auto; border-radius: 8px; }
-                    blockquote { border-left: 3px solid #e2e8f0; margin-left: 0; padding-left: 12px; color: #64748b; }
-                  </style>
-                </head>
-                <body>${latestMessage.html_body}</body>
-                </html>
-              `}
-              className="h-full min-h-[400px] w-full border-0"
-              sandbox="allow-same-origin allow-popups"
-              title="Email Message Preview"
-            />
-          </div>
-        ) : (
-          <div className="max-w-4xl text-[15px] leading-8 text-slate-800 whitespace-pre-wrap font-sans">
-            {latestMessage.text_body || (
-              <span className="italic text-slate-400">This message has no plain text content.</span>
-            )}
-          </div>
-        )}
-
-        {/* Attachments Section in Reader */}
-        {allAttachments.length > 0 && (
-          <div className="mt-8 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-sm">📎</span>
+      {/* Attachments Section in Reader */}
+      {allAttachments.length > 0 && (
+        <div className="border-b border-slate-200 bg-amber-50/40 px-8 py-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📎</span>
               <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
                 Attachments ({allAttachments.length})
               </span>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-              {allAttachments.map((att, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="text-xl">{getFileIcon(att.file_name)}</span>
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-bold text-slate-800" title={att.file_name}>
-                        {att.file_name}
-                      </p>
-                      <p className="text-[10px] text-slate-400">
-                        {formatFileSize(att.file_size)}
-                      </p>
-                    </div>
+            <span className="text-[11px] text-slate-500">Download files</span>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {allAttachments.map((att, idx) => (
+              <div
+                key={idx}
+                className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+              >
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span className="text-xl">{getFileIcon(att.file_name)}</span>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-bold text-slate-800" title={att.file_name}>
+                      {att.file_name}
+                    </p>
+                    <p className="text-[10px] text-slate-400">{formatFileSize(att.file_size)}</p>
                   </div>
-                  {att.storage_path && (
-                    <a
-                      href={att.storage_path}
-                      download={att.file_name}
-                      className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700 transition hover:bg-primary hover:text-white"
-                      title="Download file"
-                    >
-                      ⬇️
-                    </a>
+                </div>
+                {att.storage_path && (
+                  <a
+                    href={att.storage_path}
+                    download={att.file_name}
+                    className="shrink-0 rounded-lg bg-primary px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-hover"
+                    title="Download attachment"
+                  >
+                    Download
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main Email Body */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+        <div className="space-y-5">
+          {messages.map((message, index) => {
+            const messageSender = getSenderName(message.sender);
+            const messageEmail = getSenderEmail(message.sender);
+            const messageDate = formatFullDate(message.received_at || message.sent_at);
+            return (
+              <article key={message.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-5 py-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="font-bold text-slate-900">{messageSender}</span>
+                    <span className="text-xs text-slate-400">&lt;{messageEmail}&gt;</span>
+                    {index === messages.length - 1 && (
+                      <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">Latest</span>
+                    )}
+                  </div>
+                  <span className="text-xs text-slate-400">{messageDate}</span>
+                </div>
+                <div className="p-5">
+                  {viewMode === "html" && message.html_body ? (
+                    <div className="w-full rounded-xl border border-slate-100 bg-white p-2">
+                      <iframe
+                        srcDoc={`
+                          <!DOCTYPE html>
+                          <html>
+                          <head>
+                            <meta charset="utf-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1">
+                            <style>
+                              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.65; color: #1e293b; margin: 16px; padding: 0; }
+                              a { color: #e45a5a; }
+                              img { max-width: 100%; height: auto; border-radius: 8px; }
+                              blockquote { border-left: 3px solid #e2e8f0; margin-left: 0; padding-left: 12px; color: #64748b; }
+                            </style>
+                          </head>
+                          <body>${message.html_body}</body>
+                          </html>
+                        `}
+                        onLoad={(event) => {
+                          const body = event.currentTarget.contentDocument?.body;
+                          if (body) event.currentTarget.style.height = `${Math.max(180, body.scrollHeight + 32)}px`;
+                        }}
+                        className="block w-full border-0"
+                        sandbox="allow-same-origin allow-popups"
+                        title={`Email message ${index + 1}`}
+                      />
+                    </div>
+                  ) : (
+                    <div className="max-w-4xl whitespace-pre-wrap font-sans text-[15px] leading-8 text-slate-800">
+                      {message.text_body || (
+                        <span className="italic text-slate-400">This message has no plain text content.</span>
+                      )}
+                    </div>
                   )}
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+              </article>
+            );
+          })}
+        </div>
+
       </div>
 
       {/* Quick Inline Reply Card at Bottom */}
@@ -1268,21 +1355,62 @@ function EmailReaderView({
             placeholder="Write a quick reply..."
             className="w-full resize-none p-4 text-sm text-slate-800 outline-none placeholder:text-slate-400"
           />
+          {replyAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 border-t border-slate-100 px-4 py-2">
+              {replyAttachments.map((attachment, index) => (
+                <span key={`${attachment.name}-${index}`} className="flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-xs text-slate-700">
+                  📎 {attachment.name}
+                  <button
+                    type="button"
+                    onClick={() => setReplyAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                    className="font-bold text-slate-400 hover:text-rose-500"
+                    title="Remove attachment"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="flex items-center justify-between border-t border-slate-100 bg-slate-50/50 px-4 py-2.5">
-            <button
-              type="button"
-              onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
-              className="text-xs font-bold text-primary hover:underline"
-            >
-              Open in full composer ↗
-            </button>
-            <button
-              type="submit"
-              disabled={sendingQuickReply || !quickReplyText.trim()}
-              className="flex items-center gap-1.5 rounded-xl bg-primary px-5 py-2 text-xs font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover disabled:opacity-50"
-            >
-              {sendingQuickReply ? "Sending…" : "Send Reply 🚀"}
-            </button>
+            <div className="flex items-center gap-3">
+              <input
+                id={`reply-attachment-${thread.id}`}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  handleReplyFileAttach(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <label htmlFor={`reply-attachment-${thread.id}`} className="cursor-pointer text-xs font-bold text-primary hover:underline">
+                Attach file 📎
+              </label>
+              <button
+                type="button"
+                onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
+                className="text-xs font-bold text-primary hover:underline"
+              >
+                Full composer ↗
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onReply("", `Fwd: ${thread.subject || "(no subject)"}`)}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                Forward
+              </button>
+              <button
+                type="submit"
+                disabled={sendingQuickReply || (!quickReplyText.trim() && replyAttachments.length === 0)}
+                className="flex items-center gap-1.5 rounded-xl bg-primary px-5 py-2 text-xs font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover disabled:opacity-50"
+              >
+                {sendingQuickReply ? "Sending…" : "Send Reply 🚀"}
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -1299,6 +1427,8 @@ export default function MailboxWorkspace() {
 
   const [mailbox, setMailbox] = useState<Mailbox | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [hasMoreThreads, setHasMoreThreads] = useState(false);
+  const [loadingMoreThreads, setLoadingMoreThreads] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<string>("inbox");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterUnreadOnly, setFilterUnreadOnly] = useState(false);
@@ -1315,43 +1445,74 @@ export default function MailboxWorkspace() {
   const [composeInitialSubject, setComposeInitialSubject] = useState("");
 
   // Load Mailbox Data
-  async function loadMailbox() {
-    setLoading(true);
+  async function loadMailbox(page = 1, append = false) {
+    if (append) setLoadingMoreThreads(true);
+    else setLoading(true);
     try {
-      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}`, { cache: "no-store" });
+      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&page=${page}&limit=10`, { cache: "no-store" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not load mailbox.");
       setMailbox(result.mailbox);
-      setThreads(result.threads ?? []);
+      setThreads((current) => append ? [...current, ...(result.threads ?? [])] : (result.threads ?? []));
+      setHasMoreThreads(Boolean(result.hasMore));
     } catch (error) {
       setNotification({
         text: error instanceof Error ? error.message : "Could not load mailbox.",
         tone: "danger",
       });
     } finally {
-      setLoading(false);
+      if (append) setLoadingMoreThreads(false);
+      else setLoading(false);
     }
   }
 
   // Reload threads silently without page flicker
   async function reloadThreadsSilently() {
     try {
-      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}`, { cache: "no-store" });
+      const latestTimestamp = threads.reduce((latest, thread) => {
+        return thread.updated_at > latest ? thread.updated_at : latest;
+      }, "1970-01-01T00:00:00.000Z");
+      const response = await fetch(
+        `/api/crm/webmail?mailbox_id=${mailboxId}&since=${encodeURIComponent(latestTimestamp)}`,
+        { cache: "no-store" }
+      );
       const result = await response.json();
       if (response.ok && result.threads) {
-        setThreads(result.threads);
+        setThreads((current) => {
+          const incomingById = new Map<number, Thread>(result.threads.map((thread: Thread) => [thread.id, thread]));
+          const merged = current.map((thread) => incomingById.get(thread.id) ?? thread);
+          const existingIds = new Set(current.map((thread) => thread.id));
+          return [
+            ...merged,
+            ...result.threads.filter((thread: Thread) => !existingIds.has(thread.id)),
+          ].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+        });
       }
     } catch {
       // silent ignore
     }
   }
 
+  async function refreshCurrentThread() {
+    await reloadThreadsSilently();
+    if (!selectedThreadId) return;
+    try {
+      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&thread_id=${selectedThreadId}`, { cache: "no-store" });
+      const result = await response.json();
+      if (response.ok && result.threads?.[0]) {
+        setThreads((current) => current.map((thread) => thread.id === selectedThreadId ? result.threads[0] : thread));
+      }
+    } catch {
+      // The sent message is still persisted even if the refresh is delayed.
+    }
+  }
+
   // Silent background sync from IMAP
-  const isSilentSyncingRef = useRef(false);
+  const syncInFlightRef = useRef(false);
   async function silentSyncInbox() {
-    if (isSilentSyncingRef.current || syncing) return;
+    if (syncInFlightRef.current) return;
     if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    isSilentSyncingRef.current = true;
+    syncInFlightRef.current = true;
     try {
       const response = await fetch("/api/crm/webmail", {
         method: "POST",
@@ -1369,7 +1530,7 @@ export default function MailboxWorkspace() {
     } catch {
       // silent ignore
     } finally {
-      isSilentSyncingRef.current = false;
+      syncInFlightRef.current = false;
     }
   }
 
@@ -1441,6 +1602,8 @@ export default function MailboxWorkspace() {
 
   // Manual Sync Inbox
   async function handleSyncInbox() {
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
     setSyncing(true);
     setNotification(null);
     try {
@@ -1452,13 +1615,14 @@ export default function MailboxWorkspace() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Sync failed.");
       setNotification({ text: result.message, tone: "success" });
-      await loadMailbox();
+      await reloadThreadsSilently();
     } catch (error) {
       setNotification({
         text: error instanceof Error ? error.message : "Sync failed.",
         tone: "danger",
       });
     } finally {
+      syncInFlightRef.current = false;
       setSyncing(false);
     }
   }
@@ -1466,11 +1630,22 @@ export default function MailboxWorkspace() {
   // Open Message & Mark Read
   async function handleSelectThread(thread: Thread) {
     setSelectedThreadId(thread.id);
-    const unreadMessages = thread.crm_email_messages.filter((m) => !m.is_read);
+    let selectedThread = thread;
+    try {
+      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&thread_id=${thread.id}`, { cache: "no-store" });
+      const result = await response.json();
+      if (response.ok && result.threads?.[0]) {
+        selectedThread = result.threads[0];
+        setThreads((current) => current.map((item) => item.id === selectedThread.id ? selectedThread : item));
+      }
+    } catch {
+      // Keep the summary view if the detail request fails.
+    }
+    const unreadMessages = selectedThread.crm_email_messages.filter((m) => !m.is_read);
     if (unreadMessages.length > 0) {
       setThreads((current) =>
         current.map((t) =>
-          t.id === thread.id
+          t.id === selectedThread.id
             ? {
                 ...t,
                 crm_email_messages: t.crm_email_messages.map((m) => ({ ...m, is_read: true })),
@@ -1506,14 +1681,40 @@ export default function MailboxWorkspace() {
     setThreads((current) =>
       current.map((t) => (t.id === threadId ? { ...t, folder: newFolder } : t))
     );
-    await fetch("/api/crm/webmail", {
+    const response = await fetch("/api/crm/webmail", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ thread_id: threadId, folder: newFolder }),
     });
+    if (!response.ok) {
+      setNotification({ text: "Email folder update failed.", tone: "danger" });
+      await loadMailbox();
+      return;
+    }
+    setSelectedFolder(newFolder);
+    setNotification({
+      text: newFolder === "trash" ? "Email moved to Trash." : "Email restored to Inbox.",
+      tone: "success",
+    });
     if (selectedThreadId === threadId) {
       setSelectedThreadId(null);
     }
+  }
+
+  async function handleDeleteThread(threadId: number) {
+    if (!window.confirm("Delete this conversation permanently? This cannot be undone.")) return;
+    const response = await fetch("/api/crm/webmail", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: threadId, permanent_delete: true }),
+    });
+    if (!response.ok) {
+      setNotification({ text: "Could not permanently delete this conversation.", tone: "danger" });
+      return;
+    }
+    setThreads((current) => current.filter((thread) => thread.id !== threadId));
+    setSelectedThreadId(null);
+    setNotification({ text: "Conversation permanently deleted.", tone: "success" });
   }
 
   // Filtered Threads
@@ -1568,13 +1769,24 @@ export default function MailboxWorkspace() {
       {/* Top Header Bar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <Link
-            href="/dashboard/crm/webmail"
-            className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-primary/40 hover:text-primary"
-            title="Back to Mailbox Directory"
-          >
-            ←
-          </Link>
+          {selectedThreadId ? (
+            <button
+              type="button"
+              onClick={() => setSelectedThreadId(null)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-primary/40 hover:text-primary"
+              title="Back to emails"
+            >
+              ←
+            </button>
+          ) : (
+            <Link
+              href="/dashboard/crm/webmail"
+              className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-primary/40 hover:text-primary"
+              title="Back to Mailbox Directory"
+            >
+              ←
+            </Link>
+          )}
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-extrabold uppercase tracking-widest text-primary">
@@ -1653,10 +1865,10 @@ export default function MailboxWorkspace() {
 
       {/* Main 3-Column Workstation */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-        <div className="grid min-h-[780px] lg:grid-cols-[230px_minmax(330px,0.78fr)_minmax(380px,1.22fr)]">
+        <div className={`grid min-h-[780px] ${selectedThreadId ? "lg:grid-cols-1" : "lg:grid-cols-[230px_minmax(330px,0.78fr)_minmax(380px,1.22fr)]"}`}>
 
           {/* ════════════ Column 1: Left Navigation ════════════ */}
-          <aside className="border-b border-slate-200 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r">
+          <aside className={`${selectedThreadId ? "hidden" : ""} border-b border-slate-200 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r`}>
             <button
               type="button"
               onClick={() => {
@@ -1726,7 +1938,7 @@ export default function MailboxWorkspace() {
           </aside>
 
           {/* ════════════ Column 2: Conversation Thread List ════════════ */}
-          <section className="flex flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r">
+          <section className={`${selectedThreadId ? "hidden" : ""} flex flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r`}>
             <div className="border-b border-slate-100 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
@@ -1751,7 +1963,7 @@ export default function MailboxWorkspace() {
                   </button>
                   <button
                     type="button"
-                    onClick={loadMailbox}
+                    onClick={() => loadMailbox()}
                     className="rounded-lg p-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                     title="Refresh"
                   >
@@ -1805,7 +2017,6 @@ export default function MailboxWorkspace() {
                   const isSelected = selectedThreadId === thread.id;
                   const isUnread = latest ? !latest.is_read : false;
                   const senderName = getSenderName(latest?.sender ?? "");
-                  const avatarStyle = getAvatarStyle(latest?.sender ?? "");
                   const dateText = formatSmartDate(latest?.received_at || latest?.sent_at);
                   const hasAttachments = thread.crm_email_messages.some(
                     (m) => m.crm_email_attachments && m.crm_email_attachments.length > 0
@@ -1829,11 +2040,7 @@ export default function MailboxWorkspace() {
                       )}
 
                       {/* Avatar */}
-                      <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-xs font-black shadow-sm ${avatarStyle.bg} ${avatarStyle.text}`}
-                      >
-                        {getInitials(senderName)}
-                      </div>
+                      <SenderAvatar sender={latest?.sender ?? null} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-xs font-black shadow-sm" />
 
                       {/* Content preview */}
                       <div className="min-w-0 flex-1">
@@ -1911,11 +2118,23 @@ export default function MailboxWorkspace() {
                   </button>
                 </div>
               )}
+              {!loading && visibleThreads.length > 0 && hasMoreThreads && (
+                <div className="border-t border-slate-100 p-3 text-center">
+                  <button
+                    type="button"
+                    onClick={() => loadMailbox(Math.floor(threads.length / 10) + 1, true)}
+                    disabled={loadingMoreThreads}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-primary hover:text-primary disabled:opacity-50"
+                  >
+                    {loadingMoreThreads ? "Loading…" : "Load 10 more emails"}
+                  </button>
+                </div>
+              )}
             </div>
           </section>
 
           {/* ════════════ Column 3: Full Interactive Email Reader ════════════ */}
-          <section className="hidden min-w-0 bg-white lg:block">
+          <section className={`${selectedThreadId ? "block" : "hidden lg:block"} min-w-0 bg-white`}>
             {selectedThread ? (
               <EmailReaderView
                 thread={selectedThread}
@@ -1926,8 +2145,10 @@ export default function MailboxWorkspace() {
                   setComposeInitialSubject(repSub.startsWith("Re:") ? repSub : `Re: ${repSub}`);
                   setComposeOpen(true);
                 }}
+                onMessageSent={refreshCurrentThread}
                 onToggleStar={handleToggleStar}
                 onMoveFolder={handleMoveFolder}
+                onDelete={handleDeleteThread}
               />
             ) : (
               <div className="flex h-full flex-col items-center justify-center p-12 text-center">

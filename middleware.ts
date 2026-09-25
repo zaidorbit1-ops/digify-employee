@@ -167,6 +167,7 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname === route ||
         request.nextUrl.pathname.startsWith(`${route}/`),
       );
+      const isCrmCompanyLookup = request.nextUrl.pathname === "/api/crm/companies";
       const module = permissionModule(request.nextUrl.pathname);
       const permission =
         module && profile.employee_id
@@ -209,6 +210,7 @@ export async function middleware(request: NextRequest) {
         employeeDefaultRoute ||
         permission.data?.[requiredPermission] === true ||
         (isCrmRoute && hasAnyCrmAccess && requiredPermission === "can_read") ||
+        (isCrmCompanyLookup && requiredPermission === "can_read") ||
         (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess);
 
       if (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess) {
@@ -246,6 +248,7 @@ function permissionModule(pathname: string) {
       contacts: "crm_contacts",
       segments: "crm_segments",
       webmail: "crm_webmail",
+      mailboxes: "crm_webmail",
       templates: "crm_email_templates",
       campaigns: "crm_campaigns",
       automations: "crm_automations",

@@ -37,6 +37,18 @@ function addresses(value) {
   return Array.isArray(list) ? list.map((item) => item.address).filter(Boolean) : [];
 }
 
+function subjectCandidates(subject) {
+  const value = String(subject || "").trim();
+  if (!value) return [];
+  const withoutReplyPrefix = value.replace(/^(re|fw|fwd):\s*/i, "").trim();
+  return [...new Set([value, withoutReplyPrefix].filter(Boolean))];
+}
+
+function stringArray(value) {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string" && item.length > 0);
+  return typeof value === "string" && value.length > 0 ? [value] : [];
+}
+
 async function syncMailbox(mailbox) {
   const credentials = decryptCredentials(mailbox.encrypted_credentials);
   const client = new ImapFlow({
@@ -50,11 +62,14 @@ async function syncMailbox(mailbox) {
 
   try {
     await client.connect();
+    let highestUid = Number(mailbox.last_sync_uid || 0);
     const lock = await client.getMailboxLock("INBOX");
     try {
       const exists = client.mailbox && typeof client.mailbox === "object" ? client.mailbox.exists : 0;
-      const start = Math.max(1, exists - 25);
-      for await (const message of client.fetch(`${start}:*`, { envelope: true, source: true, flags: true, uid: true, internalDate: true })) {
+      const start = highestUid > 0 ? Math.max(1, highestUid - 24) : Math.max(1, exists - 25);
+      const useUidRange = highestUid > 0;
+      for await (const message of client.fetch(`${start}:*`, { envelope: true, source: true, flags: true, uid: true, internalDate: true }, { uid: useUidRange })) {
+        highestUid = Math.max(highestUid, Number(message.uid || 0));
         if (!message.source) continue;
         const parsed = await simpleParser(message.source);
         const providerMessageId = parsed.messageId || `imap:${message.uid}`;
@@ -63,15 +78,19 @@ async function syncMailbox(mailbox) {
         const ccList = addresses(parsed.cc);
         const internalDate = message.internalDate instanceof Date ? message.internalDate : message.internalDate ? new Date(message.internalDate) : null;
         const receivedAt = internalDate?.toISOString() ?? parsed.date?.toISOString() ?? new Date().toISOString();
-        const references = parsed.references ?? [];
+        const references = stringArray(parsed.references);
         const headerCandidates = [parsed.inReplyTo, ...references].filter(Boolean);
 
         const { data: matchedMessage } = headerCandidates.length
           ? await db.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("message_id", headerCandidates).limit(1).maybeSingle()
           : { data: null };
+        const { data: subjectThread } = !matchedMessage && subjectCandidates(parsed.subject).length
+          ? await db.from("crm_email_threads").select("id, contact_id").eq("mailbox_id", mailbox.id).in("subject", subjectCandidates(parsed.subject)).order("updated_at", { ascending: false }).limit(1).maybeSingle()
+          : { data: null };
+        const matchedThreadId = matchedMessage?.thread_id || subjectThread?.id;
 
         const threadKey = parsed.inReplyTo || references[0] || parsed.subject || providerMessageId;
-        let contactId = matchedMessage?.contact_id || null;
+        let contactId = matchedMessage?.contact_id || subjectThread?.contact_id || null;
 
         if (!contactId && sender) {
           const { data: contact } = await db.from("crm_contacts").select("id").eq("company_id", mailbox.company_id).eq("normalized_email", sender.toLowerCase()).maybeSingle();
@@ -88,8 +107,8 @@ async function syncMailbox(mailbox) {
           updated_at: receivedAt,
         };
 
-        const { data: thread } = matchedMessage?.thread_id
-          ? await db.from("crm_email_threads").update(threadPayload).eq("id", matchedMessage.thread_id).select("id").single()
+        const { data: thread } = matchedThreadId
+          ? await db.from("crm_email_threads").update(threadPayload).eq("id", matchedThreadId).select("id").single()
           : await db.from("crm_email_threads").upsert(threadPayload, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
 
         if (!thread) continue;
@@ -134,7 +153,7 @@ async function syncMailbox(mailbox) {
     } finally {
       lock.release();
     }
-    await db.from("crm_mailboxes").update({ status: "connected", last_sync_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
+    await db.from("crm_mailboxes").update({ status: "connected", last_sync_at: new Date().toISOString(), last_sync_uid: highestUid, last_error: null }).eq("id", mailbox.id);
   } catch (err) {
     console.error(`[Worker] Error syncing mailbox ${mailbox.email_address}:`, err.message);
   } finally {
