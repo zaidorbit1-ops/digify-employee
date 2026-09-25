@@ -1,5 +1,5 @@
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
-import { getCrmAdminClient } from "@/lib/crm-admin";
 import { syncMailbox, type MailboxRecord } from "@/lib/crm-webmail-sync";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +14,14 @@ export async function GET(request: Request) {
   }
 
   try {
-    const { client, error: authError } = await getCrmAdminClient();
-    if (authError) return NextResponse.json({ error: authError }, { status: 403 });
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!supabaseUrl || !serviceRoleKey) {
+      return NextResponse.json({ error: "Supabase server credentials are not configured." }, { status: 500 });
+    }
+    const client = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
     const { data: mailboxes, error } = await client
       .from("crm_mailboxes")
