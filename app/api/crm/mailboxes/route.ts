@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { getHostingerMailbox, getHostingerWebhook, registerHostingerWebhook } from "@/lib/hostinger-mail";
-import { encryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
+import { decryptHostingerWebhookSecret, encryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 
 const statuses = ["pending", "connected", "error", "disconnected"];
 
@@ -64,7 +64,11 @@ export async function POST(request: Request) {
         addCheck("Hostinger mailbox access", false, hostingerError instanceof Error ? hostingerError.message : "Hostinger mailbox lookup failed.");
       }
       let registration: { resourceId: string; webhookId: string; secret: string } | null = null;
-      if (hostingerMailbox && (!mailbox.webhook_id || !mailbox.encrypted_webhook_secret)) {
+      let storedSecretValid = Boolean(mailbox.encrypted_webhook_secret);
+      if (mailbox.encrypted_webhook_secret) {
+        try { decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret); } catch { storedSecretValid = false; }
+      }
+      if (hostingerMailbox && (!mailbox.webhook_id || !storedSecretValid)) {
         try {
           registration = await registerHostingerWebhook(mailbox.email_address);
           addCheck("Webhook registration", true, "A webhook was registered and its secret was returned.");
