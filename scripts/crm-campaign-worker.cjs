@@ -1,5 +1,4 @@
-const crypto = require("node:crypto");
-const nodemailer = require("nodemailer");
+const { AccountApi, Configuration, SendApi } = require("hostinger-mail-api-sdk");
 const { createClient } = require("@supabase/supabase-js");
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -12,19 +11,15 @@ const once = process.argv.includes("--once");
 const pollMs = Number(process.env.CRM_CAMPAIGN_WORKER_POLL_MS || 5000);
 const maxAttempts = Number(process.env.CRM_CAMPAIGN_MAX_ATTEMPTS || 3);
 
-function encryptionKey() {
-  const secret = process.env.CRM_MAILBOXES_ENCRYPTION_KEY || process.env.COMPANY_ACCOUNTS_ENCRYPTION_KEY;
-  if (!secret) throw new Error("CRM_MAILBOXES_ENCRYPTION_KEY is required for the campaign worker.");
-  return crypto.createHash("sha256").update(secret).digest();
-}
-
-function decryptCredentials(payload) {
-  const [version, ivValue, tagValue, encryptedValue] = String(payload || "").split(":");
-  if (version !== "v1" || !ivValue || !tagValue || !encryptedValue) throw new Error("Mailbox credentials have an invalid encryption format.");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivValue, "base64url"));
-  decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
-  const value = Buffer.concat([decipher.update(Buffer.from(encryptedValue, "base64url")), decipher.final()]).toString("utf8");
-  return JSON.parse(value);
+async function sendHostinger({ to, subject, html, text, displayName, mailboxAddress }) {
+  const token = process.env.HOSTINGER_API_TOKEN;
+  const address = String(mailboxAddress || process.env.HOSTINGER_MAILBOX || "").toLowerCase();
+  if (!token || !address) throw new Error("Hostinger API configuration is incomplete.");
+  const configuration = new Configuration({ accessToken: token });
+  const account = await new AccountApi(configuration).getCurrentAccount();
+  const mailbox = (account.data.data.mailboxes || []).find((item) => item.address.toLowerCase() === address);
+  if (!mailbox) throw new Error("Configured Hostinger mailbox is not available to this API token.");
+  await new SendApi(configuration).sendEmail(mailbox.resourceId, { to: [to], cc: [], bcc: [], displayName: displayName || "", subject, html, text, attachments: [] });
 }
 
 function render(value, contact, companyName) {
@@ -94,8 +89,6 @@ async function sendClaimed(message) {
   if (mailboxError) throw mailboxError;
   if (templateError) throw templateError;
   if (companyError) throw companyError;
-  const credentials = decryptCredentials(mailbox.encrypted_credentials);
-  const transporter = nodemailer.createTransport({ host: mailbox.smtp_host, port: Number(mailbox.smtp_port), secure: mailbox.smtp_security === "ssl", requireTLS: mailbox.smtp_security === "starttls", tls: { rejectUnauthorized: false }, auth: { user: credentials.username, pass: credentials.password } });
   const subject = render(campaign.subject || template.subject, contact, company.name);
   const publicUrl = String(process.env.CRM_PUBLIC_URL || "").replace(/\/$/, "");
   let html = render(template.html_body, contact, company.name);
@@ -103,12 +96,13 @@ async function sendClaimed(message) {
     html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_, url) => `href="${publicUrl}/api/crm/tracking/click/${message.id}?url=${encodeURIComponent(url)}"`);
     html += `<img src="${publicUrl}/api/crm/tracking/open/${message.id}" width="1" height="1" alt="" style="display:none" />`;
   }
-  const sent = await transporter.sendMail({ from: campaign.from_name ? `"${campaign.from_name}" <${mailbox.email_address}>` : mailbox.email_address, replyTo: campaign.reply_to || undefined, to: contact.email, subject, html, text: render(template.text_body || subject, contact, company.name) });
+  await sendHostinger({ to: contact.email, subject, html, text: render(template.text_body || subject, contact, company.name), displayName: campaign.from_name || undefined, mailboxAddress: mailbox.email_address });
+  const providerMessageId = `hostinger:campaign:${message.id}`;
   const now = new Date().toISOString();
-  await db.from("crm_campaign_messages").update({ status: "sent", sent_at: now, provider_message_id: sent.messageId || null, error_message: null, updated_at: now }).eq("id", message.id);
+  await db.from("crm_campaign_messages").update({ status: "sent", sent_at: now, provider_message_id: providerMessageId, error_message: null, updated_at: now }).eq("id", message.id);
   await db.from("crm_campaign_contacts").update({ status: "sent" }).eq("id", message.campaign_contact_id);
-  await db.from("crm_email_events").insert({ company_id: campaign.company_id, campaign_message_id: message.id, event_type: "sent", provider_event_id: sent.messageId || `campaign:${message.id}`, metadata: { worker_id: workerId } });
-  await db.from("crm_contact_timeline").insert({ company_id: campaign.company_id, contact_id: contact.id, event_type: "campaign_email_sent", event_data: { campaign_id: campaign.id, campaign_message_id: message.id, provider_message_id: sent.messageId || null, subject } });
+  await db.from("crm_email_events").insert({ company_id: campaign.company_id, campaign_message_id: message.id, event_type: "sent", provider_event_id: providerMessageId, metadata: { worker_id: workerId } });
+  await db.from("crm_contact_timeline").insert({ company_id: campaign.company_id, contact_id: contact.id, event_type: "campaign_email_sent", event_data: { campaign_id: campaign.id, campaign_message_id: message.id, provider_message_id: providerMessageId, subject } });
 }
 
 async function failClaimed(message, error) {

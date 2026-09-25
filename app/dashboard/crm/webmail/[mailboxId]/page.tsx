@@ -63,9 +63,6 @@ type Mailbox = {
   email_address: string;
   display_name: string;
   status: string;
-  provider?: string;
-  imap_host?: string;
-  smtp_host?: string;
 };
 
 /* ==========================================================================
@@ -1435,8 +1432,6 @@ export default function MailboxWorkspace() {
   const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [autoSyncInterval, setAutoSyncInterval] = useState<number>(5);
   const [notification, setNotification] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
 
   // Compose Drawer State
@@ -1507,57 +1502,12 @@ export default function MailboxWorkspace() {
     }
   }
 
-  // Silent background sync from IMAP
-  const syncInFlightRef = useRef(false);
-  async function silentSyncInbox() {
-    if (syncInFlightRef.current) return;
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-    syncInFlightRef.current = true;
-    try {
-      const response = await fetch("/api/crm/webmail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mailbox_id: mailboxId }),
-      });
-      const result = await response.json();
-      if (result.imported && result.imported > 0) {
-        await reloadThreadsSilently();
-        setNotification({
-          text: `📬 ${result.imported} new email(s) received!`,
-          tone: "success",
-        });
-      }
-    } catch {
-      // silent ignore
-    } finally {
-      syncInFlightRef.current = false;
-    }
-  }
-
   // Initial load
   useEffect(() => {
     if (Number.isInteger(mailboxId) && mailboxId > 0) {
       loadMailbox();
     }
   }, [mailboxId]);
-
-  // Background poller (default: every 15s)
-  useEffect(() => {
-    if (!Number.isInteger(mailboxId) || mailboxId <= 0 || autoSyncInterval <= 0) return;
-
-    const initialTimer = setTimeout(() => {
-      silentSyncInbox();
-    }, 4000);
-
-    const timer = setInterval(() => {
-      silentSyncInbox();
-    }, autoSyncInterval * 1000);
-
-    return () => {
-      clearTimeout(initialTimer);
-      clearInterval(timer);
-    };
-  }, [mailboxId, autoSyncInterval]);
 
   // Supabase Realtime Channel
   useEffect(() => {
@@ -1599,33 +1549,6 @@ export default function MailboxWorkspace() {
       // ignore
     }
   }, [mailboxId]);
-
-  // Manual Sync Inbox
-  async function handleSyncInbox() {
-    if (syncInFlightRef.current) return;
-    syncInFlightRef.current = true;
-    setSyncing(true);
-    setNotification(null);
-    try {
-      const response = await fetch("/api/crm/webmail", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mailbox_id: mailboxId }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Sync failed.");
-      setNotification({ text: result.message, tone: "success" });
-      await reloadThreadsSilently();
-    } catch (error) {
-      setNotification({
-        text: error instanceof Error ? error.message : "Sync failed.",
-        tone: "danger",
-      });
-    } finally {
-      syncInFlightRef.current = false;
-      setSyncing(false);
-    }
-  }
 
   // Open Message & Mark Read
   async function handleSelectThread(thread: Thread) {
@@ -1813,35 +1736,6 @@ export default function MailboxWorkspace() {
         </div>
 
         <div className="flex items-center gap-2.5">
-          {/* Auto-Sync status badge */}
-          <div className="hidden sm:flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 shadow-sm">
-            <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-semibold text-slate-500">Auto:</span>
-            <select
-              value={autoSyncInterval}
-              onChange={(e) => setAutoSyncInterval(Number(e.target.value))}
-              className="bg-transparent font-bold text-slate-800 outline-none cursor-pointer hover:text-primary transition"
-              title="Change Background Auto-fetch Interval"
-            >
-              <option value={3}>⚡ 3s (Instant OTP)</option>
-              <option value={5}>🚀 5s (Ultra Fast)</option>
-              <option value={10}>10s (Fast)</option>
-              <option value={15}>15s (Standard)</option>
-              <option value={30}>30s (Relaxed)</option>
-              <option value={0}>Off</option>
-            </select>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleSyncInbox}
-            disabled={syncing}
-            className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-95 disabled:opacity-60"
-          >
-            <span className={`text-base ${syncing ? "animate-spin" : ""}`}>🔄</span>
-            <span>{syncing ? "Syncing Inbox..." : "Sync Inbox"}</span>
-          </button>
-
           <button
             type="button"
             onClick={() => {
@@ -2109,13 +2003,6 @@ export default function MailboxWorkspace() {
                       ? "No conversations match your search terms."
                       : "No messages found in this folder."}
                   </p>
-                  <button
-                    type="button"
-                    onClick={handleSyncInbox}
-                    className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
-                  >
-                    Check for new emails
-                  </button>
                 </div>
               )}
               {!loading && visibleThreads.length > 0 && hasMoreThreads && (
