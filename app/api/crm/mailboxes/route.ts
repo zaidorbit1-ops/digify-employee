@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { getHostingerMailbox, getHostingerWebhook, registerHostingerWebhook } from "@/lib/hostinger-mail";
+import { getHostingerMailbox, getHostingerWebhook, regenerateHostingerWebhookSecret, registerHostingerWebhook } from "@/lib/hostinger-mail";
 import { decryptHostingerWebhookSecret, encryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 
 const statuses = ["pending", "connected", "error", "disconnected"];
@@ -81,8 +81,26 @@ export async function POST(request: Request) {
           const active = result.webhook?.status === "active";
           addCheck("Webhook status", active, active ? "Registered webhook is active." : `Webhook status is ${result.webhook?.status || "unknown"}.`);
           addCheck("Webhook target", result.webhook?.url === webhookUrl, result.webhook?.url === webhookUrl ? "Webhook points to the configured CRM URL." : `Webhook points to ${result.webhook?.url || "an unknown URL"}.`);
+          if (active && result.webhook?.url === webhookUrl) {
+            try {
+              registration = await regenerateHostingerWebhookSecret(mailbox.email_address, mailbox.webhook_id);
+              addCheck("Webhook secret synchronization", true, "Webhook secret was regenerated and encrypted in CRM storage.");
+            } catch (secretError) {
+              addCheck("Webhook secret synchronization", false, secretError instanceof Error ? secretError.message : "Could not synchronize the webhook secret.");
+            }
+          }
         } catch (webhookError) {
-          addCheck("Webhook lookup", false, webhookError instanceof Error ? webhookError.message : "Hostinger webhook lookup failed.");
+          const status = (webhookError as { response?: { status?: number } }).response?.status;
+          if (status === 404) {
+            try {
+              registration = await registerHostingerWebhook(mailbox.email_address);
+              addCheck("Webhook recovery", true, "The saved webhook was missing, so a new webhook was registered.");
+            } catch (recoveryError) {
+              addCheck("Webhook recovery", false, recoveryError instanceof Error ? recoveryError.message : "Hostinger webhook recovery failed.");
+            }
+          } else {
+            addCheck("Webhook lookup", false, webhookError instanceof Error ? webhookError.message : "Hostinger webhook lookup failed.");
+          }
         }
       }
       if (!registration) addCheck("Webhook secret storage", Boolean(mailbox.encrypted_webhook_secret), mailbox.encrypted_webhook_secret ? "Webhook secret is encrypted in CRM storage." : "No encrypted webhook secret is stored for this mailbox.");

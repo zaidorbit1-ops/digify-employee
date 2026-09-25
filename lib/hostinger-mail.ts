@@ -50,6 +50,14 @@ export async function getHostingerWebhook(address: string, webhookId: string) {
   return { resourceId: mailbox.resourceId, webhook: response.data?.data };
 }
 
+export async function regenerateHostingerWebhookSecret(address: string, webhookId: string) {
+  const mailbox = await getHostingerMailbox(address);
+  const response = await new WebhooksApi(configuration()).regenerateWebhookSecret(mailbox.resourceId, webhookId);
+  const webhook = response.data?.data;
+  if (!webhook?.id || !webhook.secret) throw new Error("Hostinger did not return a regenerated webhook secret.");
+  return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
+}
+
 function splitAddresses(value?: string) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 }
