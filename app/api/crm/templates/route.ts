@@ -1,7 +1,6 @@
-import nodemailer from "nodemailer";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { decryptMailboxCredentials } from "@/lib/crm-mailboxes-crypto";
+import { sendHostingerEmail } from "@/lib/hostinger-mail";
 
 const statuses = ["draft", "active", "archived"] as const;
 const allowedVariables = ["first_name", "last_name", "email", "company_name"];
@@ -85,10 +84,8 @@ export async function POST(request: Request) {
       ]);
       if (templateError) throw templateError;
       if (mailboxError) throw mailboxError;
-      const credentials = decryptMailboxCredentials(mailbox.encrypted_credentials ?? "");
       const values = { first_name: "Test", last_name: "Recipient", email: recipient, company_name: "Your company" };
-      const transporter = nodemailer.createTransport({ host: mailbox.smtp_host, port: Number(mailbox.smtp_port), secure: mailbox.smtp_security === "ssl", requireTLS: mailbox.smtp_security === "starttls", tls: { rejectUnauthorized: false }, auth: { user: credentials.username, pass: credentials.password } });
-      await transporter.sendMail({ from: mailbox.email_address, to: recipient, subject: `[TEST] ${renderVariables(template.subject, values)}`, html: renderVariables(template.html_body, values), text: renderVariables(template.text_body || template.subject, values) });
+      await sendHostingerEmail({ to: recipient, subject: `[TEST] ${renderVariables(template.subject, values)}`, html: renderVariables(template.html_body, values), text: renderVariables(template.text_body || template.subject, values), mailboxAddress: mailbox.email_address });
       return NextResponse.json({ ok: true, message: "Test email sent successfully." });
     }
     const parsed = parseTemplate(body);

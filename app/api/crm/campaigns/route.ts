@@ -1,7 +1,6 @@
-import nodemailer from "nodemailer";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { decryptMailboxCredentials } from "@/lib/crm-mailboxes-crypto";
+import { sendHostingerEmail } from "@/lib/hostinger-mail";
 
 const statuses = ["draft", "scheduled", "running", "paused", "completed", "cancelled", "failed"];
 
@@ -61,9 +60,7 @@ export async function POST(request: Request) {
       if (!mailboxId || !to || !subject || !html) return fail("Mailbox, recipient, subject, and preview are required.", "Test details are incomplete.", 400);
       const { data: mailbox, error: mailboxError } = await client.from("crm_mailboxes").select("*").eq("id", mailboxId).single();
       if (mailboxError) throw mailboxError;
-      const credentials = decryptMailboxCredentials(mailbox.encrypted_credentials ?? "");
-      const transporter = nodemailer.createTransport({ host: mailbox.smtp_host, port: Number(mailbox.smtp_port), secure: mailbox.smtp_security === "ssl", requireTLS: mailbox.smtp_security === "starttls", tls: { rejectUnauthorized: false }, auth: { user: credentials.username, pass: credentials.password } });
-      await transporter.sendMail({ from: mailbox.email_address, to, subject: `[TEST] ${subject}`, html, text: text(body.text_body, 100000) || subject });
+      await sendHostingerEmail({ to, subject: `[TEST] ${subject}`, html, text: text(body.text_body, 100000) || subject, mailboxAddress: mailbox.email_address });
       return NextResponse.json({ ok: true, message: "Campaign test email sent." });
     }
     const values = campaignValues(body);
