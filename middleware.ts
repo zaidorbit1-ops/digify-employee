@@ -46,6 +46,8 @@ export async function middleware(request: NextRequest) {
   const isCrmTracking = request.nextUrl.pathname.startsWith(
     "/api/crm/tracking/",
   );
+  const isHostingerWebhook =
+    request.nextUrl.pathname === "/api/email/hostinger/webhook";
 
   if (
     isApi &&
@@ -54,7 +56,8 @@ export async function middleware(request: NextRequest) {
     !isConnectorIngest &&
     !isConnectorCommand &&
     !isCrmLeadIngest &&
-    !isCrmTracking
+    !isCrmTracking &&
+    !isHostingerWebhook
   ) {
     return NextResponse.json(
       { error: "Authentication required." },
