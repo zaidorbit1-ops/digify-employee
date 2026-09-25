@@ -23,7 +23,7 @@ function CompanyLogo({ company }: { company: Company }) {
   const showImage = Boolean(company.logo_url) && !imageFailed;
 
   return (
-    <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border border-border bg-primary-soft text-2xl font-bold text-primary">
+    <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border border-transparent bg-transparent text-2xl font-bold text-primary">
       {showImage ? (
         <img
           src={company.logo_url ?? ""}

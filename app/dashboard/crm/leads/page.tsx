@@ -11,6 +11,7 @@ import { Alert, EmptyState } from "@/components/ui/empty-state";
 import { Field, SelectInput, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/components/auth/auth-provider";
 
 type Website = { id: number; name: string; website_url: string; custom_fields?: Array<{ name?: string; label?: string; aliases?: string[] }> | null };
 type Company = { id: number; name: string; crm_websites?: Website[] };
@@ -36,6 +37,7 @@ type Lead = {
   crm_contact_timeline?: { event_type: string; created_at: string; event_data: Record<string, unknown> }[];
 };
 type Message = { text: string; tone?: "success" | "danger" };
+type Permission = { module: string; can_read: boolean; can_add: boolean; can_edit: boolean; can_delete: boolean };
 type LeadForm = { name: string; email: string; phone: string; company_id: string; website_id: string; message: string; source_name: string; source_url: string };
 type Stage = { id: string; label: string; hint: string; tone: string; ring: string; fill: string };
 
@@ -187,6 +189,7 @@ function StageTrack({
 }
 
 export default function CrmLeadsPage() {
+  const { profile } = useAuth();
   const searchParams = useSearchParams();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -211,6 +214,20 @@ export default function CrmLeadsPage() {
   const [editingLeadId, setEditingLeadId] = useState<number | null>(null);
   const [leadFormMessage, setLeadFormMessage] = useState<Message | null>(null);
   const [leadFormLoading, setLeadFormLoading] = useState(false);
+  const [permissions, setPermissions] = useState<Permission[]>([]);
+
+  useEffect(() => {
+    if (profile?.role !== "employee") return;
+    fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => setPermissions(result.permissions ?? [])).catch(() => setPermissions([]));
+  }, [profile?.role]);
+
+  const leadsPermission = permissions.find((permission) => permission.module === "crm_leads");
+  const ordersPermission = permissions.find((permission) => permission.module === "crm_orders");
+  const isEmployee = profile?.role === "employee";
+  const canAddLead = !isEmployee || leadsPermission?.can_add === true;
+  const canEditLead = !isEmployee || leadsPermission?.can_edit === true;
+  const canDeleteLead = !isEmployee || leadsPermission?.can_delete === true;
+  const canReadOrders = !isEmployee || ordersPermission?.can_read === true;
 
   const selectedCompany = companies.find((company) => String(company.id) === companyId);
   const allWebsites = useMemo(() => companies.flatMap((company) => company.crm_websites ?? []), [companies]);
@@ -246,7 +263,7 @@ export default function CrmLeadsPage() {
   const tableColumns = ["name", ...visibleColumns.filter((column) => column !== "name" && !hiddenTableColumns.has(column))];
 
   async function loadCompanies() {
-    const response = await fetch("/api/crm/companies", { cache: "no-store" });
+    const response = await fetch("/api/crm/companies?module=crm_leads", { cache: "no-store" });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? "Could not load companies.");
     setCompanies(result.companies ?? []);
@@ -482,7 +499,7 @@ export default function CrmLeadsPage() {
         title="Leads"
         description="Review every enquiry across the pipeline, move stages in place, and open a profile when you need the full conversation."
         actions={
-          <><Button onClick={() => openLeadEditor()}><IconPlus className="h-4 w-4" />Create Lead</Button><Link href="/dashboard/crm/leads/trash" className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm font-semibold text-muted transition hover:border-primary/30 hover:text-primary"><IconTrash className="h-4 w-4" />Trash</Link><Button variant="secondary" onClick={loadLeads}><IconRefresh className="h-4 w-4" />Refresh</Button></>
+          <><Button disabled={!canAddLead} title={!canAddLead ? "Add permission required" : undefined} onClick={() => openLeadEditor()}><IconPlus className="h-4 w-4" />Create Lead</Button>{canDeleteLead ? <Link href="/dashboard/crm/leads/trash" className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm font-semibold text-muted transition hover:border-primary/30 hover:text-primary"><IconTrash className="h-4 w-4" />Trash</Link> : <Button variant="secondary" disabled title="Delete permission required"><IconTrash className="h-4 w-4" />Trash</Button>}<Button variant="secondary" onClick={loadLeads}><IconRefresh className="h-4 w-4" />Refresh</Button></>
         }
       />
       {message ? (
@@ -633,7 +650,7 @@ export default function CrmLeadsPage() {
                     ))}
                     <td className="px-4 py-3.5 align-middle"><Badge tone={statusTone(lead.status)}>{lead.status}</Badge></td>
                     <td className="px-3 py-3.5 text-right align-middle">
-                      <div className="flex items-center justify-end gap-1 whitespace-nowrap"><Link href={`/dashboard/crm/leads/${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs font-semibold text-stone-600 transition hover:border-primary/25 hover:bg-primary-soft hover:text-primary">View</Link><button type="button" title="Edit lead" onClick={(event) => { event.stopPropagation(); openLeadEditor(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-primary/15 bg-primary-soft px-2 py-1.5 text-xs font-semibold text-primary transition hover:border-primary/30 hover:bg-primary/10"><IconEdit className="h-3.5 w-3.5" />Edit</button><Link href={`/dashboard/crm/orders?lead_id=${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100">Create order</Link><button type="button" title="Move lead to Trash" onClick={(event) => { event.stopPropagation(); trashLead(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"><IconTrash className="h-3.5 w-3.5" />Delete</button></div>
+                      <div className="flex items-center justify-end gap-1 whitespace-nowrap"><Link href={`/dashboard/crm/leads/${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-50 px-2 py-1.5 text-xs font-semibold text-stone-600 transition hover:border-primary/25 hover:bg-primary-soft hover:text-primary">View</Link><button type="button" disabled={!canEditLead} title={!canEditLead ? "Edit permission required" : "Edit lead"} onClick={(event) => { event.stopPropagation(); openLeadEditor(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-primary/15 bg-primary-soft px-2 py-1.5 text-xs font-semibold text-primary transition hover:border-primary/30 hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"><IconEdit className="h-3.5 w-3.5" />Edit</button>{canReadOrders ? <Link href={`/dashboard/crm/orders?lead_id=${lead.id}`} onClick={(event) => event.stopPropagation()} className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-700 transition hover:border-amber-300 hover:bg-amber-100">Create order</Link> : <button type="button" disabled title="Orders permission required" className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-700 opacity-40">Create order</button>}<button type="button" disabled={!canDeleteLead} title={!canDeleteLead ? "Delete permission required" : "Move lead to Trash"} onClick={(event) => { event.stopPropagation(); trashLead(lead); }} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40"><IconTrash className="h-3.5 w-3.5" />Delete</button></div>
                     </td>
                   </tr>
                 ))}

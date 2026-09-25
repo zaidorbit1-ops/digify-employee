@@ -10,13 +10,17 @@ import { Alert, EmptyState } from "@/components/ui/empty-state";
 import { Field, SelectInput, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
+import { useAuth } from "@/components/auth/auth-provider";
 
 type Expert = { id: number; name: string; email?: string | null; service_area?: string | null; status: string; created_at: string };
 type FormState = { name: string; email: string; password: string; service_area: string; status: string };
 const emptyForm: FormState = { name: "", email: "", password: "", service_area: "", status: "active" };
 
 export default function ExpertsPage() {
+  const { profile } = useAuth();
   const [experts, setExperts] = useState<Expert[]>([]); const [search, setSearch] = useState(""); const [status, setStatus] = useState(""); const [form, setForm] = useState<FormState>(emptyForm); const [editingId, setEditingId] = useState<number | null>(null); const [open, setOpen] = useState(false); const [message, setMessage] = useState<{ text: string; tone?: "success" | "danger" } | null>(null); const [loading, setLoading] = useState(false);
+  const [canAddExpert, setCanAddExpert] = useState(true);
+  useEffect(() => { if (profile?.role !== "employee") return; fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => { const permission = (result.permissions ?? []).find((item: { module: string }) => item.module === "crm_experts"); setCanAddExpert(permission?.can_add === true); }).catch(() => setCanAddExpert(false)); }, [profile?.role]);
   async function load() { const params = new URLSearchParams(); if (search.trim()) params.set("search", search.trim()); if (status) params.set("status", status); const response = await fetch(`/api/crm/experts?${params}`, { cache: "no-store" }); const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Could not load experts."); setExperts(result.experts ?? []); }
   useEffect(() => { load().catch((error) => setMessage({ text: error.message, tone: "danger" })); }, [status]);
   function edit(expert?: Expert) { setEditingId(expert?.id ?? null); setForm(expert ? { name: expert.name, email: expert.email ?? "", password: "", service_area: expert.service_area ?? "", status: expert.status } : emptyForm); setOpen(true); }

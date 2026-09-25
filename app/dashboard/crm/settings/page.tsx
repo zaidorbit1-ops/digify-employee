@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { IconRefresh } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,8 @@ import { PageHeader } from "@/components/ui/page-header";
 import { useAuth } from "@/components/auth/auth-provider";
 
 type Employee = { id: number; name: string; employee_id?: string | null; email?: string | null; status?: string | null };
+type CrmCompany = { id: number; name: string; status?: string | null };
+type CrmModuleCompanyAccess = { employee_id: number; module: string; company_id: number };
 type Permission = { id?: number; employee_id: number; module: string; can_read: boolean; can_add: boolean; can_edit: boolean; can_delete: boolean };
 type PermissionKey = "can_read" | "can_add" | "can_edit" | "can_delete";
 
@@ -38,6 +40,8 @@ const permissionKeys: PermissionKey[] = ["can_read", "can_add", "can_edit", "can
 export default function CrmSettingsPage() {
   const { profile } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [crmCompanies, setCrmCompanies] = useState<CrmCompany[]>([]);
+  const [crmModuleCompanyAccess, setCrmModuleCompanyAccess] = useState<CrmModuleCompanyAccess[]>([]);
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [employeeSearch, setEmployeeSearch] = useState("");
@@ -98,6 +102,8 @@ export default function CrmSettingsPage() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not load permissions.");
       setEmployees(result.employees ?? []);
+      setCrmCompanies(result.crmCompanies ?? []);
+      setCrmModuleCompanyAccess(result.crmModuleCompanyAccess ?? []);
       setPermissions(result.permissions ?? []);
       if (!selectedEmployeeId && result.employees?.length) {
         setSelectedEmployeeId(String(result.employees[0].id));
@@ -124,6 +130,23 @@ export default function CrmSettingsPage() {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error ?? "Could not save permission.");
+  }
+
+  function selectedCrmCompanyIds(module: string) {
+    return crmModuleCompanyAccess.filter((access) => access.employee_id === Number(selectedEmployeeId) && access.module === module).map((access) => access.company_id);
+  }
+
+  async function updateCrmCompanyAccess(module: string, companyId: number, checked: boolean) {
+    const employeeId = Number(selectedEmployeeId);
+    const nextCompanyIds = checked ? [...new Set([...selectedCrmCompanyIds(module), companyId])] : selectedCrmCompanyIds(module).filter((id) => id !== companyId);
+    setCrmModuleCompanyAccess((current) => [...current.filter((access) => access.employee_id !== employeeId || access.module !== module), ...nextCompanyIds.map((id) => ({ employee_id: employeeId, module, company_id: id }))]);
+    try {
+      const response = await fetch("/api/permissions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ employee_id: employeeId, module, crm_company_ids: nextCompanyIds }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not save CRM module company access.");
+    } catch (error) {
+      setMessage({ text: error instanceof Error ? error.message : "Could not save CRM module company access.", tone: "danger" });
+    }
   }
 
   async function updatePermission(module: string, key: PermissionKey, checked: boolean) {
@@ -272,6 +295,7 @@ export default function CrmSettingsPage() {
           <div className="rounded-xl border border-primary/15 bg-white/80 px-4 py-3 text-xs text-muted">
             <span className="font-semibold text-foreground">Permission levels:</span> Read lets an employee open a module. Add, Edit, and Delete automatically include Read.
           </div>
+
         </div>
 
         <div className="overflow-x-auto">
@@ -291,8 +315,9 @@ export default function CrmSettingsPage() {
                 const permission = currentPermission(module);
                 const allChecked = permissionKeys.every((key) => permission[key]);
                 return (
-                  <tr key={module} className="hover:bg-[#fffafa]">
-                    <td className="px-5 py-4 font-semibold">{label}</td>
+                  <Fragment key={module}>
+                  <tr className="hover:bg-[#fffafa]">
+                    <td className="px-5 py-4 font-semibold"><details><summary className="cursor-pointer list-none">{label}<span className="ml-2 text-xs font-normal text-muted">⌄ companies</span></summary><div className="mt-3 grid gap-2 rounded-lg border border-border bg-[#fffaf9] p-3 sm:grid-cols-2">{crmCompanies.length ? crmCompanies.map((company) => <label key={company.id} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-primary-soft"><input type="checkbox" checked={selectedCrmCompanyIds(module).includes(company.id)} onChange={(event) => updateCrmCompanyAccess(module, company.id, event.target.checked)} />{company.name}{company.status !== "active" ? <Badge tone="neutral">{company.status}</Badge> : null}</label>) : <span className="text-sm font-normal text-muted">No CRM companies available.</span>}</div></details></td>
                     {permissionKeys.map((key) => (
                       <td key={key} className="px-3 py-4 text-center">
                         <input
@@ -314,6 +339,7 @@ export default function CrmSettingsPage() {
                       />
                     </td>
                   </tr>
+                  </Fragment>
                 );
               })}
             </tbody>

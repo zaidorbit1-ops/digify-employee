@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { encryptCompanyPassword } from "@/lib/company-accounts-crypto";
+import { canAccessCompany, getCompanyAccessContext } from "@/lib/company-access";
 import { supabase } from "@/lib/supabase";
 
 function client() {
@@ -9,13 +10,17 @@ function client() {
 
 export async function GET() {
   try {
+    const access = await getCompanyAccessContext();
+    if (!access) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     const [{ data: companies, error: companiesError }, { data: accounts, error: accountsError }] = await Promise.all([
       client().from("companies").select("*").order("name"),
       client().from("company_accounts").select("id, company_id, platform_name, login, created_at, updated_at").order("platform_name"),
     ]);
     if (companiesError) throw companiesError;
     if (accountsError) throw accountsError;
-    return NextResponse.json({ companies: companies ?? [], accounts: accounts ?? [] });
+    const visibleCompanies = access.isSuperadmin ? companies ?? [] : (companies ?? []).filter((company) => access.allowedCompanyIds.includes(company.id));
+    const visibleCompanyIds = new Set(visibleCompanies.map((company) => company.id));
+    return NextResponse.json({ companies: visibleCompanies, accounts: (accounts ?? []).filter((account) => visibleCompanyIds.has(account.company_id)) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load company accounts." }, { status: 500 });
   }
@@ -32,6 +37,7 @@ export async function POST(request: Request) {
     if (!Number.isInteger(companyId) || companyId <= 0 || !platformName || !login || !password) {
       return NextResponse.json({ error: "Company, platform name, login, and password are required." }, { status: 400 });
     }
+    if (!(await canAccessCompany(companyId))) return NextResponse.json({ error: "You do not have access to this company." }, { status: 403 });
 
     const { data, error } = await client().from("company_accounts").insert({
       company_id: companyId,
@@ -58,6 +64,9 @@ export async function PATCH(request: Request) {
 
     const values: Record<string, string | number> = { platform_name: platformName, login, updated_at: new Date().toISOString() };
     const password = String(body.password ?? "");
+    const { data: existingAccount, error: existingError } = await client().from("company_accounts").select("company_id").eq("id", id).single();
+    if (existingError) throw existingError;
+    if (!(await canAccessCompany(existingAccount.company_id))) return NextResponse.json({ error: "You do not have access to this company." }, { status: 403 });
     if (password) values.encrypted_password = encryptCompanyPassword(password);
 
     const { data, error } = await client().from("company_accounts").update(values).eq("id", id).select("id, company_id, platform_name, login, created_at, updated_at").single();
@@ -72,6 +81,9 @@ export async function DELETE(request: Request) {
   try {
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid account is required." }, { status: 400 });
+    const { data: existingAccount, error: existingError } = await client().from("company_accounts").select("company_id").eq("id", id).single();
+    if (existingError) throw existingError;
+    if (!(await canAccessCompany(existingAccount.company_id))) return NextResponse.json({ error: "You do not have access to this company." }, { status: 403 });
     const { error } = await client().from("company_accounts").delete().eq("id", id);
     if (error) throw error;
     return NextResponse.json({ ok: true });
