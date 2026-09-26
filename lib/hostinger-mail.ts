@@ -6,6 +6,7 @@ import {
   type V1SendRequest,
   WebhooksApi,
 } from "hostinger-mail-api-sdk";
+import { getConfiguredHostingerMailbox, getHostingerApiToken } from "@/lib/hostinger-env";
 
 export type HostingerAttachment = {
   name: string;
@@ -13,16 +14,19 @@ export type HostingerAttachment = {
   base64: string;
 };
 
-function configuration() {
-  const token = process.env.HOSTINGER_API_TOKEN;
-  if (!token) throw new Error("Hostinger API token is not configured.");
+function configuration(address: string) {
+  const token = getHostingerApiToken(address);
+  if (!token) throw new Error(`Hostinger API token is not configured for ${address}.`);
   return new Configuration({ accessToken: token });
 }
 
 export async function getHostingerMailbox(addressOverride?: string) {
-  const address = (addressOverride || process.env.HOSTINGER_MAILBOX)?.trim().toLowerCase();
+  const requestedAddress = (addressOverride || process.env.HOSTINGER_MAILBOX)?.trim().toLowerCase();
+  const address = requestedAddress || "";
   if (!address) throw new Error("A Hostinger mailbox address is required.");
-  const response = await new AccountApi(configuration()).getCurrentAccount();
+  const configuredAddress = getConfiguredHostingerMailbox(address);
+  if (configuredAddress !== address) throw new Error(`HOSTINGER_MAILBOX_${address.split("@")[1].split(".")[0].toUpperCase()} must match ${address}.`);
+  const response = await new AccountApi(configuration(address)).getCurrentAccount();
   const mailbox = response.data?.data?.mailboxes?.find((item) => item.address?.toLowerCase() === address);
   if (!mailbox?.resourceId) throw new Error("The configured Hostinger mailbox is not available to this API token.");
   return mailbox;
@@ -32,7 +36,7 @@ export async function registerHostingerWebhook(address: string) {
   const mailbox = await getHostingerMailbox(address);
   const url = process.env.HOSTINGER_WEBHOOK_URL || `${String(process.env.CRM_PUBLIC_URL || "").replace(/\/$/, "")}/api/email/hostinger/webhook`;
   if (!url.startsWith("https://")) throw new Error("HOSTINGER_WEBHOOK_URL or CRM_PUBLIC_URL must be an HTTPS URL.");
-  const response = await new WebhooksApi(configuration()).createWebhook(mailbox.resourceId, {
+  const response = await new WebhooksApi(configuration(address)).createWebhook(mailbox.resourceId, {
     name: `CRM ${address}`,
     description: "CRM incoming email delivery",
     events: ["message.received"],
@@ -46,13 +50,13 @@ export async function registerHostingerWebhook(address: string) {
 
 export async function getHostingerWebhook(address: string, webhookId: string) {
   const mailbox = await getHostingerMailbox(address);
-  const response = await new WebhooksApi(configuration()).getWebhook(mailbox.resourceId, webhookId);
+  const response = await new WebhooksApi(configuration(address)).getWebhook(mailbox.resourceId, webhookId);
   return { resourceId: mailbox.resourceId, webhook: response.data?.data };
 }
 
 export async function regenerateHostingerWebhookSecret(address: string, webhookId: string) {
   const mailbox = await getHostingerMailbox(address);
-  const response = await new WebhooksApi(configuration()).regenerateWebhookSecret(mailbox.resourceId, webhookId);
+  const response = await new WebhooksApi(configuration(address)).regenerateWebhookSecret(mailbox.resourceId, webhookId);
   const webhook = response.data?.data;
   if (!webhook?.id || !webhook.secret) throw new Error("Hostinger did not return a regenerated webhook secret.");
   return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
@@ -95,7 +99,7 @@ export async function sendHostingerEmail(input: {
   };
   if (!input.inReplyTo) delete (payload as Partial<V1SendRequest>).inReplyTo;
   delete (payload as Partial<V1SendRequest>).forwardOf;
-  await new SendApi(configuration()).sendEmail(mailbox.resourceId, payload);
+  await new SendApi(configuration(mailbox.address)).sendEmail(mailbox.resourceId, payload);
   return mailbox;
 }
 

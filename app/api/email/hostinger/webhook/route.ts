@@ -2,6 +2,7 @@ import sanitizeHtml from "sanitize-html";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { constantTimeSecretMatches } from "@/lib/hostinger-mail";
+import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
@@ -65,7 +66,7 @@ export async function POST(request: Request) {
   if (event && event !== "message.received") return NextResponse.json({ ok: true, ignored: true });
   const data = record(payload.data);
   const message = record(data.message ?? payload.message ?? data);
-  const mailboxAddress = firstString(payload.mailbox, data.mailbox, message.mailbox, record(data.mailbox).address, process.env.HOSTINGER_MAILBOX).toLowerCase();
+  const mailboxAddress = firstString(payload.mailbox, data.mailbox, message.mailbox, record(data.mailbox).address).toLowerCase();
   const webhookId = firstString(payload.webhookId, payload.webhook_id, data.webhookId, data.webhook_id);
   const providerMessageId = firstString(message.messageId, message.message_id, message.id, message.uid && `hostinger:uid:${message.uid}`);
   const uid = Number(message.uid ?? message.resourceId ?? data.uid);
@@ -78,7 +79,7 @@ export async function POST(request: Request) {
   const messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
   const inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
   const references = headerList(message.references ?? message.referencesHeaders);
-  if (!mailboxAddress || !providerMessageId || !sender) {
+  if (!providerMessageId || !sender) {
     console.error("[hostinger] webhook rejected", { request_id: requestId, stage: "payload.validate", has_mailbox: Boolean(mailboxAddress), has_message_id: Boolean(providerMessageId), has_sender: Boolean(sender) });
     return fail("Webhook message payload is incomplete.", 400, requestId, "WEBHOOK_PAYLOAD_INCOMPLETE");
   }
@@ -88,17 +89,22 @@ export async function POST(request: Request) {
     const client = getSupabaseServiceRoleClient();
     stage = "database.mailbox.lookup";
     const mailboxQuery = client.from("crm_mailboxes").select("id, company_id, email_address, encrypted_webhook_secret");
-    const { data: mailbox, error: mailboxError } = mailboxAddress
-      ? await mailboxQuery.ilike("email_address", mailboxAddress).maybeSingle()
-      : await mailboxQuery.eq("webhook_id", webhookId).maybeSingle();
+    const lookupAddress = mailboxAddress;
+    const { data: mailbox, error: mailboxError } = webhookId
+      ? await mailboxQuery.eq("webhook_id", webhookId).maybeSingle()
+      : lookupAddress
+        ? await mailboxQuery.ilike("email_address", lookupAddress).maybeSingle()
+        : { data: null, error: null };
     if (mailboxError) throw mailboxError;
+    if (!mailbox && !webhookId && !lookupAddress) return fail("Webhook payload did not identify its mailbox.", 400, requestId, "MAILBOX_IDENTIFIER_MISSING");
     if (!mailbox) return fail("Configured Hostinger mailbox was not found.", 404, requestId, "MAILBOX_NOT_FOUND");
     mailboxId = mailbox.id;
+    const resolvedMailboxAddress = mailbox.email_address.toLowerCase();
     stage = "webhook.authentication";
     const suppliedSecret = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || request.headers.get("x-webhook-secret") || request.headers.get("x-hostinger-webhook-secret");
-    const storedSecret = mailbox.encrypted_webhook_secret ? decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret) : null;
+    const storedSecret = mailbox.encrypted_webhook_secret ? decryptHostingerWebhookSecret(mailbox.encrypted_webhook_secret, resolvedMailboxAddress) : null;
     const validStoredSecret = constantTimeSecretMatches(suppliedSecret, storedSecret);
-    const validConfiguredSecret = constantTimeSecretMatches(suppliedSecret, process.env.HOSTINGER_WEBHOOK_SECRET);
+    const validConfiguredSecret = constantTimeSecretMatches(suppliedSecret, getHostingerWebhookSecret(resolvedMailboxAddress));
     if (!validStoredSecret && !validConfiguredSecret) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
       return fail("Unauthorized", 401, requestId, "WEBHOOK_SECRET_INVALID");
