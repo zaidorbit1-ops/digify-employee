@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   AccountApi,
   Configuration,
+  MessagesApi,
   SendApi,
   type V1SendRequest,
   WebhooksApi,
@@ -60,6 +61,20 @@ export async function regenerateHostingerWebhookSecret(address: string, webhookI
   const webhook = response.data?.data;
   if (!webhook?.id || !webhook.secret) throw new Error("Hostinger did not return a regenerated webhook secret.");
   return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
+}
+
+export async function getHostingerMessage(address: string, folder: string, uid: number) {
+  const mailbox = await getHostingerMailbox(address);
+  const api = new MessagesApi(configuration(address));
+  const [messageResponse, textResponse] = await Promise.all([
+    api.getMessage(mailbox.resourceId, folder, uid),
+    api.getMessageText(mailbox.resourceId, folder, uid),
+  ]);
+  return {
+    mailbox,
+    message: messageResponse.data.data,
+    body: textResponse.data.data,
+  };
 }
 
 function splitAddresses(value?: string) {
