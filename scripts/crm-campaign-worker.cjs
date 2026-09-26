@@ -12,12 +12,16 @@ const pollMs = Number(process.env.CRM_CAMPAIGN_WORKER_POLL_MS || 5000);
 const maxAttempts = Number(process.env.CRM_CAMPAIGN_MAX_ATTEMPTS || 3);
 
 async function sendHostinger({ to, subject, html, text, displayName, mailboxAddress }) {
-  const token = process.env.HOSTINGER_API_TOKEN;
   const address = String(mailboxAddress || process.env.HOSTINGER_MAILBOX || "").toLowerCase();
+  const domain = address.split("@")[1] || "";
+  const suffix = (domain.split(".")[0] || "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const token = process.env[`HOSTINGER_API_TOKEN_${suffix}`] || process.env.HOSTINGER_API_TOKEN;
   if (!token || !address) throw new Error("Hostinger API configuration is incomplete.");
   const configuration = new Configuration({ accessToken: token });
   const account = await new AccountApi(configuration).getCurrentAccount();
-  const mailbox = (account.data.data.mailboxes || []).find((item) => item.address.toLowerCase() === address);
+  const configuredAddress = String(process.env[`HOSTINGER_MAILBOX_${suffix}`] || address).toLowerCase();
+  if (configuredAddress !== address) throw new Error(`HOSTINGER_MAILBOX_${suffix} must match ${address}.`);
+  const mailbox = (account.data.data.mailboxes || []).find((item) => item.address.toLowerCase() === configuredAddress);
   if (!mailbox) throw new Error("Configured Hostinger mailbox is not available to this API token.");
   await new SendApi(configuration).sendEmail(mailbox.resourceId, { to: [to], cc: [], bcc: [], displayName: displayName || "", subject, html, text, attachments: [] });
 }
