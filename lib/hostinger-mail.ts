@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import {
   AccountApi,
   Configuration,
+  MessagesApi,
   SendApi,
   type V1SendRequest,
   WebhooksApi,
@@ -54,12 +55,31 @@ export async function getHostingerWebhook(address: string, webhookId: string) {
   return { resourceId: mailbox.resourceId, webhook: response.data?.data };
 }
 
+export async function testHostingerWebhook(address: string, resourceId: string, webhookId: string) {
+  const response = await new WebhooksApi(configuration(address)).testWebhook(resourceId, webhookId);
+  return response.data?.data;
+}
+
 export async function regenerateHostingerWebhookSecret(address: string, webhookId: string) {
   const mailbox = await getHostingerMailbox(address);
   const response = await new WebhooksApi(configuration(address)).regenerateWebhookSecret(mailbox.resourceId, webhookId);
   const webhook = response.data?.data;
   if (!webhook?.id || !webhook.secret) throw new Error("Hostinger did not return a regenerated webhook secret.");
   return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
+}
+
+export async function getHostingerMessage(address: string, folder: string, uid: number) {
+  const mailbox = await getHostingerMailbox(address);
+  const api = new MessagesApi(configuration(address));
+  const [messageResponse, textResponse] = await Promise.all([
+    api.getMessage(mailbox.resourceId, folder, uid),
+    api.getMessageText(mailbox.resourceId, folder, uid),
+  ]);
+  return {
+    mailbox,
+    message: messageResponse.data.data,
+    body: textResponse.data.data,
+  };
 }
 
 function splitAddresses(value?: string) {

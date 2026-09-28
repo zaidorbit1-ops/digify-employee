@@ -44,16 +44,19 @@ export default function CrmWebmailPage() {
     if (!companyId && result.companies?.[0]) setCompanyId(String(result.companies[0].id));
   }
 
-  async function loadMailboxes() {
-    if (!companyId) return setMailboxes([]);
-    const response = await fetch(`/api/crm/mailboxes?company_id=${companyId}`, { cache: "no-store" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? "Could not load mailboxes.");
-    setMailboxes(result.mailboxes ?? []);
+  async function loadMailboxes(companyIds = companies.map((company) => company.id)) {
+    if (!companyIds.length) return setMailboxes([]);
+    const results = await Promise.all(companyIds.map(async (id) => {
+      const response = await fetch(`/api/crm/mailboxes?company_id=${id}`, { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not load mailboxes.");
+      return result.mailboxes ?? [];
+    }));
+    setMailboxes(results.flat().sort((first, second) => first.email_address.localeCompare(second.email_address)));
   }
 
   useEffect(() => { loadCompanies().catch((error) => setMessage({ text: error.message, tone: "danger" })); }, []);
-  useEffect(() => { loadMailboxes().catch((error) => setMessage({ text: error.message, tone: "danger" })); }, [companyId]);
+  useEffect(() => { loadMailboxes().catch((error) => setMessage({ text: error.message, tone: "danger" })); }, [companies]);
   useEffect(() => {
     if (profile?.role !== "employee") return;
     fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => {
@@ -62,7 +65,7 @@ export default function CrmWebmailPage() {
     }).catch(() => setPermissions({ can_add: false, can_edit: false, can_delete: false }));
   }, [profile?.role]);
 
-  function openAdd() { setEditingId(null); setForm({ ...blank, company_id: companyId }); setModalOpen(true); }
+  function openAdd() { setEditingId(null); setForm({ ...blank, company_id: companyId || String(companies[0]?.id ?? "") }); setModalOpen(true); }
   function openEdit(mailbox: Mailbox) { setEditingId(mailbox.id); setForm({ company_id: String(mailbox.company_id), email_address: mailbox.email_address, display_name: mailbox.display_name ?? "", status: mailbox.status }); setModalOpen(true); }
 
   async function save(event: FormEvent) {
@@ -72,7 +75,7 @@ export default function CrmWebmailPage() {
       const response = await fetch("/api/crm/mailboxes", { method: editingId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, id: editingId ?? undefined, company_id: Number(form.company_id) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save mailbox.");
-      setModalOpen(false); setMessage({ text: "Hostinger mailbox saved.", tone: "success" }); await loadMailboxes();
+      setModalOpen(false); setMessage(result.warning ? { text: `Mailbox saved, but webhook delivery failed: ${result.warning}`, tone: "danger" } : { text: "Hostinger mailbox saved and webhook delivery verified.", tone: "success" }); await loadMailboxes();
     } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not save mailbox.", tone: "danger" }); }
     finally { setBusy(false); }
   }
@@ -99,6 +102,17 @@ export default function CrmWebmailPage() {
     } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not test mailbox.", tone: "danger" }); }
     finally { setBusy(false); }
   }
+  async function testWebhook(mailbox: Mailbox) {
+    setBusy(true); setMessage(null);
+    try {
+      const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, action: "test_webhook" }) });
+      const result = await response.json();
+      const details = `HTTP ${result.callback_http_status ?? result.provider_http_status ?? response.status}${result.error ? `: ${result.error}` : ""} | Vercel request ID: ${result.request_id ?? "unavailable"}`;
+      if (!response.ok || !result.ok) throw new Error(`Webhook test failed. ${details}`);
+      setMessage({ text: `Webhook test passed. ${details}`, tone: "success" });
+    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Webhook test failed.", tone: "danger" }); }
+    finally { setBusy(false); }
+  }
   async function remove(mailbox: Mailbox) {
     if (!window.confirm(`Delete ${mailbox.email_address}?`)) return;
     setBusy(true);
@@ -108,17 +122,17 @@ export default function CrmWebmailPage() {
   }
 
   return <>
-    <PageHeader eyebrow="Business CRM / Webmail" title="Hostinger Mailboxes" description="Manage the Hostinger mailbox used by CRM inboxes, replies, and campaigns." actions={<Button onClick={openAdd} disabled={!companyId || !permissions.can_add}><IconPlus className="h-4 w-4" />Add mailbox</Button>} />
+    <PageHeader eyebrow="Business CRM / Webmail" title="Hostinger Mailboxes" description="Manage the Hostinger mailbox used by CRM inboxes, replies, and campaigns." actions={<Button onClick={openAdd} disabled={!companies.length || !permissions.can_add}><IconPlus className="h-4 w-4" />Add mailbox</Button>} />
     {message ? <div className="mb-5"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
-    <Card className="mb-6 p-5"><Field label="Company"><SelectInput value={companyId} onChange={(event) => setCompanyId(event.target.value)}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field></Card>
+    <p className="mb-4 text-sm text-slate-500">{mailboxes.length} mailboxes across {companies.length} companies</p>
     <div className="grid gap-5 md:grid-cols-2">
       {mailboxes.map((mailbox) => <Card key={mailbox.id} className="space-y-4 p-5">
-        <div className="flex items-start justify-between gap-3"><div><Link href={`/dashboard/crm/webmail/${mailbox.id}`} className="text-lg font-bold text-slate-900 hover:text-primary">{mailbox.display_name || mailbox.email_address}</Link><p className="text-sm text-slate-500">{mailbox.email_address}</p></div><Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : "warning"}>{mailbox.status}</Badge></div>
+        <div className="flex items-start justify-between gap-3"><div><p className="mb-1 text-xs font-semibold uppercase text-slate-500">{companies.find((company) => company.id === mailbox.company_id)?.name ?? "Company"}</p><Link href={`/dashboard/crm/webmail/${mailbox.id}`} className="text-lg font-bold text-slate-900 hover:text-primary">{mailbox.display_name || mailbox.email_address}</Link><p className="text-sm text-slate-500">{mailbox.email_address}</p></div><Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : "warning"}>{mailbox.status}</Badge></div>
         <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><p className="font-semibold text-slate-800">Webhook delivery</p><p className="mt-1">{formatDate(mailbox.last_webhook_at)}</p>{mailbox.last_error ? <p className="mt-2 text-rose-700">{mailbox.last_error}</p> : null}</div>
-        <div className="flex flex-wrap gap-2"><Button variant="secondary" loading={busy} onClick={() => test(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Test</Button><Button variant="secondary" onClick={() => openEdit(mailbox)} disabled={!permissions.can_edit}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" onClick={() => update(mailbox, { status: mailbox.status === "disconnected" ? "pending" : "disconnected" })} disabled={!permissions.can_edit}>{mailbox.status === "disconnected" ? "Reconnect" : "Disconnect"}</Button><Button variant="ghost" className="text-rose-600" onClick={() => remove(mailbox)} disabled={!permissions.can_delete}><IconTrash className="h-4 w-4" />Delete</Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="secondary" loading={busy} onClick={() => test(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Health check</Button><Button variant="secondary" loading={busy} onClick={() => testWebhook(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Test webhook</Button><Button variant="secondary" onClick={() => openEdit(mailbox)} disabled={!permissions.can_edit}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" onClick={() => update(mailbox, { status: mailbox.status === "disconnected" ? "pending" : "disconnected" })} disabled={!permissions.can_edit}>{mailbox.status === "disconnected" ? "Reconnect" : "Disconnect"}</Button><Button variant="ghost" className="text-rose-600" onClick={() => remove(mailbox)} disabled={!permissions.can_delete}><IconTrash className="h-4 w-4" />Delete</Button></div>
       </Card>)}
     </div>
-    {!mailboxes.length && companyId ? <Card className="p-10 text-center text-sm text-slate-500">No Hostinger mailboxes connected for this company.</Card> : null}
+    {!mailboxes.length && companies.length ? <Card className="p-10 text-center text-sm text-slate-500">No Hostinger mailboxes connected across your accessible companies.</Card> : null}
     <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? "Edit Hostinger mailbox" : "Connect Hostinger mailbox"} description="The API token and webhook secret stay on the server. Only the mailbox address is stored here.">
       <form className="space-y-4" onSubmit={save}><Field label="Company"><SelectInput value={form.company_id} onChange={(event) => setForm({ ...form, company_id: event.target.value })}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field><Field label="Mailbox email address"><TextInput required type="email" value={form.email_address} onChange={(event) => setForm({ ...form, email_address: event.target.value })} placeholder="info@example.com" /></Field><Field label="Display name"><TextInput value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="Support" /></Field><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button><Button type="submit" loading={busy}>Save mailbox</Button></div></form>
     </Modal>
