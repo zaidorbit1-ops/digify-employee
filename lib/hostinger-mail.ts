@@ -55,6 +55,11 @@ export async function getHostingerWebhook(address: string, webhookId: string) {
   return { resourceId: mailbox.resourceId, webhook: response.data?.data };
 }
 
+export async function testHostingerWebhook(address: string, resourceId: string, webhookId: string) {
+  const response = await new WebhooksApi(configuration(address)).testWebhook(resourceId, webhookId);
+  return response.data?.data;
+}
+
 export async function regenerateHostingerWebhookSecret(address: string, webhookId: string) {
   const mailbox = await getHostingerMailbox(address);
   const response = await new WebhooksApi(configuration(address)).regenerateWebhookSecret(mailbox.resourceId, webhookId);

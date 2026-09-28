@@ -72,7 +72,7 @@ export default function CrmWebmailPage() {
       const response = await fetch("/api/crm/mailboxes", { method: editingId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, id: editingId ?? undefined, company_id: Number(form.company_id) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save mailbox.");
-      setModalOpen(false); setMessage({ text: "Hostinger mailbox saved.", tone: "success" }); await loadMailboxes();
+      setModalOpen(false); setMessage(result.warning ? { text: `Mailbox saved, but webhook delivery failed: ${result.warning}`, tone: "danger" } : { text: "Hostinger mailbox saved and webhook delivery verified.", tone: "success" }); await loadMailboxes();
     } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not save mailbox.", tone: "danger" }); }
     finally { setBusy(false); }
   }

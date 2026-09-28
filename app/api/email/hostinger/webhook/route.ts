@@ -63,7 +63,6 @@ export async function POST(request: Request) {
   }
 
   const event = firstString(payload.event, payload.type, record(payload.data).event);
-  if (event && event !== "message.received") return NextResponse.json({ ok: true, ignored: true });
   const data = record(payload.data);
   let message = record(data.message ?? payload.message ?? data);
   const mailboxAddress = firstString(payload.mailbox, data.mailbox, message.mailbox, record(data.mailbox).address).toLowerCase();
@@ -112,6 +111,7 @@ export async function POST(request: Request) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
       return fail("Unauthorized", 401, requestId, "WEBHOOK_SECRET_INVALID");
     }
+    if (event && event !== "message.received") return NextResponse.json({ ok: true, ignored: true });
 
     stage = "payload.normalize";
     let uid = Number(message.uid ?? message.messageUid ?? message.resourceId ?? data.uid ?? data.messageUid ?? payload.uid);
