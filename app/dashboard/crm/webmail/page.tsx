@@ -99,6 +99,17 @@ export default function CrmWebmailPage() {
     } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not test mailbox.", tone: "danger" }); }
     finally { setBusy(false); }
   }
+  async function testWebhook(mailbox: Mailbox) {
+    setBusy(true); setMessage(null);
+    try {
+      const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, action: "test_webhook" }) });
+      const result = await response.json();
+      const details = `HTTP ${result.callback_http_status ?? result.provider_http_status ?? response.status}${result.error ? `: ${result.error}` : ""} | Vercel request ID: ${result.request_id ?? "unavailable"}`;
+      if (!response.ok || !result.ok) throw new Error(`Webhook test failed. ${details}`);
+      setMessage({ text: `Webhook test passed. ${details}`, tone: "success" });
+    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Webhook test failed.", tone: "danger" }); }
+    finally { setBusy(false); }
+  }
   async function remove(mailbox: Mailbox) {
     if (!window.confirm(`Delete ${mailbox.email_address}?`)) return;
     setBusy(true);
@@ -115,7 +126,7 @@ export default function CrmWebmailPage() {
       {mailboxes.map((mailbox) => <Card key={mailbox.id} className="space-y-4 p-5">
         <div className="flex items-start justify-between gap-3"><div><Link href={`/dashboard/crm/webmail/${mailbox.id}`} className="text-lg font-bold text-slate-900 hover:text-primary">{mailbox.display_name || mailbox.email_address}</Link><p className="text-sm text-slate-500">{mailbox.email_address}</p></div><Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : "warning"}>{mailbox.status}</Badge></div>
         <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><p className="font-semibold text-slate-800">Webhook delivery</p><p className="mt-1">{formatDate(mailbox.last_webhook_at)}</p>{mailbox.last_error ? <p className="mt-2 text-rose-700">{mailbox.last_error}</p> : null}</div>
-        <div className="flex flex-wrap gap-2"><Button variant="secondary" loading={busy} onClick={() => test(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Test</Button><Button variant="secondary" onClick={() => openEdit(mailbox)} disabled={!permissions.can_edit}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" onClick={() => update(mailbox, { status: mailbox.status === "disconnected" ? "pending" : "disconnected" })} disabled={!permissions.can_edit}>{mailbox.status === "disconnected" ? "Reconnect" : "Disconnect"}</Button><Button variant="ghost" className="text-rose-600" onClick={() => remove(mailbox)} disabled={!permissions.can_delete}><IconTrash className="h-4 w-4" />Delete</Button></div>
+        <div className="flex flex-wrap gap-2"><Button variant="secondary" loading={busy} onClick={() => test(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Health check</Button><Button variant="secondary" loading={busy} onClick={() => testWebhook(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Test webhook</Button><Button variant="secondary" onClick={() => openEdit(mailbox)} disabled={!permissions.can_edit}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" onClick={() => update(mailbox, { status: mailbox.status === "disconnected" ? "pending" : "disconnected" })} disabled={!permissions.can_edit}>{mailbox.status === "disconnected" ? "Reconnect" : "Disconnect"}</Button><Button variant="ghost" className="text-rose-600" onClick={() => remove(mailbox)} disabled={!permissions.can_delete}><IconTrash className="h-4 w-4" />Delete</Button></div>
       </Card>)}
     </div>
     {!mailboxes.length && companyId ? <Card className="p-10 text-center text-sm text-slate-500">No Hostinger mailboxes connected for this company.</Card> : null}
