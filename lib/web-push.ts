@@ -9,6 +9,7 @@ type CrmPushPayload = {
   notificationType: "crm_lead" | "crm_email";
   relatedRecordId: number;
   relatedUrl: string;
+  companyId: number;
 };
 
 export async function sendCrmPush(payload: CrmPushPayload) {
@@ -21,7 +22,44 @@ export async function sendCrmPush(payload: CrmPushPayload) {
       .eq("is_active", true);
     if (adminsError) throw adminsError;
 
-    const userIds = (admins ?? []).map((admin) => admin.user_id);
+    const module = payload.notificationType === "crm_lead" ? "crm_leads" : "crm_webmail";
+    const { data: employeeProfiles, error: profilesError } = await client
+      .from("profiles")
+      .select("user_id, employee_id")
+      .eq("role", "employee")
+      .eq("is_active", true)
+      .not("employee_id", "is", null);
+    if (profilesError) throw profilesError;
+
+    const employeeIds = (employeeProfiles ?? []).map((profile) => profile.employee_id).filter((id): id is number => id !== null);
+    let employeeRecipients: string[] = [];
+    if (employeeIds.length) {
+      const { data: permissions, error: permissionsError } = await client
+        .from("permissions")
+        .select("employee_id")
+        .eq("module", module)
+        .eq("can_read", true)
+        .in("employee_id", employeeIds);
+      if (permissionsError) throw permissionsError;
+
+      const readableEmployeeIds = Array.from(new Set((permissions ?? []).map((permission) => permission.employee_id)));
+      if (readableEmployeeIds.length) {
+        const { data: grants, error: grantsError } = await client
+          .from("employee_crm_module_company_access")
+          .select("employee_id")
+          .eq("module", module)
+          .eq("company_id", payload.companyId)
+          .in("employee_id", readableEmployeeIds);
+        if (grantsError) throw grantsError;
+
+        const grantedEmployeeIds = new Set((grants ?? []).map((grant) => grant.employee_id));
+        employeeRecipients = (employeeProfiles ?? [])
+          .filter((profile) => profile.employee_id !== null && grantedEmployeeIds.has(profile.employee_id))
+          .map((profile) => profile.user_id);
+      }
+    }
+
+    const userIds = Array.from(new Set([...(admins ?? []).map((admin) => admin.user_id), ...employeeRecipients]));
     if (!userIds.length) return;
 
     const { error: notificationError } = await client.from("notifications").insert(
@@ -31,6 +69,7 @@ export async function sendCrmPush(payload: CrmPushPayload) {
         message: payload.body,
         related_record_id: payload.relatedRecordId,
         related_url: payload.relatedUrl,
+        company_id: payload.companyId,
       })),
     );
     if (notificationError) throw notificationError;

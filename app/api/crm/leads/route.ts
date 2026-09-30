@@ -95,6 +95,7 @@ export async function POST(request: Request) {
       notificationType: "crm_lead",
       relatedRecordId: data.id,
       relatedUrl: `/dashboard/crm/leads/${data.id}`,
+      companyId,
     });
     return NextResponse.json({ lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 });
   } catch (error) {

@@ -88,28 +88,37 @@ export function CrmNotifications() {
   const router = useRouter();
   const [notifications, setNotifications] = useState<CrmNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [available, setAvailable] = useState(false);
   const [toast, setToast] = useState<CrmNotification | null>(null);
   const [open, setOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
   const toastTimer = useRef<number | null>(null);
+  const seenNotificationIds = useRef(new Set<number>());
 
   useEffect(() => {
-    if (!user || profile?.role !== "superadmin") return;
+    if (!user || (profile?.role !== "superadmin" && profile?.role !== "employee")) return;
     let active = true;
+    seenNotificationIds.current.clear();
 
     fetch("/api/crm/notifications", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Could not load notifications.");
-        return response.json() as Promise<{ notifications: CrmNotification[]; unreadCount: number }>;
+        return response.json() as Promise<{ notifications: CrmNotification[]; unreadCount: number; enabled: boolean }>;
       })
       .then((result) => {
         if (active) {
           setNotifications(result.notifications ?? []);
           setUnreadCount(result.unreadCount ?? 0);
+          setAvailable(result.enabled);
+          setLoadError("");
+          for (const item of result.notifications ?? []) seenNotificationIds.current.add(item.id);
         }
       })
       .catch((error: unknown) => {
-        if (active) setLoadError(error instanceof Error ? error.message : "Could not load notifications.");
+        if (active) {
+          setAvailable(false);
+          setLoadError(error instanceof Error ? error.message : "Could not load notifications.");
+        }
       });
 
     const channel = getSupabaseBrowserClient()
@@ -122,6 +131,8 @@ export function CrmNotifications() {
       }, (payload: RealtimePostgresInsertPayload<Record<string, unknown>>) => {
         const item = payload.new as unknown as CrmNotification;
         if (item.type !== "crm_lead" && item.type !== "crm_email") return;
+        if (seenNotificationIds.current.has(item.id)) return;
+        seenNotificationIds.current.add(item.id);
         setNotifications((current) => current.some((notification) => notification.id === item.id)
           ? current
           : [item, ...current].slice(0, 10));
@@ -148,7 +159,7 @@ export function CrmNotifications() {
     };
   }, [profile?.role, user]);
 
-  if (profile?.role !== "superadmin") return null;
+  if (profile?.role !== "superadmin" && (profile?.role !== "employee" || !available)) return null;
 
   async function openNotification(item: CrmNotification) {
     if (!item.is_read) {

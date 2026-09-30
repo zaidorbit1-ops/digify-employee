@@ -246,6 +246,7 @@ export async function POST(request: Request) {
       notificationType: "crm_email",
       relatedRecordId: stored.id,
       relatedUrl: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
+      companyId: mailbox.company_id,
     });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
     return NextResponse.json({ ok: true, message_id: stored.id });

@@ -38,7 +38,7 @@ export function PushNotificationControl() {
     };
   }, []);
 
-  if (profile?.role !== "superadmin") return null;
+  if (profile?.role !== "superadmin" && profile?.role !== "employee") return null;
 
   async function toggleNotifications() {
     setBusy(true);

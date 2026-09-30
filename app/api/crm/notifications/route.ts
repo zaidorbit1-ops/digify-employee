@@ -1,25 +1,55 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "@/lib/supabase-server";
 
-async function getSuperadminClient() {
+async function getNotificationContext() {
   const client = await getSupabaseServerClient();
   const { data: { user } } = await client.auth.getUser();
-  if (!user) return { client, user: null, status: 401 };
+  if (!user) return { client, user: null, profile: null, status: 401 };
 
   const { data: profile, error } = await client
     .from("profiles")
-    .select("role, is_active")
+    .select("role, employee_id, is_active")
     .eq("user_id", user.id)
     .maybeSingle();
   if (error) throw error;
-  if (profile?.role !== "superadmin" || profile.is_active === false) return { client, user: null, status: 403 };
-  return { client, user, status: 200 };
+  if (profile?.is_active === false || (profile?.role !== "superadmin" && profile?.role !== "employee")) {
+    return { client, user: null, profile: null, status: 403 };
+  }
+  if (profile.role === "employee" && !profile.employee_id) return { client, user: null, profile: null, status: 403 };
+  return { client, user, profile, status: 200 };
+}
+
+async function getEmployeeScopes(client: Awaited<ReturnType<typeof getSupabaseServerClient>>, employeeId: number) {
+  const modules = ["crm_leads", "crm_webmail"];
+  const { data: permissions, error: permissionsError } = await client
+    .from("permissions")
+    .select("module")
+    .eq("employee_id", employeeId)
+    .in("module", modules)
+    .eq("can_read", true);
+  if (permissionsError) throw permissionsError;
+  const readableModules = Array.from(new Set((permissions ?? []).map((permission) => permission.module)));
+  if (!readableModules.length) return [];
+
+  const { data: grants, error: grantsError } = await client
+    .from("employee_crm_module_company_access")
+    .select("module, company_id")
+    .eq("employee_id", employeeId)
+    .in("module", readableModules);
+  if (grantsError) throw grantsError;
+
+  return modules.flatMap((module) => {
+    const companyIds = Array.from(new Set((grants ?? [])
+      .filter((grant) => grant.module === module)
+      .map((grant) => grant.company_id)));
+    return companyIds.length ? [{ module, companyIds }] : [];
+  });
 }
 
 export async function GET(request: Request) {
   try {
-    const { client, user, status } = await getSuperadminClient();
-    if (!user) return NextResponse.json({ error: "Superadmin access required." }, { status });
+    const { client, user, profile, status } = await getNotificationContext();
+    if (!user || !profile) return NextResponse.json({ error: "CRM notification access required." }, { status });
     const params = new URL(request.url).searchParams;
     const requestedPage = Number(params.get("page") || 1);
     const requestedLimit = Number(params.get("limit") || 10);
@@ -29,23 +59,39 @@ export async function GET(request: Request) {
     const readFilter = params.get("read");
     const supportedType = typeFilter === "crm_lead" || typeFilter === "crm_email" ? typeFilter : null;
     const supportedRead = readFilter === "read" || readFilter === "unread" ? readFilter : null;
+    const employeeScopes = profile.role === "employee"
+      ? await getEmployeeScopes(client, Number(profile.employee_id))
+      : [];
+    const scopeFilters = employeeScopes.map((scope) => {
+      const notificationType = scope.module === "crm_leads" ? "crm_lead" : "crm_email";
+      return `and(type.eq.${notificationType},company_id.in.(${scope.companyIds.join(",")}))`;
+    });
+    if (profile.role === "employee" && !scopeFilters.length) {
+      return NextResponse.json({ notifications: [], unreadCount: 0, page, totalCount: 0, hasMore: false, enabled: false });
+    }
+    const scopeFilter = profile.role === "employee" ? scopeFilters.join(",") : null;
     let historyQuery = client
       .from("notifications")
       .select("id, recipient_id, type, message, is_read, related_record_id, related_url, created_at", { count: "exact" })
       .eq("recipient_id", user.id)
       .in("type", ["crm_lead", "crm_email"]);
+    let unreadQuery = client
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("recipient_id", user.id)
+      .in("type", ["crm_lead", "crm_email"])
+      .eq("is_read", false);
+    if (scopeFilter) {
+      historyQuery = historyQuery.or(scopeFilter);
+      unreadQuery = unreadQuery.or(scopeFilter);
+    }
     if (supportedType) historyQuery = historyQuery.eq("type", supportedType);
     if (supportedRead) historyQuery = historyQuery.eq("is_read", supportedRead === "read");
     const [notificationsResult, unreadResult] = await Promise.all([
       historyQuery
         .order("created_at", { ascending: false })
         .range((page - 1) * limit, page * limit - 1),
-      client
-        .from("notifications")
-        .select("id", { count: "exact", head: true })
-        .eq("recipient_id", user.id)
-        .in("type", ["crm_lead", "crm_email"])
-        .eq("is_read", false),
+      unreadQuery,
     ]);
     if (notificationsResult.error) throw notificationsResult.error;
     if (unreadResult.error) throw unreadResult.error;
@@ -55,6 +101,7 @@ export async function GET(request: Request) {
       page,
       totalCount: notificationsResult.count ?? 0,
       hasMore: page * limit < (notificationsResult.count ?? 0),
+      enabled: true,
     });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load CRM notifications." }, { status: 500 });
@@ -63,8 +110,8 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const { client, user, status } = await getSuperadminClient();
-    if (!user) return NextResponse.json({ error: "Superadmin access required." }, { status });
+    const { client, user, profile, status } = await getNotificationContext();
+    if (!user || !profile) return NextResponse.json({ error: "CRM notification access required." }, { status });
     const body = await request.json() as { id?: unknown };
     const id = Number(body.id);
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid notification is required." }, { status: 400 });
