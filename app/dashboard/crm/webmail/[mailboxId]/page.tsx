@@ -1468,6 +1468,7 @@ export default function MailboxWorkspace() {
 
   const [loading, setLoading] = useState(true);
   const [notification, setNotification] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
+  const requestedThreadId = useRef<number | null>(null);
 
   // Compose Drawer State
   const [composeOpen, setComposeOpen] = useState(false);
@@ -1615,6 +1616,17 @@ export default function MailboxWorkspace() {
         : item));
     }
   }
+
+  useEffect(() => {
+    if (loading || requestedThreadId.current !== null) return;
+    const threadId = Number(new URLSearchParams(window.location.search).get("thread_id"));
+    if (!Number.isInteger(threadId) || threadId <= 0) return;
+    const thread = threads.find((item) => item.id === threadId);
+    if (!thread) return;
+    requestedThreadId.current = threadId;
+    setSelectedFolder(thread.folder);
+    void handleSelectThread(thread);
+  }, [loading, threads]);
 
   // Toggle Star
   async function handleToggleStar(threadId: number, currentStar: boolean) {

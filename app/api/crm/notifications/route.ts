@@ -22,7 +22,7 @@ export async function GET() {
     if (!user) return NextResponse.json({ error: "Superadmin access required." }, { status });
     const { data, error } = await client
       .from("notifications")
-      .select("id, recipient_id, type, message, is_read, related_record_id, created_at")
+      .select("id, recipient_id, type, message, is_read, related_record_id, related_url, created_at")
       .eq("recipient_id", user.id)
       .in("type", ["crm_lead", "crm_email"])
       .order("created_at", { ascending: false })

@@ -66,7 +66,7 @@ export async function POST(request: Request) {
     const { data: website, error: websiteError } = await client.from("crm_websites").select("id, company_id").eq("id", websiteId).maybeSingle();
     if (websiteError) throw websiteError;
     if (!website || website.company_id !== companyId) return fail("Website does not belong to the selected company.", "Website does not belong to the selected company.", 400);
-    const { data: company, error: companyError } = await client.from("crm_companies").select("id").eq("id", companyId).maybeSingle();
+    const { data: company, error: companyError } = await client.from("crm_companies").select("id, name").eq("id", companyId).maybeSingle();
     if (companyError) throw companyError;
     if (!company) return fail("CRM company not found.", "CRM company not found.", 404);
     const { data: duplicate } = await client.from("crm_leads").select("id").eq("company_id", companyId).eq("normalized_email", email).is("deleted_at", null).limit(1).maybeSingle();
@@ -89,11 +89,12 @@ export async function POST(request: Request) {
     if (error) throw error;
     await sendCrmPush({
       title: "New CRM lead",
-      body: `${data.name} (${data.email})`,
-      url: "/dashboard/crm",
+      body: `Lead: ${data.name} <${data.email}> | Company: ${company.name}`,
+      url: `/dashboard/crm/leads/${data.id}`,
       tag: `crm-lead-${data.id}`,
       notificationType: "crm_lead",
       relatedRecordId: data.id,
+      relatedUrl: `/dashboard/crm/leads/${data.id}`,
     });
     return NextResponse.json({ lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 });
   } catch (error) {

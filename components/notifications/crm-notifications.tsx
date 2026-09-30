@@ -14,6 +14,7 @@ type CrmNotification = {
   message: string;
   is_read: boolean;
   related_record_id: number | null;
+  related_url: string | null;
   created_at: string;
 };
 
@@ -21,8 +22,10 @@ function notificationTitle(type: CrmNotification["type"]) {
   return type === "crm_lead" ? "New Lead Arrived" : "New Email Arrived";
 }
 
-function notificationHref(type: CrmNotification["type"]) {
-  return type === "crm_lead" ? "/dashboard/crm/leads" : "/dashboard/crm/webmail";
+function notificationHref(notification: CrmNotification) {
+  const relatedUrl = notification.related_url;
+  if (relatedUrl?.startsWith("/") && !relatedUrl.startsWith("//")) return relatedUrl;
+  return notification.type === "crm_lead" ? "/dashboard/crm/leads" : "/dashboard/crm/webmail";
 }
 
 function notificationTag(notification: CrmNotification) {
@@ -140,7 +143,7 @@ export function CrmNotifications() {
     }
     setOpen(false);
     setToast(null);
-    router.push(notificationHref(item.type));
+    router.push(notificationHref(item));
   }
 
   return (

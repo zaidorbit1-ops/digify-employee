@@ -150,6 +150,13 @@ export async function POST(request: Request) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
       return fail("Unauthorized", 401, requestId, "WEBHOOK_SECRET_INVALID");
     }
+    const { data: mailboxCompany, error: companyError } = await client
+      .from("crm_companies")
+      .select("name")
+      .eq("id", mailbox.company_id)
+      .maybeSingle();
+    if (companyError) throw companyError;
+    const companyName = mailboxCompany?.name ?? "CRM company";
     if (event && event !== "message.received") return NextResponse.json({ ok: true, ignored: true });
 
     stage = "payload.normalize";
@@ -233,11 +240,12 @@ export async function POST(request: Request) {
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
     await sendCrmPush({
       title: "New email received",
-      body: `${sender}: ${subject}`.slice(0, 180),
-      url: "/dashboard/crm/webmail",
+      body: `Email: ${subject} | From: ${sender} | Mailbox: ${mailbox.email_address} | Company: ${companyName}`.slice(0, 400),
+      url: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
       tag: `crm-email-${stored.id}`,
       notificationType: "crm_email",
       relatedRecordId: stored.id,
+      relatedUrl: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
     });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
     return NextResponse.json({ ok: true, message_id: stored.id });

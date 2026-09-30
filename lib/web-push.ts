@@ -8,6 +8,7 @@ type CrmPushPayload = {
   tag: string;
   notificationType: "crm_lead" | "crm_email";
   relatedRecordId: number;
+  relatedUrl: string;
 };
 
 export async function sendCrmPush(payload: CrmPushPayload) {
@@ -27,8 +28,9 @@ export async function sendCrmPush(payload: CrmPushPayload) {
       userIds.map((recipientId) => ({
         recipient_id: recipientId,
         type: payload.notificationType,
-        message: `${payload.title}: ${payload.body}`,
+        message: payload.body,
         related_record_id: payload.relatedRecordId,
+        related_url: payload.relatedUrl,
       })),
     );
     if (notificationError) throw notificationError;
