@@ -18,7 +18,7 @@ type CrmNotification = {
 };
 
 function notificationTitle(type: CrmNotification["type"]) {
-  return type === "crm_lead" ? "New lead" : "New email";
+  return type === "crm_lead" ? "New Lead Arrived" : "New Email Arrived";
 }
 
 function notificationHref(type: CrmNotification["type"]) {
@@ -28,6 +28,39 @@ function notificationHref(type: CrmNotification["type"]) {
 function notificationTag(notification: CrmNotification) {
   const prefix = notification.type === "crm_lead" ? "crm-lead" : "crm-email";
   return `${prefix}-${notification.related_record_id ?? notification.id}`;
+}
+
+let crmNotificationAudioContext: AudioContext | null = null;
+
+function playCrmNotificationSound(type: CrmNotification["type"]) {
+  if (typeof window === "undefined" || !("AudioContext" in window)) return;
+
+  try {
+    crmNotificationAudioContext ??= new window.AudioContext();
+    const context = crmNotificationAudioContext;
+    const notes = type === "crm_lead" ? [880, 1175] : [660, 880];
+    const play = () => {
+      const start = context.currentTime;
+      notes.forEach((frequency, index) => {
+        const offset = index * 0.16;
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(frequency, start + offset);
+        gain.gain.setValueAtTime(0.0001, start + offset);
+        gain.gain.exponentialRampToValueAtTime(0.22, start + offset + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.28);
+        oscillator.connect(gain).connect(context.destination);
+        oscillator.start(start + offset);
+        oscillator.stop(start + offset + 0.3);
+      });
+    };
+
+    if (context.state === "suspended") void context.resume().then(play).catch(() => undefined);
+    else play();
+  } catch {
+    return;
+  }
 }
 
 export function CrmNotifications() {
@@ -69,6 +102,7 @@ export function CrmNotifications() {
           ? current
           : [item, ...current].slice(0, 40));
         setToast(item);
+        playCrmNotificationSound(item.type);
         if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
         toastTimer.current = window.setTimeout(() => setToast(null), 8000);
 
