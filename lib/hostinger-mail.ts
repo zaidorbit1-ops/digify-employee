@@ -4,9 +4,11 @@ import {
   Configuration,
   MessagesApi,
   SendApi,
+  type V1FolderMessagesSearchRequest,
   type V1SendRequest,
   WebhooksApi,
 } from "hostinger-mail-api-sdk";
+import sanitizeHtml from "sanitize-html";
 import { getConfiguredHostingerMailbox, getHostingerApiToken } from "@/lib/hostinger-env";
 
 export type HostingerAttachment = {
@@ -71,15 +73,40 @@ export async function regenerateHostingerWebhookSecret(address: string, webhookI
 export async function getHostingerMessage(address: string, folder: string, uid: number) {
   const mailbox = await getHostingerMailbox(address);
   const api = new MessagesApi(configuration(address));
-  const [messageResponse, textResponse] = await Promise.all([
+  const [messageResult, textResult] = await Promise.allSettled([
     api.getMessage(mailbox.resourceId, folder, uid),
     api.getMessageText(mailbox.resourceId, folder, uid),
   ]);
+  if (messageResult.status === "rejected" && textResult.status === "rejected") throw textResult.reason;
   return {
     mailbox,
-    message: messageResponse.data.data,
-    body: textResponse.data.data,
+    message: messageResult.status === "fulfilled" ? messageResult.value.data.data : {},
+    body: textResult.status === "fulfilled" ? textResult.value.data.data : { text: "", html: "" },
   };
+}
+
+function normalizeMessageId(value: string) {
+  return value.trim().replace(/^<|>$/g, "").toLowerCase();
+}
+
+export async function findHostingerMessage(address: string, folder: string, messageId: string) {
+  const mailbox = await getHostingerMailbox(address);
+  const search: V1FolderMessagesSearchRequest = {
+    since: "", before: "", flags: [], uid: "", subject: "", from: "", to: "", cc: "", body: "",
+    header: `Message-ID ${messageId}`, larger: 0, smaller: 0, text: "",
+  };
+  const response = await new MessagesApi(configuration(address)).searchMessages(mailbox.resourceId, folder, 1, 10, "-uid", search);
+  return response.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId)) ?? null;
+}
+
+export async function getHostingerMessageAttachment(address: string, folder: string, uid: number, attachmentId: string) {
+  const mailbox = await getHostingerMailbox(address);
+  const response = await new MessagesApi(configuration(address)).getMessageAttachment(mailbox.resourceId, folder, uid, attachmentId);
+  return response.data;
+}
+
+export function sanitizeEmailHtml(html: string) {
+  return sanitizeHtml(html, { allowedSchemes: [...sanitizeHtml.defaults.allowedSchemes, "cid"] });
 }
 
 function splitAddresses(value?: string) {

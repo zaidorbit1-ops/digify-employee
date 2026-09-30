@@ -1,7 +1,7 @@
 import sanitizeHtml from "sanitize-html";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { sendHostingerEmail } from "@/lib/hostinger-mail";
+import { findHostingerMessage, getHostingerMessage, sanitizeEmailHtml, sendHostingerEmail } from "@/lib/hostinger-mail";
 
 type AttachmentInput = { name: string; size: number; type: string; base64: string };
 
@@ -12,6 +12,23 @@ function fail(error: unknown, fallback: string, status = 500) {
 
 function addresses(value?: string) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function hasRenderableBody(textBody?: string | null, htmlBody?: string | null) {
+  if (textBody?.trim()) return true;
+  if (!htmlBody?.trim()) return false;
+  const visibleHtml = htmlBody
+    .replace(/<!--(?:.|\n|\r)*?-->/g, " ")
+    .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/&nbsp;|&#160;|&#x0*a0;/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return Boolean(visibleHtml || /<(img|picture|video|audio|object|svg|canvas)\b/i.test(htmlBody));
+}
+
+function normalizeContentId(value?: string | null) {
+  return (value ?? "").trim().replace(/^<|>$/g, "").toLowerCase();
 }
 
 async function getMailbox(client: Awaited<ReturnType<typeof getCrmAdminClient>>["client"], id: number) {
@@ -28,7 +45,7 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const mailboxId = Number(params.get("mailbox_id"));
     if (!Number.isInteger(mailboxId) || mailboxId <= 0) return fail("A valid mailbox is required.", "A valid mailbox is required.", 400);
-    await getMailbox(client, mailboxId);
+    const mailbox = await getMailbox(client, mailboxId);
     const page = Math.max(1, Number(params.get("page") || 1));
     const limit = Math.min(50, Math.max(1, Number(params.get("limit") || 10)));
     const threadId = Number(params.get("thread_id"));
@@ -40,12 +57,59 @@ export async function GET(request: Request) {
     const rows = threads ?? [];
     const ids = rows.map((thread) => thread.id);
     const { data: messages, error: messageError } = ids.length
-      ? await client.from("crm_email_messages").select("id, thread_id, direction, sender, recipients, cc, subject, text_body, html_body, is_read, received_at, sent_at, created_at, crm_email_attachments(id, file_name, content_type, storage_path, file_size)").in("thread_id", ids).order("created_at", { ascending: true })
+      ? await client.from("crm_email_messages").select("id, thread_id, direction, sender, recipients, cc, subject, text_body, html_body, is_read, hostinger_uid, hostinger_folder, message_id, provider_message_id, received_at, sent_at, created_at, crm_email_attachments(id, file_name, content_type, content_id, storage_path, file_size)").in("thread_id", ids).order("created_at", { ascending: true })
       : { data: [], error: null };
     if (messageError) throw messageError;
-    const byThread = new Map<number, typeof messages>();
-    for (const message of messages ?? []) byThread.set(message.thread_id, [...(byThread.get(message.thread_id) ?? []), message]);
-    const mailbox = await getMailbox(client, mailboxId);
+    const detailedMessages = Number.isInteger(threadId) && threadId > 0
+      ? await Promise.all((messages ?? []).map(async (message) => {
+          if (hasRenderableBody(message.text_body, message.html_body) || !message.hostinger_uid) return message;
+          try {
+            const folder = message.hostinger_folder || "INBOX";
+            const fetched = await getHostingerMessage(mailbox.email_address, folder, Number(message.hostinger_uid));
+            const textBody = fetched.body.text?.trim() || null;
+            const htmlBody = fetched.body.html?.trim() || null;
+            if (!hasRenderableBody(textBody, htmlBody)) return message;
+            const safeHtml = htmlBody ? sanitizeEmailHtml(htmlBody) : null;
+            const { error: updateError } = await client.from("crm_email_messages").update({ text_body: textBody, html_body: safeHtml }).eq("id", message.id);
+            if (updateError) console.warn("[hostinger] recovered message body could not be cached", { message_id: message.id });
+            return { ...message, text_body: textBody, html_body: safeHtml };
+          } catch {
+            return message;
+          }
+        }))
+      : messages ?? [];
+    const recoveredMessages = Number.isInteger(threadId) && threadId > 0
+      ? await Promise.all(detailedMessages.map(async (message) => {
+          if (message.hostinger_uid || message.direction !== "inbound" || !message.message_id || hasRenderableBody(message.text_body, message.html_body)) return message;
+          try {
+            const folder = message.hostinger_folder || "INBOX";
+            const providerMessage = await findHostingerMessage(mailbox.email_address, folder, message.message_id);
+            if (!providerMessage?.uid) return message;
+            const providerFolder = providerMessage.path || folder;
+            const fetched = await getHostingerMessage(mailbox.email_address, providerFolder, providerMessage.uid);
+            const textBody = fetched.body.text?.trim() || null;
+            const htmlBody = fetched.body.html?.trim() || null;
+            const safeHtml = htmlBody ? sanitizeEmailHtml(htmlBody) : null;
+            const values = { hostinger_uid: providerMessage.uid, hostinger_folder: providerFolder, text_body: textBody, html_body: safeHtml };
+            const { error: updateError } = await client.from("crm_email_messages").update(values).eq("id", message.id);
+            if (updateError) console.warn("[hostinger] recovered message metadata could not be cached", { message_id: message.id });
+            return { ...message, ...values };
+          } catch {
+            return message;
+          }
+        }))
+      : detailedMessages;
+    const messagesWithInlineAttachments = recoveredMessages.map((message) => {
+      if (!message.html_body) return message;
+      const attachments = message.crm_email_attachments ?? [];
+      const htmlBody = message.html_body.replace(/(src|background)\s*=\s*(["'])cid:([^"']+)\2/gi, (match: string, attribute: string, quote: string, contentId: string) => {
+        const attachment = attachments.find((item) => normalizeContentId(item.content_id) === normalizeContentId(contentId));
+        return attachment ? `${attribute}=${quote}/api/crm/webmail/attachment?attachment_id=${attachment.id}&inline=1${quote}` : match;
+      });
+      return { ...message, html_body: htmlBody };
+    });
+    const byThread = new Map<number, typeof detailedMessages>();
+    for (const message of messagesWithInlineAttachments) byThread.set(message.thread_id, [...(byThread.get(message.thread_id) ?? []), message]);
     return NextResponse.json({ mailbox, threads: rows.map((thread) => ({ ...thread, crm_email_messages: byThread.get(thread.id) ?? [] })), page, hasMore: rows.length === limit });
   } catch (error) {
     return fail(error, "Could not load mailbox messages.");
@@ -114,6 +178,10 @@ export async function PATCH(request: Request) {
       if (typeof body.is_starred === "boolean") values.is_starred = body.is_starred;
       if (body.folder) values.folder = body.folder;
       if (Object.keys(values).length) { const { error } = await client.from("crm_email_threads").update(values).eq("id", body.thread_id); if (error) throw error; }
+      if (typeof body.is_read === "boolean") {
+        const { error } = await client.from("crm_email_messages").update({ is_read: body.is_read }).eq("thread_id", body.thread_id).eq("direction", "inbound");
+        if (error) throw error;
+      }
     }
     if (body.message_id) { const { error } = await client.from("crm_email_messages").update({ is_read: body.is_read !== false }).eq("id", body.message_id); if (error) throw error; }
     return NextResponse.json({ ok: true });

@@ -1,7 +1,6 @@
-import sanitizeHtml from "sanitize-html";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { constantTimeSecretMatches, getHostingerMessage } from "@/lib/hostinger-mail";
+import { constantTimeSecretMatches, getHostingerMessage, sanitizeEmailHtml } from "@/lib/hostinger-mail";
 import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
@@ -44,6 +43,45 @@ function headerList(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(stringValue).filter(Boolean);
   const result = stringValue(value);
   return result ? [result] : [];
+}
+
+function extractBodyParts(value: unknown, depth = 0): { text: string; html: string } {
+  if (depth > 6 || value == null) return { text: "", html: "" };
+  if (typeof value === "string") {
+    const content = value.trim();
+    if (!content) return { text: "", html: "" };
+    return /<(?:!doctype|html|body|div|p|table|br|span|h[1-6])\b/i.test(content)
+      ? { text: "", html: content }
+      : { text: content, html: "" };
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((result, item) => {
+      const part = extractBodyParts(item, depth + 1);
+      return { text: result.text || part.text, html: result.html || part.html };
+    }, { text: "", html: "" });
+  }
+
+  const item = record(value);
+  const mimeType = firstString(item.contentType, item.content_type, item.mimeType, item.mime_type).toLowerCase();
+  let text = firstString(item.text, item.textBody, item.text_body, item.plainText, item.plain_text, item.plain);
+  let html = firstString(item.html, item.htmlBody, item.html_body);
+  const content = firstString(item.content, item.value);
+  if (content && mimeType.includes("text/plain")) text ||= content;
+  else if (content && mimeType.includes("text/html")) html ||= content;
+  else if (content && !text && !html) {
+    const extracted = extractBodyParts(content, depth + 1);
+    text ||= extracted.text;
+    html ||= extracted.html;
+  }
+
+  for (const key of ["body", "parts", "content", "payload", "data"]) {
+    const nested = item[key];
+    if (nested == null || nested === value) continue;
+    const extracted = extractBodyParts(nested, depth + 1);
+    text ||= extracted.text;
+    html ||= extracted.html;
+  }
+  return { text, html };
 }
 
 function fail(message: string, status: number, requestId?: string, code?: string) {
@@ -121,8 +159,9 @@ export async function POST(request: Request) {
     let recipients = addressList(message.to ?? message.recipients);
     let cc = addressList(message.cc);
     let subject = firstString(message.subject) || "(no subject)";
-    let textBody = firstString(message.text, message.textBody, record(message.body).text);
-    let htmlBody = firstString(message.html, message.htmlBody, record(message.body).html);
+    const payloadBodies = extractBodyParts(message);
+    let textBody = firstString(message.text, message.textBody, record(message.body).text, payloadBodies.text);
+    let htmlBody = firstString(message.html, message.htmlBody, record(message.body).html, payloadBodies.html);
     let messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
     let inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
     let references = headerList(message.references ?? message.referencesHeaders);
@@ -130,12 +169,13 @@ export async function POST(request: Request) {
       stage = "hostinger.message.fetch";
       const fetched = await getHostingerMessage(resolvedMailboxAddress, folder, uid);
       message = { ...fetched.message, ...message };
+      const fetchedBodies = extractBodyParts(message);
       sender = address(message.from ?? message.sender);
       recipients = addressList(message.to ?? message.recipients);
       cc = addressList(message.cc);
       subject = firstString(message.subject) || subject;
-      textBody = firstString(message.text, message.textBody, fetched.body.text, record(message.body).text);
-      htmlBody = firstString(message.html, message.htmlBody, fetched.body.html, record(message.body).html);
+      textBody = firstString(message.text, message.textBody, fetched.body.text, record(message.body).text, fetchedBodies.text);
+      htmlBody = firstString(message.html, message.htmlBody, fetched.body.html, record(message.body).html, fetchedBodies.html);
       messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
       inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
       references = headerList(message.references ?? message.referencesHeaders);
@@ -161,7 +201,7 @@ export async function POST(request: Request) {
     const { data: matchedMessageById } = headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("message_id", headerCandidates).limit(1).maybeSingle() : { data: null };
     const { data: matchedMessageByReply } = !matchedMessageById && headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("in_reply_to", headerCandidates).limit(1).maybeSingle() : { data: null };
     const matchedMessage = matchedMessageById ?? matchedMessageByReply;
-    const subjectKey = subject.replace(/^(re|fw|fwd):\s*/i, "").trim();
+    const subjectKey = subject.replace(/^(?:(?:re|fw|fwd):\s*)+/i, "").trim();
     const { data: subjectThread } = !matchedMessage ? await client.from("crm_email_threads").select("id, contact_id").eq("mailbox_id", mailbox.id).ilike("subject", subjectKey).order("updated_at", { ascending: false }).limit(1).maybeSingle() : { data: null };
     let contactId = matchedMessage?.contact_id ?? subjectThread?.contact_id ?? null;
     if (!contactId) {
@@ -172,18 +212,18 @@ export async function POST(request: Request) {
     const threadKey = inReplyTo || references[0] || messageId || providerMessageId;
     stage = "database.thread_save";
     const threadResult = threadId
-      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
+      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, folder: "inbox", updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
       : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: "inbox", updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
     if (threadResult.error) throw threadResult.error;
     const receivedAt = firstString(message.receivedAt, message.received_at, message.date) || new Date().toISOString();
     stage = "database.message_save";
-    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
+    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, hostinger_folder: folder, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeEmailHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
     if (messageError) throw messageError;
 
     stage = "database.attachment_save";
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     if (stored && attachments.length) {
-      const rows = attachments.map((item) => { const attachment = record(item); return { company_id: mailbox.company_id, message_id: stored.id, file_name: firstString(attachment.filename, attachment.fileName) || "attachment", content_type: firstString(attachment.contentType, attachment.content_type) || "application/octet-stream", storage_path: firstString(attachment.downloadUrl, attachment.url, attachment.id ? `hostinger:attachment:${attachment.id}` : "hostinger:attachment"), file_size: Number(attachment.size) || 0 }; });
+      const rows = attachments.map((item) => { const attachment = record(item); return { company_id: mailbox.company_id, message_id: stored.id, file_name: firstString(attachment.filename, attachment.fileName) || "attachment", content_type: firstString(attachment.contentType, attachment.content_type) || "application/octet-stream", content_id: firstString(attachment.contentId, attachment.content_id) || null, storage_path: attachment.id ? `hostinger:attachment:${attachment.id}` : firstString(attachment.downloadUrl, attachment.url, "hostinger:attachment"), file_size: Number(attachment.sizeBytes ?? attachment.size) || 0 }; });
       const { error } = await client.from("crm_email_attachments").insert(rows);
       if (error) console.error("[hostinger] incoming attachment metadata failed", error.message);
     }

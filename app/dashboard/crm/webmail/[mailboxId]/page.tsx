@@ -22,6 +22,7 @@ type EmailAttachment = {
   id?: number;
   file_name: string;
   content_type?: string | null;
+  content_id?: string | null;
   storage_path?: string | null;
   file_size?: number | null;
 };
@@ -36,6 +37,7 @@ type UploadingAttachment = {
 type Message = {
   id: number;
   thread_id?: number;
+  direction?: "inbound" | "outbound";
   sender: string | null;
   recipients: string[];
   cc?: string[];
@@ -678,6 +680,7 @@ function ComposeDrawer({
           action: "send",
           to,
           cc: cc.trim() || undefined,
+          bcc: bcc.trim() || undefined,
           subject,
           text: textContent,
           html: htmlContent,
@@ -964,6 +967,7 @@ function EmailReaderView({
   onDelete: (threadId: number) => void;
 }) {
   const [viewMode, setViewMode] = useState<"html" | "text">("html");
+  const [emptyHtmlMessages, setEmptyHtmlMessages] = useState<Record<number, boolean>>({});
   const [showHeaders, setShowHeaders] = useState(false);
   const [quickReplyText, setQuickReplyText] = useState("");
   const [replyAttachments, setReplyAttachments] = useState<UploadingAttachment[]>([]);
@@ -972,6 +976,13 @@ function EmailReaderView({
 
   const messages = thread.crm_email_messages || [];
   const latestMessage = messages[messages.length - 1];
+  const replyTargetMessage = [...messages].reverse().find((message) => message.direction === "inbound") || latestMessage;
+  const replyTargetEmail = replyTargetMessage?.direction === "outbound"
+    ? replyTargetMessage.recipients?.[0] || ""
+    : getSenderEmail(replyTargetMessage?.sender || "") || replyTargetMessage?.sender || "";
+  const replyTargetName = replyTargetMessage?.direction === "outbound"
+    ? getSenderName(replyTargetEmail)
+    : getSenderName(replyTargetMessage?.sender || "");
 
   if (!latestMessage) {
     return (
@@ -1011,10 +1022,9 @@ function EmailReaderView({
     setSendingQuickReply(true);
 
     try {
-      const repTo = senderEmail || latestMessage.sender || "";
-      const repSubject = thread.subject?.startsWith("Re:")
-        ? thread.subject
-        : `Re: ${thread.subject || "(no subject)"}`;
+      const repTo = replyTargetEmail;
+      const subjectBase = thread.subject?.replace(/^(?:(?:re|fw|fwd):\s*)+/i, "") || "(no subject)";
+      const repSubject = `Re: ${subjectBase}`;
 
       const response = await fetch("/api/crm/webmail", {
         method: "POST",
@@ -1140,7 +1150,7 @@ function EmailReaderView({
 
           <button
             type="button"
-            onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
+            onClick={() => onReply(replyTargetEmail, thread.subject || "")}
             className="flex items-center gap-1.5 rounded-xl bg-slate-900 px-3.5 py-1.5 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800 active:scale-95"
           >
             <span>↩</span>
@@ -1150,7 +1160,7 @@ function EmailReaderView({
       </div>
 
       {/* Subject Line & Tags */}
-      <div className="border-b border-slate-100 px-8 py-5">
+      <div className="border-b border-slate-100 px-6 py-4">
         <div>
           <h1 className="text-xl font-black tracking-tight text-slate-900 md:text-2xl">
             {thread.subject || "(No Subject)"}
@@ -1177,7 +1187,7 @@ function EmailReaderView({
       </div>
 
       {/* Sender Profile Card */}
-      <div className="border-b border-slate-100 bg-slate-50/40 px-8 py-4">
+      <div className="border-b border-slate-100 bg-slate-50/40 px-6 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <SenderAvatar sender={latestMessage.sender} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-sm font-bold shadow-sm" />
@@ -1229,7 +1239,7 @@ function EmailReaderView({
 
       {/* Attachments Section in Reader */}
       {allAttachments.length > 0 && (
-        <div className="border-b border-slate-200 bg-amber-50/40 px-8 py-4">
+        <div className="border-b border-slate-200 bg-amber-50/40 px-6 py-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <span className="text-base">📎</span>
@@ -1256,7 +1266,7 @@ function EmailReaderView({
                 </div>
                 {att.storage_path && (
                   <a
-                    href={att.storage_path}
+                    href={att.storage_path.startsWith("https://") ? att.storage_path : att.id ? `/api/crm/webmail/attachment?attachment_id=${att.id}` : att.storage_path}
                     download={att.file_name}
                     className="shrink-0 rounded-lg bg-primary px-2.5 py-1.5 text-[11px] font-bold text-white transition hover:bg-primary-hover"
                     title="Download attachment"
@@ -1271,28 +1281,31 @@ function EmailReaderView({
       )}
 
       {/* Main Email Body */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
-        <div className="space-y-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+        <div className="space-y-3">
           {messages.map((message, index) => {
+            const isOutgoing = message.direction === "outbound";
             const messageSender = getSenderName(message.sender);
             const messageEmail = getSenderEmail(message.sender);
             const messageDate = formatFullDate(message.received_at || message.sent_at);
             return (
-              <article key={message.id} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-5 py-3">
+              <article key={message.id} className={`overflow-hidden rounded-xl border border-slate-200 border-l-4 shadow-sm ${isOutgoing ? "border-l-sky-500 bg-sky-50/20" : "border-l-primary bg-white"}`}>
+                <div className={`flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3 ${isOutgoing ? "bg-sky-50/80" : "bg-rose-50/40"}`}>
                   <div className="flex items-center gap-2 text-sm">
-                    <span className="font-bold text-slate-900">{messageSender}</span>
-                    <span className="text-xs text-slate-400">&lt;{messageEmail}&gt;</span>
+                    <span className={`rounded-md px-2 py-1 text-[10px] font-extrabold uppercase ${isOutgoing ? "bg-sky-100 text-sky-800" : "bg-rose-100 text-rose-800"}`}>{isOutgoing ? "You sent" : "Received"}</span>
+                    <span className="font-bold text-slate-900">{isOutgoing ? "You" : messageSender}</span>
+                    <span className="text-xs text-slate-500">&lt;{isOutgoing ? mailbox?.email_address || messageEmail : messageEmail}&gt;</span>
                     {index === messages.length - 1 && (
                       <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">Latest</span>
                     )}
                   </div>
                   <span className="text-xs text-slate-400">{messageDate}</span>
                 </div>
-                <div className="p-5">
-                  {viewMode === "html" && message.html_body ? (
-                    <div className="w-full rounded-xl border border-slate-100 bg-white p-2">
+                <div className="p-4">
+                  {viewMode === "html" && message.html_body && !emptyHtmlMessages[message.id] ? (
+                    <div className="w-full rounded-lg border border-slate-100 bg-white p-1">
                       <iframe
+                        key={`${message.id}-${viewMode}-${Boolean(emptyHtmlMessages[message.id])}`}
                         srcDoc={`
                           <!DOCTYPE html>
                           <html>
@@ -1311,7 +1324,13 @@ function EmailReaderView({
                         `}
                         onLoad={(event) => {
                           const body = event.currentTarget.contentDocument?.body;
-                          if (body) event.currentTarget.style.height = `${Math.max(180, body.scrollHeight + 32)}px`;
+                          if (body) {
+                            const hasContent = Boolean(body.innerText.trim() || body.querySelector("img, picture, video, audio, table, svg, canvas"));
+                            event.currentTarget.style.height = `${Math.min(1200, Math.max(80, body.scrollHeight + 20))}px`;
+                            if (!hasContent) {
+                              setEmptyHtmlMessages((current) => ({ ...current, [message.id]: true }));
+                            }
+                          }
                         }}
                         className="block w-full border-0"
                         sandbox="allow-same-origin allow-popups"
@@ -1320,8 +1339,8 @@ function EmailReaderView({
                     </div>
                   ) : (
                     <div className="max-w-4xl whitespace-pre-wrap font-sans text-[15px] leading-8 text-slate-800">
-                      {message.text_body || (
-                        <span className="italic text-slate-400">This message has no plain text content.</span>
+                      {message.text_body?.trim() || (
+                        <span className="italic text-slate-400">{message.html_body ? "The HTML preview is empty and this message has no plain-text version." : "This message has no readable body content."}</span>
                       )}
                     </div>
                   )}
@@ -1334,23 +1353,29 @@ function EmailReaderView({
       </div>
 
       {/* Quick Inline Reply Card at Bottom */}
-      <div className="border-t border-slate-200 bg-slate-50/80 p-6">
+      <div className="border-t-2 border-primary/25 bg-rose-50/50 p-4">
         {quickReplySuccess && (
           <div className="mb-3 rounded-xl bg-emerald-50 px-4 py-2 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
             ✓ Quick reply sent successfully!
           </div>
         )}
-        <form onSubmit={handleQuickReplySubmit} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5 text-xs text-slate-500">
-            <span className="font-semibold">Quick Reply to:</span>
-            <span className="font-medium text-slate-800">{senderName}</span>
+        <form onSubmit={handleQuickReplySubmit} className="overflow-hidden rounded-xl border border-primary/25 bg-white shadow-[0_8px_24px_rgba(228,90,90,0.08)]">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-100 bg-rose-50/70 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-white text-primary">↩</span>
+              <div className="min-w-0">
+                <p className="text-[10px] font-extrabold uppercase text-primary">Your reply</p>
+                <p className="truncate text-sm font-bold text-slate-900">To {replyTargetName}</p>
+              </div>
+            </div>
+            <span className="truncate text-xs text-slate-500">{replyTargetEmail}</span>
           </div>
           <textarea
-            rows={3}
+            rows={2}
             value={quickReplyText}
             onChange={(e) => setQuickReplyText(e.target.value)}
             placeholder="Write a quick reply..."
-            className="w-full resize-none p-4 text-sm text-slate-800 outline-none placeholder:text-slate-400"
+            className="w-full resize-y px-4 py-3 text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400"
           />
           {replyAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2 border-t border-slate-100 px-4 py-2">
@@ -1386,7 +1411,7 @@ function EmailReaderView({
               </label>
               <button
                 type="button"
-                onClick={() => onReply(senderEmail || latestMessage.sender || "", thread.subject || "")}
+                onClick={() => onReply(replyTargetEmail, thread.subject || "")}
                 className="text-xs font-bold text-primary hover:underline"
               >
                 Full composer ↗
@@ -1566,23 +1591,18 @@ export default function MailboxWorkspace() {
     }
     const unreadMessages = selectedThread.crm_email_messages.filter((m) => !m.is_read);
     if (unreadMessages.length > 0) {
-      setThreads((current) =>
-        current.map((t) =>
-          t.id === selectedThread.id
-            ? {
-                ...t,
-                crm_email_messages: t.crm_email_messages.map((m) => ({ ...m, is_read: true })),
-              }
-            : t
-        )
-      );
-      for (const msg of unreadMessages) {
-        await fetch("/api/crm/webmail", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message_id: msg.id, is_read: true }),
-        });
+      const response = await fetch("/api/crm/webmail", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: selectedThread.id, is_read: true }),
+      });
+      if (!response.ok) {
+        setNotification({ text: "Email opened, but its read status could not be updated.", tone: "danger" });
+        return;
       }
+      setThreads((current) => current.map((item) => item.id === selectedThread.id
+        ? { ...item, crm_email_messages: item.crm_email_messages.map((message) => ({ ...message, is_read: true })) }
+        : item));
     }
   }
 
@@ -1910,7 +1930,7 @@ export default function MailboxWorkspace() {
                   const latest = thread.crm_email_messages.at(-1);
                   const isSelected = selectedThreadId === thread.id;
                   const isUnread = latest ? !latest.is_read : false;
-                  const senderName = getSenderName(latest?.sender ?? "");
+                  const senderName = latest?.direction === "outbound" ? "You" : getSenderName(latest?.sender ?? "");
                   const dateText = formatSmartDate(latest?.received_at || latest?.sent_at);
                   const hasAttachments = thread.crm_email_messages.some(
                     (m) => m.crm_email_attachments && m.crm_email_attachments.length > 0
@@ -1967,7 +1987,7 @@ export default function MailboxWorkspace() {
                         </div>
 
                         <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">
-                          {latest?.text_body || "No preview content"}
+                          {latest?.text_body || latest?.html_body?.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() || "No preview content"}
                         </p>
                       </div>
 

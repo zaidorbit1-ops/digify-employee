@@ -2,10 +2,9 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { IconEdit, IconPlus, IconRefresh, IconTrash } from "@/components/icons";
+import { IconArrowRight, IconBuilding, IconCheckCircle, IconMail, IconPlus, IconRefresh, IconSettings } from "@/components/icons";
 import { Alert } from "@/components/ui/empty-state";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Field, SelectInput, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
@@ -14,15 +13,9 @@ import { useAuth } from "@/components/auth/auth-provider";
 
 type Company = { id: number; name: string; status: string };
 type Mailbox = { id: number; company_id: number; email_address: string; display_name: string | null; status: string; last_webhook_at?: string | null; last_error?: string | null };
-type MailboxForm = { company_id: string; email_address: string; display_name: string; status: string };
+type MailboxForm = { company_id: string; email_address: string; display_name: string };
 
-const blank: MailboxForm = { company_id: "", email_address: "", display_name: "", status: "pending" };
-
-function formatDate(value?: string | null) {
-  if (!value) return "No webhook received yet";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "No webhook received yet" : date.toLocaleString();
-}
+const blank: MailboxForm = { company_id: "", email_address: "", display_name: "" };
 
 export default function CrmWebmailPage() {
   const { profile } = useAuth();
@@ -30,11 +23,10 @@ export default function CrmWebmailPage() {
   const [companyId, setCompanyId] = useState("");
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [form, setForm] = useState(blank);
-  const [editingId, setEditingId] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
-  const [permissions, setPermissions] = useState({ can_add: true, can_edit: true, can_delete: true });
+  const [canAdd, setCanAdd] = useState(true);
 
   async function loadCompanies() {
     const response = await fetch("/api/crm/companies?module=crm_webmail", { cache: "no-store" });
@@ -61,18 +53,17 @@ export default function CrmWebmailPage() {
     if (profile?.role !== "employee") return;
     fetch("/api/me/permissions", { cache: "no-store" }).then((response) => response.json()).then((result) => {
       const permission = (result.permissions ?? []).find((item: { module: string }) => item.module === "crm_webmail");
-      setPermissions(permission ?? { can_add: false, can_edit: false, can_delete: false });
-    }).catch(() => setPermissions({ can_add: false, can_edit: false, can_delete: false }));
+      setCanAdd(permission?.can_add ?? false);
+    }).catch(() => setCanAdd(false));
   }, [profile?.role]);
 
-  function openAdd() { setEditingId(null); setForm({ ...blank, company_id: companyId || String(companies[0]?.id ?? "") }); setModalOpen(true); }
-  function openEdit(mailbox: Mailbox) { setEditingId(mailbox.id); setForm({ company_id: String(mailbox.company_id), email_address: mailbox.email_address, display_name: mailbox.display_name ?? "", status: mailbox.status }); setModalOpen(true); }
+  function openAdd() { setForm({ ...blank, company_id: companyId || String(companies[0]?.id ?? "") }); setModalOpen(true); }
 
   async function save(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setMessage(null);
     try {
-      const response = await fetch("/api/crm/mailboxes", { method: editingId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, id: editingId ?? undefined, company_id: Number(form.company_id) }) });
+      const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, status: "pending", company_id: Number(form.company_id) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save mailbox.");
       setModalOpen(false); setMessage(result.warning ? { text: `Mailbox saved, but webhook delivery failed: ${result.warning}`, tone: "danger" } : { text: "Hostinger mailbox saved and webhook delivery verified.", tone: "success" }); await loadMailboxes();
@@ -80,61 +71,38 @@ export default function CrmWebmailPage() {
     finally { setBusy(false); }
   }
 
-  async function update(mailbox: Mailbox, values: Record<string, unknown>) {
-    setBusy(true);
-    try {
-      const response = await fetch("/api/crm/mailboxes", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, ...values }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not update mailbox.");
-      await loadMailboxes(); setMessage({ text: "Mailbox updated.", tone: "success" });
-    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not update mailbox.", tone: "danger" }); }
-    finally { setBusy(false); }
-  }
-
-  async function test(mailbox: Mailbox) {
-    setBusy(true);
-    try {
-      const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, action: "test" }) });
-      const result = await response.json();
-      const details = Array.isArray(result.checks) ? result.checks.map((check: { ok: boolean; name: string; reason: string }) => `${check.ok ? "OK" : "FAIL"} ${check.name}: ${check.reason}`).join(" | ") : "";
-      if (!response.ok) throw new Error(details || result.error || "Could not test mailbox.");
-      setMessage({ text: `${result.message} ${details}`, tone: "success" });
-    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not test mailbox.", tone: "danger" }); }
-    finally { setBusy(false); }
-  }
-  async function testWebhook(mailbox: Mailbox) {
-    setBusy(true); setMessage(null);
-    try {
-      const response = await fetch("/api/crm/mailboxes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: mailbox.id, action: "test_webhook" }) });
-      const result = await response.json();
-      const details = `HTTP ${result.callback_http_status ?? result.provider_http_status ?? response.status}${result.error ? `: ${result.error}` : ""} | Vercel request ID: ${result.request_id ?? "unavailable"}`;
-      if (!response.ok || !result.ok) throw new Error(`Webhook test failed. ${details}`);
-      setMessage({ text: `Webhook test passed. ${details}`, tone: "success" });
-    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Webhook test failed.", tone: "danger" }); }
-    finally { setBusy(false); }
-  }
-  async function remove(mailbox: Mailbox) {
-    if (!window.confirm(`Delete ${mailbox.email_address}?`)) return;
-    setBusy(true);
-    try { const response = await fetch(`/api/crm/mailboxes?id=${mailbox.id}`, { method: "DELETE" }); if (!response.ok) throw new Error("Could not delete mailbox."); await loadMailboxes(); setMessage({ text: "Mailbox removed.", tone: "success" }); }
-    catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not delete mailbox.", tone: "danger" }); }
-    finally { setBusy(false); }
-  }
-
   return <>
-    <PageHeader eyebrow="Business CRM / Webmail" title="Hostinger Mailboxes" description="Manage the Hostinger mailbox used by CRM inboxes, replies, and campaigns." actions={<Button onClick={openAdd} disabled={!companies.length || !permissions.can_add}><IconPlus className="h-4 w-4" />Add mailbox</Button>} />
+    <PageHeader eyebrow="Business CRM / Webmail" title="Your mail, in one place." description="Choose a mailbox to open its inbox. Your CRM-connected mailboxes are ready whenever you are." actions={<><Link href="/dashboard/crm/webmail/debugging" className="inline-flex items-center justify-center gap-2 rounded-xl border border-border bg-white px-4 py-2.5 text-sm font-semibold text-foreground transition hover:border-primary/30 hover:bg-primary-soft"><IconSettings className="h-4 w-4" />Debugging</Link><Button onClick={openAdd} disabled={!companies.length || !canAdd}><IconPlus className="h-4 w-4" />Add mailbox</Button></>} />
     {message ? <div className="mb-5"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
-    <p className="mb-4 text-sm text-slate-500">{mailboxes.length} mailboxes across {companies.length} companies</p>
-    <div className="grid gap-5 md:grid-cols-2">
-      {mailboxes.map((mailbox) => <Card key={mailbox.id} className="space-y-4 p-5">
-        <div className="flex items-start justify-between gap-3"><div><p className="mb-1 text-xs font-semibold uppercase text-slate-500">{companies.find((company) => company.id === mailbox.company_id)?.name ?? "Company"}</p><Link href={`/dashboard/crm/webmail/${mailbox.id}`} className="text-lg font-bold text-slate-900 hover:text-primary">{mailbox.display_name || mailbox.email_address}</Link><p className="text-sm text-slate-500">{mailbox.email_address}</p></div><Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : "warning"}>{mailbox.status}</Badge></div>
-        <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600"><p className="font-semibold text-slate-800">Webhook delivery</p><p className="mt-1">{formatDate(mailbox.last_webhook_at)}</p>{mailbox.last_error ? <p className="mt-2 text-rose-700">{mailbox.last_error}</p> : null}</div>
-        <div className="flex flex-wrap gap-2"><Button variant="secondary" loading={busy} onClick={() => test(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Health check</Button><Button variant="secondary" loading={busy} onClick={() => testWebhook(mailbox)} disabled={!permissions.can_edit}><IconRefresh className="h-4 w-4" />Test webhook</Button><Button variant="secondary" onClick={() => openEdit(mailbox)} disabled={!permissions.can_edit}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" onClick={() => update(mailbox, { status: mailbox.status === "disconnected" ? "pending" : "disconnected" })} disabled={!permissions.can_edit}>{mailbox.status === "disconnected" ? "Reconnect" : "Disconnect"}</Button><Button variant="ghost" className="text-rose-600" onClick={() => remove(mailbox)} disabled={!permissions.can_delete}><IconTrash className="h-4 w-4" />Delete</Button></div>
-      </Card>)}
+    <section className="mb-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Mailbox overview">
+      <article className="rounded-xl border border-border bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-lg bg-rose-50 text-primary"><IconMail className="h-5 w-5" /></span><div><p className="text-2xl font-bold text-foreground">{mailboxes.length}</p><p className="text-xs font-medium text-muted">Total mailboxes</p></div></div></article>
+      <article className="rounded-xl border border-border bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-lg bg-emerald-50 text-emerald-700"><IconCheckCircle className="h-5 w-5" /></span><div><p className="text-2xl font-bold text-foreground">{mailboxes.filter((mailbox) => mailbox.status === "connected").length}</p><p className="text-xs font-medium text-muted">Connected</p></div></div></article>
+      <article className="rounded-xl border border-border bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-lg bg-sky-50 text-sky-700"><IconBuilding className="h-5 w-5" /></span><div><p className="text-2xl font-bold text-foreground">{companies.length}</p><p className="text-xs font-medium text-muted">Companies</p></div></div></article>
+      <article className="rounded-xl border border-border bg-white p-4"><div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-lg bg-amber-50 text-amber-700"><IconRefresh className="h-5 w-5" /></span><div><p className="text-2xl font-bold text-foreground">{mailboxes.filter((mailbox) => mailbox.status === "error" || mailbox.last_error).length}</p><p className="text-xs font-medium text-muted">Needs attention</p></div></div></article>
+    </section>
+    <div className="mb-4 flex items-center justify-between gap-4"><div><h2 className="text-base font-bold text-foreground">Mailboxes</h2><p className="mt-1 text-sm text-muted">{mailboxes.length} accounts across {companies.length} companies</p></div></div>
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {mailboxes.map((mailbox, index) => {
+        const company = companies.find((item) => item.id === mailbox.company_id);
+        const accents = ["bg-primary", "bg-emerald-500", "bg-sky-600", "bg-amber-500"];
+        return <article key={mailbox.id} className="group flex min-h-56 flex-col overflow-hidden rounded-xl border border-border bg-white shadow-[0_8px_24px_rgba(28,20,18,0.035)] transition duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-[0_14px_32px_rgba(28,20,18,0.09)]">
+          <div className={`h-1 ${accents[index % accents.length]}`} />
+          <div className="flex flex-1 flex-col p-4">
+            <div className="mb-5 flex items-start justify-between gap-3"><span className="grid h-11 w-11 place-items-center rounded-lg bg-slate-50 text-slate-700"><IconMail className="h-5 w-5" /></span><Badge tone={mailbox.status === "connected" ? "success" : mailbox.status === "error" ? "danger" : "warning"}>{mailbox.status}</Badge></div>
+            <p className="mb-1 truncate text-[11px] font-bold uppercase text-muted">{company?.name ?? "Company"}</p>
+            <p className="truncate text-base font-bold text-foreground" title={mailbox.display_name || mailbox.email_address}>{mailbox.display_name || mailbox.email_address}</p>
+            <p className="mt-1 truncate text-sm text-muted" title={mailbox.email_address}>{mailbox.email_address}</p>
+            <Link href={`/dashboard/crm/webmail/${mailbox.id}`} target="_blank" rel="noopener noreferrer" aria-label={`Open ${mailbox.email_address} in a new tab`} className="mt-auto flex items-center justify-between border-t border-border pt-4 text-sm font-semibold text-foreground transition group-hover:text-primary">
+              <span>Open inbox</span><IconArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+            </Link>
+          </div>
+        </article>;
+      })}
     </div>
-    {!mailboxes.length && companies.length ? <Card className="p-10 text-center text-sm text-slate-500">No Hostinger mailboxes connected across your accessible companies.</Card> : null}
-    <Modal open={modalOpen} onClose={() => setModalOpen(false)} title={editingId ? "Edit Hostinger mailbox" : "Connect Hostinger mailbox"} description="The API token and webhook secret stay on the server. Only the mailbox address is stored here.">
-      <form className="space-y-4" onSubmit={save}><Field label="Company"><SelectInput value={form.company_id} onChange={(event) => setForm({ ...form, company_id: event.target.value })}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field><Field label="Mailbox email address"><TextInput required type="email" value={form.email_address} onChange={(event) => setForm({ ...form, email_address: event.target.value })} placeholder="info@example.com" /></Field><Field label="Display name"><TextInput value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="Support" /></Field><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button><Button type="submit" loading={busy}>Save mailbox</Button></div></form>
+    {!mailboxes.length && companies.length ? <div className="mt-4 rounded-xl border border-dashed border-border bg-white px-6 py-12 text-center"><span className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-lg bg-rose-50 text-primary"><IconMail className="h-6 w-6" /></span><h3 className="font-bold text-foreground">No mailboxes connected yet</h3><p className="mt-1 text-sm text-muted">Add a mailbox to start working from your CRM.</p><Button className="mt-5" onClick={openAdd} disabled={!canAdd}><IconPlus className="h-4 w-4" />Add mailbox</Button></div> : null}
+    {!mailboxes.length && !companies.length && !message ? <div className="rounded-xl border border-border bg-white px-6 py-12 text-center text-sm text-muted">Loading your mailboxes...</div> : null}
+    <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Connect Hostinger mailbox" description="The API token and webhook secret stay on the server. Only the mailbox address is stored here.">
+      <form className="space-y-4" onSubmit={save}><Field label="Company"><SelectInput value={form.company_id} onChange={(event) => { setCompanyId(event.target.value); setForm({ ...form, company_id: event.target.value }); }}>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field><Field label="Mailbox email address"><TextInput required type="email" value={form.email_address} onChange={(event) => setForm({ ...form, email_address: event.target.value })} placeholder="info@example.com" /></Field><Field label="Display name"><TextInput value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} placeholder="Support" /></Field><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>Cancel</Button><Button type="submit" loading={busy}>Save mailbox</Button></div></form>
     </Modal>
   </>;
 }
