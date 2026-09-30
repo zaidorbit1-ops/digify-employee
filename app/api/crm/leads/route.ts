@@ -88,8 +88,8 @@ export async function POST(request: Request) {
     }).select("*, crm_websites(name, website_url)").single();
     if (error) throw error;
     await sendCrmPush({
-      title: "New CRM lead",
-      body: `Lead: ${data.name} <${data.email}> | Company: ${company.name}`,
+      title: "New Lead Arrived",
+      body: `on ${company.name}`,
       url: `/dashboard/crm/leads/${data.id}`,
       tag: `crm-lead-${data.id}`,
       notificationType: "crm_lead",

@@ -239,8 +239,8 @@ export async function POST(request: Request) {
     await client.from("crm_mailboxes").update({ status: "connected", last_webhook_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
     await sendCrmPush({
-      title: "New email received",
-      body: `Email: ${subject} | From: ${sender} | Mailbox: ${mailbox.email_address} | Company: ${companyName}`.slice(0, 400),
+      title: "New Email Arrived",
+      body: `on ${companyName}`,
       url: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
       tag: `crm-email-${stored.id}`,
       notificationType: "crm_email",

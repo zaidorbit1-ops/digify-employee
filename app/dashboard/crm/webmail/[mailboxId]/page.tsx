@@ -1622,10 +1622,25 @@ export default function MailboxWorkspace() {
     const threadId = Number(new URLSearchParams(window.location.search).get("thread_id"));
     if (!Number.isInteger(threadId) || threadId <= 0) return;
     const thread = threads.find((item) => item.id === threadId);
-    if (!thread) return;
     requestedThreadId.current = threadId;
-    setSelectedFolder(thread.folder);
-    void handleSelectThread(thread);
+    if (thread) {
+      setSelectedFolder(thread.folder);
+      void handleSelectThread(thread);
+      return;
+    }
+    fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&thread_id=${threadId}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const result = await response.json();
+        return result.threads?.[0] as Thread | undefined;
+      })
+      .then((requestedThread) => {
+        if (!requestedThread) return;
+        setSelectedFolder(requestedThread.folder);
+        setThreads((current) => [requestedThread, ...current.filter((item) => item.id !== requestedThread.id)]);
+        void handleSelectThread(requestedThread);
+      })
+      .catch(() => undefined);
   }, [loading, threads]);
 
   // Toggle Star

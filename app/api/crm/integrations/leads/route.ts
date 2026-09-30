@@ -137,8 +137,8 @@ export async function POST(request: Request) {
     if (error) throw error;
     await client.from("crm_website_integrations").update({ last_received_at: new Date().toISOString() }).eq("id", integration.id);
     await sendCrmPush({
-      title: "New CRM lead",
-      body: `Lead: ${data.name} <${data.email}> | Company: ${company.name}`,
+      title: "New Lead Arrived",
+      body: `on ${company.name}`,
       url: `/dashboard/crm/leads/${data.id}`,
       tag: `crm-lead-${data.id}`,
       notificationType: "crm_lead",

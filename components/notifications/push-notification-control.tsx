@@ -14,15 +14,28 @@ function decodeVapidKey(value: string) {
 export function PushNotificationControl() {
   const { profile } = useAuth();
   const [enabled, setEnabled] = useState(false);
+  const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setChecking(false);
+      return;
+    }
+    let active = true;
     navigator.serviceWorker.ready
       .then((registration) => registration.pushManager.getSubscription())
-      .then((subscription) => setEnabled(Boolean(subscription)))
-      .catch(() => undefined);
+      .then((subscription) => {
+        if (active) setEnabled(Boolean(subscription));
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setChecking(false);
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   if (profile?.role !== "superadmin") return null;
@@ -86,13 +99,13 @@ export function PushNotificationControl() {
       <button
         type="button"
         onClick={toggleNotifications}
-        disabled={busy}
+        disabled={busy || checking}
         title={enabled ? "Disable desktop notifications" : "Enable desktop notifications"}
         aria-label={enabled ? "Disable desktop notifications" : "Enable desktop notifications"}
-        className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-3 text-sm font-medium text-foreground transition hover:bg-surface disabled:cursor-wait disabled:opacity-60"
+        className={`inline-flex h-10 items-center gap-2 rounded-lg border px-3 text-sm font-medium transition disabled:cursor-wait disabled:opacity-60 ${enabled ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100" : "border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100"}`}
       >
         <IconBell className="h-4 w-4" />
-        <span className="hidden sm:inline">{busy ? "Updating..." : enabled ? "Notifications on" : "Enable notifications"}</span>
+        <span className="hidden sm:inline">{checking ? "Checking..." : busy ? "Updating..." : enabled ? "Notifications on" : "Enable notifications"}</span>
       </button>
       {message ? <span role="status" className="max-w-48 text-xs leading-4 text-muted">{message}</span> : null}
     </div>
