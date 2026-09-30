@@ -279,7 +279,8 @@ export function Sidebar({
       <aside
         ref={sidebarRef}
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex h-screen w-[272px] flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex h-screen flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          isCrmWorkspace ? "w-[min(272px,calc(100vw-1rem))]" : "w-[272px]",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >

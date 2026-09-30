@@ -31,6 +31,30 @@ body {
   font-family: var(--font-plus-jakarta), sans-serif;
 }
 
+.crm-responsive {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 639px) {
+  .crm-responsive :where(input, select, textarea, iframe, img) {
+    max-width: 100%;
+  }
+
+  .crm-responsive :where(.overflow-x-auto) {
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .crm-responsive :where(pre, code) {
+    overflow-wrap: anywhere;
+  }
+
+  .crm-responsive :where(p, span, a, dd, dt) {
+    overflow-wrap: anywhere;
+  }
+}
+
 .employee-dashboard-enter {
   animation: employee-dashboard-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }

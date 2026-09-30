@@ -183,7 +183,7 @@ export async function GET(request: Request) {
 
       const { data: messages, error: messagesError } = await client
         .from("chat_messages")
-        .select("id, conversation_id, body, created_at, sender_user_id, sender_employee_id")
+        .select("id, conversation_id, body, created_at, sender_user_id, sender_employee_id, edited_at, deleted_at")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
 
@@ -266,12 +266,14 @@ export async function GET(request: Request) {
         messages: (messages ?? []).map((message) => ({
           id: message.id,
           sender: message.sender_user_id === user.id ? "me" : "them",
-          text: message.body,
+          text: message.deleted_at ? "This message has been deleted" : message.body,
           time: toTime(message.created_at),
           senderName: userNames.get(message.sender_user_id) ?? "Employee",
           seen: message.sender_user_id === user.id && otherReadTimes.some((readAt) => readAt >= new Date(message.created_at).getTime()),
-          attachments: attachmentMap.get(String(message.id)) ?? [],
-          attachment: attachmentMap.get(String(message.id))?.[0] ?? null,
+          editedAt: message.edited_at ? toTime(message.edited_at) : null,
+          deletedAt: message.deleted_at ? toTime(message.deleted_at) : null,
+          attachments: message.deleted_at ? [] : attachmentMap.get(String(message.id)) ?? [],
+          attachment: message.deleted_at ? null : attachmentMap.get(String(message.id))?.[0] ?? null,
         })),
       });
     }
@@ -584,6 +586,60 @@ export async function POST(request: Request) {
       return NextResponse.json({ added: memberUserIds });
     }
 
+    if (action === "edit_message" || action === "delete_message") {
+      const messageId = String(body?.message_id ?? "").trim();
+      if (!messageId) return NextResponse.json({ error: "A valid message is required." }, { status: 400 });
+
+      const { data: message, error: messageError } = await client
+        .from("chat_messages")
+        .select("id, conversation_id, sender_user_id, body, created_at, deleted_at")
+        .eq("id", messageId)
+        .maybeSingle();
+      if (messageError) throw messageError;
+      if (!message) return NextResponse.json({ error: "Message not found." }, { status: 404 });
+
+      const { data: membership, error: membershipError } = await client
+        .from("conversation_members")
+        .select("conversation_id")
+        .eq("conversation_id", message.conversation_id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (membershipError) throw membershipError;
+      if (!membership || message.sender_user_id !== user.id) {
+        return NextResponse.json({ error: "You can only change your own messages." }, { status: 403 });
+      }
+      if (message.deleted_at) return NextResponse.json({ error: "This message has already been deleted." }, { status: 409 });
+
+      const ageMs = Date.now() - new Date(message.created_at).getTime();
+      if (ageMs < 0 || ageMs > 60_000) {
+        return NextResponse.json({ error: "Messages can only be changed within one minute of sending." }, { status: 403 });
+      }
+
+      const changedAt = new Date().toISOString();
+      const values = action === "edit_message"
+        ? { body: String(body?.body ?? "").trim(), edited_at: changedAt, updated_at: changedAt }
+        : { body: "This message has been deleted", deleted_at: changedAt, updated_at: changedAt };
+      if (action === "edit_message" && (!values.body || values.body.length > 4000)) {
+        return NextResponse.json({ error: "Edited messages must contain between 1 and 4000 characters." }, { status: 400 });
+      }
+
+      const { data: updatedMessage, error: updateError } = await client
+        .from("chat_messages")
+        .update(values)
+        .eq("id", messageId)
+        .select("id, body, edited_at, deleted_at")
+        .single();
+      if (updateError) throw updateError;
+      return NextResponse.json({
+        message: {
+          id: updatedMessage.id,
+          text: updatedMessage.body,
+          editedAt: updatedMessage.edited_at ? toTime(updatedMessage.edited_at) : null,
+          deletedAt: updatedMessage.deleted_at ? toTime(updatedMessage.deleted_at) : null,
+        },
+      });
+    }
+
     const conversationId = String(body.conversation_id ?? "").trim();
     const text = String(body.body ?? "").trim();
     const requestedAttachments = Array.isArray(body.attachments)
@@ -621,7 +677,7 @@ export async function POST(request: Request) {
         sender_employee_id: employeeId,
         body: text || "Attachment",
       })
-      .select("id, conversation_id, body, created_at, sender_employee_id")
+      .select("id, conversation_id, body, created_at, sender_employee_id, edited_at, deleted_at")
       .single();
 
     if (messageError) throw messageError;
@@ -645,6 +701,8 @@ export async function POST(request: Request) {
         sender: "me",
         text: message.body,
         time: toTime(message.created_at),
+        editedAt: message.edited_at ? toTime(message.edited_at) : null,
+        deletedAt: message.deleted_at ? toTime(message.deleted_at) : null,
         seen: false,
         attachments: requestedAttachments.map((attachment) => ({
           name: attachment.name!,

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { IconSearch, IconPlus, IconBell, IconMenu, IconArrowRight, IconUpload } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -28,6 +28,9 @@ type Message = {
   time: string;
   senderName?: string;
   seen?: boolean;
+  editedAt?: string | null;
+  deletedAt?: string | null;
+  isDeleted?: boolean;
   pending?: boolean;
   failed?: boolean;
   attachments?: Attachment[];
@@ -79,6 +82,12 @@ function formatTime(value: string | null | undefined) {
   } catch {
     return "Now";
   }
+}
+
+function renderMessageText(text: string): ReactNode[] {
+  return text.split(/(https?:\/\/[^\s<>"']+)/gi).map((part, index) => /^https?:\/\//i.test(part)
+    ? <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="break-all underline decoration-current/40 underline-offset-2 hover:decoration-current">{part}</a>
+    : <span key={index}>{part}</span>);
 }
 
 function pendingAttachment(file: File): PendingAttachment {
@@ -174,6 +183,10 @@ export function InternalChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+  const [messageWindowNow, setMessageWindowNow] = useState(Date.now());
   const [query, setQuery] = useState("");
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageQuery, setMessageQuery] = useState("");
@@ -203,6 +216,17 @@ export function InternalChatPage() {
   const typingChannelRef = useRef<{ send: (payload: { type: "broadcast"; event: string; payload: unknown }) => Promise<unknown> } | null>(null);
 
   useEffect(() => {
+    const nextExpiry = messages.reduce((soonest, message) => {
+      if (message.sender !== "me" || message.deletedAt || message.pending || message.failed) return soonest;
+      const expiresAt = new Date(message.time).getTime() + 60_001;
+      return expiresAt > messageWindowNow ? Math.min(soonest, expiresAt) : soonest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = window.setTimeout(() => setMessageWindowNow(Date.now()), Math.max(0, nextExpiry - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [messageWindowNow, messages]);
+
+  useEffect(() => {
     let mounted = true;
 
     async function loadConversations() {
@@ -217,6 +241,7 @@ export function InternalChatPage() {
         setConversations(nextConversations);
         const requestedConversationId = new URLSearchParams(window.location.search).get("conversation_id");
         setActiveConversationId((current) => current ?? requestedConversationId ?? nextConversations[0]?.id ?? null);
+        setIsMobileChatOpen(Boolean(requestedConversationId));
       } catch (loadError) {
         if (!mounted) return;
         setError(loadError instanceof DOMException && loadError.name === "AbortError"
@@ -276,6 +301,20 @@ export function InternalChatPage() {
         }));
         setConversations((current) => current.map((conversation) => conversation.id === conversationId
           ? { ...conversation, preview: nextMessage.body, time: nextMessage.created_at }
+          : conversation));
+        const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
+        const result = await response.json();
+        if (mounted && response.ok && Array.isArray(result.messages)) setMessages(result.messages);
+      })
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "chat_messages",
+        filter: `conversation_id=eq.${conversationId}`,
+      }, async (payload: { new: { id: string; body: string; created_at: string; updated_at?: string } }) => {
+        const updatedMessage = payload.new;
+        setConversations((current) => current.map((conversation) => conversation.id === conversationId
+          ? { ...conversation, preview: updatedMessage.body, time: updatedMessage.updated_at ?? updatedMessage.created_at }
           : conversation));
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
@@ -429,6 +468,80 @@ export function InternalChatPage() {
     }
   }
 
+  function canModifyMessage(message: Message) {
+    const sentAt = new Date(message.time).getTime();
+    const age = messageWindowNow - sentAt;
+    return message.sender === "me"
+      && !message.deletedAt
+      && !message.isDeleted
+      && !message.pending
+      && !message.failed
+      && Number.isFinite(sentAt)
+      && age >= 0
+      && age <= 60_000;
+  }
+
+  async function saveMessageEdit(messageId: string) {
+    const body = editingDraft.trim();
+    if (!body) return;
+    setSendingMessageId(messageId);
+    setError(null);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "edit_message", message_id: messageId, body }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not edit message.");
+      setMessages((current) => current.map((message) => message.id === messageId
+        ? { ...message, text: result.message.text, editedAt: result.message.editedAt }
+        : message));
+      if (messages.at(-1)?.id === messageId && activeConversationId) {
+        setConversations((current) => current.map((conversation) => conversation.id === activeConversationId
+          ? { ...conversation, preview: result.message.text }
+          : conversation));
+      }
+      setEditingMessageId(null);
+      setEditingDraft("");
+    } catch (editError) {
+      setError(editError instanceof Error ? editError.message : "Could not edit message.");
+    } finally {
+      setSendingMessageId(null);
+    }
+  }
+
+  async function deleteSentMessage(message: Message) {
+    if (!window.confirm("Delete this message for everyone?")) return;
+    setSendingMessageId(message.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_message", message_id: message.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not delete message.");
+      setMessages((current) => current.map((item) => item.id === message.id
+        ? { ...item, text: result.message.text, deletedAt: result.message.deletedAt, isDeleted: true, attachments: [], attachment: null }
+        : item));
+      if (messages.at(-1)?.id === message.id && activeConversationId) {
+        setConversations((current) => current.map((conversation) => conversation.id === activeConversationId
+          ? { ...conversation, preview: result.message.text }
+          : conversation));
+      }
+      if (editingMessageId === message.id) {
+        setEditingMessageId(null);
+        setEditingDraft("");
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete message.");
+    } finally {
+      setSendingMessageId(null);
+    }
+  }
+
   function handleDraftChange(value: string) {
     setDraft(value);
     if (!typingChannelRef.current || !user?.id) return;
@@ -516,6 +629,7 @@ export function InternalChatPage() {
       if (!conversationResponse.ok) throw new Error(conversationResult.error ?? "Could not refresh chats.");
       setConversations(Array.isArray(conversationResult.conversations) ? conversationResult.conversations : []);
       setActiveConversationId(result.conversation?.id ?? null);
+      setIsMobileChatOpen(true);
       setNewGroupOpen(false);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not create group.");
@@ -539,6 +653,7 @@ export function InternalChatPage() {
       if (operation === "delete_group") {
         setManageGroupOpen(false);
         setActiveConversationId(null);
+        setIsMobileChatOpen(false);
       } else {
         const refresh = await fetch("/api/chat", { cache: "no-store" });
         const refreshed = await refresh.json();
@@ -587,6 +702,7 @@ export function InternalChatPage() {
       const nextConversations = Array.isArray(conversationResult.conversations) ? conversationResult.conversations : [];
       setConversations(nextConversations);
       setActiveConversationId(result.conversation?.id ?? null);
+      setIsMobileChatOpen(true);
       setNewChatOpen(false);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not start chat.");
@@ -606,29 +722,14 @@ export function InternalChatPage() {
 
   return (
     <div className="flex min-h-0 flex-col gap-5">
-      <header className="flex flex-col gap-3 rounded-[1.5rem] border border-border bg-white p-4 shadow-[0_16px_40px_rgba(28,20,18,0.05)] sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">Office communication</p>
-          <h1 className="mt-1 text-2xl font-bold text-foreground">Internal Chat</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-xl border border-border text-stone-500 transition hover:border-primary/30 hover:text-primary" aria-label="Search messages">
-            <IconSearch className="h-4 w-4" />
-          </button>
-          <button type="button" onClick={enableChatNotifications} className="grid h-10 w-10 place-items-center rounded-xl border border-border text-stone-500 transition hover:border-primary/30 hover:text-primary" aria-label="Enable chat notifications and sound" title="Enable notifications and sound">
-            <IconBell className="h-4 w-4" />
-          </button>
-        </div>
-      </header>
-
       {error ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{error}</div>
       ) : null}
 
-      <div className="h-[calc(100dvh-10.5rem)] min-h-[520px] overflow-hidden rounded-[1.5rem] border border-border bg-white shadow-[0_18px_50px_rgba(28,20,18,0.06)]">
+      <div className="h-[calc(100dvh-8rem)] min-h-[320px] overflow-hidden border-y border-border bg-white shadow-[0_12px_36px_rgba(28,20,18,0.06)] sm:min-h-[520px] sm:rounded-[1.5rem] sm:border">
         <div className="grid h-full min-h-0 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="flex min-h-0 flex-col border-b border-border bg-stone-50/60 lg:border-b-0 lg:border-r">
-            <div className="border-b border-border p-4">
+          <aside className={cn("min-h-0 flex-col border-b border-border bg-[#f7f8fa] lg:flex lg:border-b-0 lg:border-r", isMobileChatOpen ? "hidden" : "flex")}>
+            <div className="border-b border-border p-3 sm:p-4">
               <label className="relative block">
                 <span className="sr-only">Search conversations</span>
                 <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -641,7 +742,7 @@ export function InternalChatPage() {
               </label>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3">
               {!filteredConversations.length ? (
                 <div className="rounded-xl border border-dashed border-stone-300 bg-white p-4 text-sm text-stone-500">
                   No conversations found.
@@ -655,7 +756,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -693,7 +794,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -728,7 +829,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -773,17 +874,20 @@ export function InternalChatPage() {
             </div>
           </aside>
 
-          <section className="flex min-h-0 min-w-0 flex-col bg-white">
+          <section className={cn("min-h-0 min-w-0 flex-col bg-white", isMobileChatOpen ? "flex" : "hidden lg:flex")}>
             {activeConversation ? (
               <>
-                <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
-                  <div className="flex items-center gap-3">
-                    <span className={cn("grid h-11 w-11 place-items-center rounded-full text-sm font-bold", "bg-rose-100 text-rose-600")}>
+                <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-white px-3 py-2.5 sm:gap-3 sm:px-5 sm:py-4">
+                  <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                    <button type="button" onClick={() => setIsMobileChatOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600 lg:hidden" aria-label="Back to conversations">
+                      <IconArrowRight className="h-4 w-4 rotate-180" />
+                    </button>
+                    <span className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold sm:h-11 sm:w-11", "bg-rose-100 text-rose-600")}>
                       {activeConversation.name.slice(0, 1)}
                     </span>
-                    <div>
-                      <h2 className="text-lg font-bold text-foreground">{activeConversation.name}</h2>
-                      <p className="flex items-center gap-1.5 text-xs text-stone-500">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-sm font-bold text-foreground sm:text-lg">{activeConversation.name}</h2>
+                      <p className="flex items-center gap-1.5 truncate text-[11px] text-stone-500 sm:text-xs">
                         {activeConversation.type === "dm" ? <span className={cn("h-1.5 w-1.5 rounded-full", isOtherOnline ? "bg-emerald-500" : "bg-stone-300")} /> : null}
                         {activeConversation.type === "dm" ? (isOtherOnline ? "Online" : "Offline") : activeConversation.type === "group" ? `${activeConversation.members?.length ?? 0} members` : "Project workspace"}
                       </p>
@@ -797,10 +901,13 @@ export function InternalChatPage() {
                         value={messageQuery}
                         onChange={(event) => setMessageQuery(event.target.value)}
                         placeholder="Search messages"
-                        className="w-44 rounded-lg border border-border bg-stone-50 px-3 py-2 text-xs text-foreground outline-none focus:border-primary/40"
+                        className="w-28 rounded-lg border border-border bg-stone-50 px-2.5 py-2 text-xs text-foreground outline-none focus:border-primary/40 sm:w-44 sm:px-3"
                         aria-label="Search messages in conversation"
                       />
                     ) : null}
+                    <button type="button" onClick={enableChatNotifications} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-stone-500 hover:bg-stone-100 hover:text-primary" aria-label="Enable chat notifications and sound" title="Enable notifications and sound">
+                      <IconBell className="h-4 w-4" />
+                    </button>
                     <button type="button" onClick={() => { setMessageSearchOpen((open) => !open); if (messageSearchOpen) setMessageQuery(""); }} className={cn("grid h-9 w-9 place-items-center rounded-lg text-stone-500 hover:bg-stone-100 hover:text-primary", messageSearchOpen && "bg-primary-soft text-primary")} aria-label="Search in conversation" title="Search messages">
                       <IconSearch className="h-4 w-4" />
                     </button>
@@ -811,17 +918,37 @@ export function InternalChatPage() {
                 </header>
 
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-[radial-gradient(circle_at_top,_rgba(255,86,86,0.04),_transparent_35%)] p-5">
+                  <div ref={threadRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain bg-[#f6f3ef] p-3 sm:space-y-4 sm:p-5">
                     {visibleMessages.length ? (
                       visibleMessages.map((message) => (
                         <div key={message.id} className={cn("flex chat-message-in", message.sender === "me" ? "justify-end" : "justify-start")}>
-                          <div className={cn("max-w-[75%] rounded-2xl px-4 py-3 shadow-sm transition", message.sender === "me" ? "bg-primary text-white" : "border border-border bg-stone-50 text-foreground", message.pending && "opacity-70", message.failed && "ring-2 ring-red-300")}>
-                            {activeConversation.type === "group" ? <p className={cn("mb-1 text-[11px] font-bold", message.sender === "me" ? "text-white/80" : "text-primary")}>{message.sender === "me" ? "You" : message.senderName || "Group member"}</p> : null}
-                            {(message.attachments ?? (message.attachment ? [message.attachment] : [])).map((attachment, index) => <AttachmentThumbnail key={attachment.id ?? `${attachment.path}-${index}`} attachment={attachment} dark={message.sender === "me"} onOpen={() => openAttachment(attachment)} />)}
-                            <p className="text-sm leading-relaxed">{message.text}</p>
-                            <p className={cn("mt-1 flex items-center text-[10px] font-medium", message.sender === "me" ? "text-white/80" : "text-stone-400")}>
-                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : formatTime(message.time)}{message.sender === "me" && !message.pending && !message.failed ? (
-                                <span className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5", message.seen ? "bg-white/20 text-white" : "bg-black/10 text-white/75")}>
+                          <div className={cn("max-w-[88%] break-words rounded-2xl px-3 py-2.5 shadow-sm transition sm:max-w-[75%] sm:px-4 sm:py-3", message.sender === "me" ? "rounded-br-md bg-[#d9fdd3] text-slate-900" : "rounded-bl-md border border-slate-100 bg-white text-foreground", message.pending && "opacity-70", message.failed && "ring-2 ring-red-300")}>
+                            {activeConversation.type === "group" ? <p className={cn("mb-1 text-[11px] font-bold", message.sender === "me" ? "text-emerald-900/70" : "text-primary")}>{message.sender === "me" ? "You" : message.senderName || "Group member"}</p> : null}
+                            {message.deletedAt || message.isDeleted ? (
+                              <p className="whitespace-pre-wrap break-words text-sm italic leading-relaxed text-slate-500">This message has been deleted</p>
+                            ) : editingMessageId === message.id ? (
+                              <form onSubmit={(event) => { event.preventDefault(); void saveMessageEdit(message.id); }} className="min-w-[min(260px,70vw)] space-y-2">
+                                <textarea autoFocus rows={3} maxLength={4000} value={editingDraft} onChange={(event) => setEditingDraft(event.target.value)} className="w-full resize-y rounded-lg border border-emerald-900/15 bg-white/90 px-2.5 py-2 text-sm text-slate-900 outline-none focus:border-emerald-700/40" aria-label="Edit message" />
+                                <div className="flex justify-end gap-3 text-xs font-semibold">
+                                  <button type="button" onClick={() => { setEditingMessageId(null); setEditingDraft(""); }} className="text-slate-500 hover:text-slate-800">Cancel</button>
+                                  <button type="submit" disabled={!editingDraft.trim() || sendingMessageId === message.id} className="text-emerald-800 hover:text-emerald-950 disabled:opacity-50">{sendingMessageId === message.id ? "Saving..." : "Save"}</button>
+                                </div>
+                              </form>
+                            ) : (
+                              <>
+                                {(message.attachments ?? (message.attachment ? [message.attachment] : [])).map((attachment, index) => <AttachmentThumbnail key={attachment.id ?? `${attachment.path}-${index}`} attachment={attachment} dark={false} onOpen={() => openAttachment(attachment)} />)}
+                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{renderMessageText(message.text)}</p>
+                                {canModifyMessage(message) ? (
+                                  <div className="mt-1 flex justify-end gap-3 text-[11px] font-semibold">
+                                    <button type="button" onClick={() => { setEditingMessageId(message.id); setEditingDraft(message.text); }} className="text-emerald-900/70 underline-offset-2 hover:text-emerald-950 hover:underline">Edit</button>
+                                    <button type="button" onClick={() => void deleteSentMessage(message)} disabled={sendingMessageId === message.id} className="text-rose-700/80 underline-offset-2 hover:text-rose-800 hover:underline disabled:opacity-50">Delete</button>
+                                  </div>
+                                ) : null}
+                              </>
+                            )}
+                            <p className={cn("mt-1 flex flex-wrap items-center text-[10px] font-medium", message.sender === "me" ? "text-emerald-900/65" : "text-stone-400")}>
+                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : <>{formatTime(message.time)}{message.editedAt && !message.deletedAt ? <span className="ml-1 italic">· edited</span> : null}</>}{message.sender === "me" && !message.pending && !message.failed && !message.deletedAt ? (
+                                <span className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5", message.seen ? "bg-white/70 text-emerald-900" : "bg-black/5 text-emerald-900/70")}>
                                   <span aria-hidden>{message.seen ? "✓✓" : "✓"}</span>
                                   {message.seen ? "Seen" : "Sent"}
                                 </span>
@@ -837,7 +964,7 @@ export function InternalChatPage() {
                     )}
                   </div>
 
-                  <form onSubmit={handleSendMessage} className="border-t border-border bg-white p-4">
+                  <form onSubmit={handleSendMessage} className="border-t border-border bg-white p-2.5 sm:p-4">
                     {typingUsers.length ? <p className="mb-2 px-1 text-xs font-medium text-primary animate-pulse">{typingUsers.join(" and ")} {typingUsers.length === 1 ? "is" : "are"} typing...</p> : null}
                     {selectedAttachments.length ? (
                       <div className="mb-3 flex flex-wrap gap-2">
@@ -848,22 +975,22 @@ export function InternalChatPage() {
                         </div>)}
                       </div>
                     ) : null}
-                    <div className="flex items-center gap-3 rounded-2xl border border-border bg-stone-50 px-3 py-2.5 shadow-inner">
+                    <div className="flex items-center gap-2 rounded-full border border-border bg-stone-50 px-2 py-2 shadow-inner sm:gap-3 sm:px-3 sm:py-2.5">
                       <input ref={fileInputRef} type="file" multiple className="hidden" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); const remainingSlots = Math.max(0, 10 - selectedAttachments.length); const validFiles = files.filter((file) => file.size <= 10 * 1024 * 1024); if (validFiles.length < files.length) setError("Each attachment must be smaller than 10 MB."); if (validFiles.length > remainingSlots) setError("You can attach up to 10 files per message."); setSelectedAttachments((current) => [...current, ...validFiles.slice(0, remainingSlots).map(pendingAttachment)]); event.currentTarget.value = ""; }} />
-                      <button type="button" onClick={() => fileInputRef.current?.click()} className="grid h-9 w-9 place-items-center rounded-lg bg-white text-stone-500 hover:text-primary" aria-label="Attach file">
+                      <button type="button" onClick={() => fileInputRef.current?.click()} className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-stone-500 hover:text-primary" aria-label="Attach file">
                         <IconUpload className="h-4 w-4" />
                       </button>
                       <input
                         type="text"
                         value={draft}
                         onChange={(event) => handleDraftChange(event.target.value)}
-                        placeholder={selectedAttachments.length ? "Add a caption..." : "Type a message or paste an image..."}
+                        placeholder={selectedAttachments.length ? "Add a caption..." : "Message"}
                         className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-stone-400 outline-none"
                       />
                       <button
                         type="submit"
                         disabled={(!draft.trim() && !selectedAttachments.length) || sending || uploading}
-                        className="grid h-9 w-9 place-items-center rounded-lg bg-primary text-white shadow-[0_10px_24px_rgba(228,90,90,0.22)] transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-emerald-600 text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                         aria-label="Send message"
                       >
                         {sendingMessageId ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <IconArrowRight className="h-4 w-4" />}

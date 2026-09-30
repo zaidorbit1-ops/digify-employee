@@ -464,7 +464,7 @@ function RichTextToolbar({
         </button>
 
         {linkInputOpen && (
-          <div className="absolute left-0 top-full z-50 mt-1 flex w-64 items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
+          <div className="absolute left-0 top-full z-50 mt-1 flex w-64 max-w-[calc(100vw-2rem)] items-center gap-1.5 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
             <input
               type="url"
               value={linkUrl}
@@ -499,7 +499,7 @@ function RichTextToolbar({
         </button>
 
         {emojiOpen && (
-          <div className="absolute left-0 top-full z-50 mt-1 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-100">
+          <div className="absolute left-0 top-full z-50 mt-1 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl animate-in fade-in zoom-in-95 duration-100">
             <div className="flex border-b border-slate-100 bg-slate-50 px-2 py-1">
               {EMOJI_CATEGORIES.map((cat, idx) => (
                 <button
@@ -716,7 +716,7 @@ function ComposeDrawer({
         maximized
           ? "inset-4 rounded-2xl md:inset-10"
           : minimized
-          ? "bottom-0 right-6 w-80 rounded-t-2xl shadow-lg"
+          ? "bottom-0 right-6 w-80 max-w-[calc(100vw-2rem)] rounded-t-2xl shadow-lg"
           : "bottom-0 right-6 w-[640px] max-w-[calc(100vw-2rem)] rounded-t-2xl max-h-[85vh]"
       } ${isDragging ? "ring-4 ring-primary ring-offset-2" : ""}`}
     >
@@ -1747,8 +1747,8 @@ export default function MailboxWorkspace() {
       `}</style>
 
       {/* Top Header Bar */}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           {selectedThreadId ? (
             <button
               type="button"
@@ -1767,21 +1767,21 @@ export default function MailboxWorkspace() {
               ←
             </Link>
           )}
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-extrabold uppercase tracking-widest text-primary">
                 CRM Mailbox
               </span>
               <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             </div>
-            <h1 className="text-xl font-black tracking-tight text-slate-900 md:text-2xl">
+            <h1 className="break-all text-lg font-black tracking-tight text-slate-900 sm:text-xl md:text-2xl">
               {mailbox?.display_name || mailbox?.email_address || "Loading Mailbox..."}
             </h1>
             <p className="text-xs text-slate-500">{mailbox?.email_address}</p>
           </div>
           {mailbox?.status && (
             <span
-              className={`ml-2 rounded-full px-3 py-1 text-xs font-bold ring-1 ${
+              className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 sm:ml-2 sm:px-3 sm:text-xs ${
                 mailbox.status === "connected"
                   ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
                   : "bg-amber-50 text-amber-700 ring-amber-200"
@@ -1800,7 +1800,7 @@ export default function MailboxWorkspace() {
               setComposeInitialSubject("");
               setComposeOpen(true);
             }}
-            className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover active:scale-95"
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-white shadow-md shadow-primary/20 transition hover:bg-primary-hover active:scale-95 sm:w-auto sm:px-5"
           >
             <span>✏️</span>
             <span>Compose</span>
@@ -1816,10 +1816,10 @@ export default function MailboxWorkspace() {
 
       {/* Main 3-Column Workstation */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-        <div className={`grid min-h-[780px] ${selectedThreadId ? "lg:grid-cols-1" : "lg:grid-cols-[230px_minmax(330px,0.78fr)_minmax(380px,1.22fr)]"}`}>
+        <div className={`grid min-h-[560px] xl:min-h-[780px] ${selectedThreadId ? "xl:grid-cols-1" : "xl:grid-cols-[230px_minmax(330px,0.78fr)_minmax(380px,1.22fr)]"}`}>
 
           {/* ════════════ Column 1: Left Navigation ════════════ */}
-          <aside className={`${selectedThreadId ? "hidden" : ""} border-b border-slate-200 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r`}>
+          <aside className={`${selectedThreadId ? "hidden" : ""} border-b border-slate-200 bg-slate-50/70 p-4 xl:border-b-0 xl:border-r`}>
             <button
               type="button"
               onClick={() => {
@@ -1836,7 +1836,7 @@ export default function MailboxWorkspace() {
             <div className="mb-2 px-3 text-[10px] font-bold uppercase tracking-widest text-slate-400">
               Folders
             </div>
-            <nav className="space-y-1">
+            <nav className="flex gap-2 overflow-x-auto pb-2 xl:block xl:space-y-1 xl:overflow-visible xl:pb-0">
               {FOLDERS.map((f) => {
                 const isActive = selectedFolder === f.id;
                 let badgeCount = 0;
@@ -1851,7 +1851,7 @@ export default function MailboxWorkspace() {
                       setSelectedFolder(f.id);
                       setSelectedThreadId(null);
                     }}
-                    className={`group flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                    className={`group flex shrink-0 items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition xl:w-full ${
                       isActive
                         ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200"
                         : "text-slate-600 hover:bg-white/80 hover:text-slate-900"
@@ -1889,7 +1889,7 @@ export default function MailboxWorkspace() {
           </aside>
 
           {/* ════════════ Column 2: Conversation Thread List ════════════ */}
-          <section className={`${selectedThreadId ? "hidden" : ""} flex flex-col border-b border-slate-200 bg-white lg:border-b-0 lg:border-r`}>
+          <section className={`${selectedThreadId ? "hidden" : ""} flex flex-col border-b border-slate-200 bg-white xl:border-b-0 xl:border-r`}>
             <div className="border-b border-slate-100 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
@@ -2078,7 +2078,7 @@ export default function MailboxWorkspace() {
           </section>
 
           {/* ════════════ Column 3: Full Interactive Email Reader ════════════ */}
-          <section className={`${selectedThreadId ? "block" : "hidden lg:block"} min-w-0 bg-white`}>
+          <section className={`${selectedThreadId ? "block" : "hidden xl:block"} min-w-0 bg-white`}>
             {selectedThread ? (
               <EmailReaderView
                 thread={selectedThread}

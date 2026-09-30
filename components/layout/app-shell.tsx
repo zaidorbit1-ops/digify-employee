@@ -28,6 +28,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
+  const isCrmWorkspace = pathname.startsWith("/dashboard/crm");
   const title = titles[pathname] ?? (pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Dashboard");
   const { profile, user, loading, profileError, signOut } = useAuth();
 
@@ -56,7 +57,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Sidebar open={open} onClose={() => setOpen(false)} />
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-white/90 px-4 py-3 backdrop-blur-md">
+          <header className={`sticky top-0 z-30 flex items-center border-b border-border bg-white/90 py-3 backdrop-blur-md ${isCrmWorkspace ? "gap-2 px-3 sm:gap-3 sm:px-4" : "gap-3 px-4"}`}>
             <button
               type="button"
               onClick={() => setOpen(true)}
@@ -70,9 +71,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               alt="Company logo"
               width={120}
               height={32}
-              className="h-8 w-auto object-contain lg:hidden"
+              className={`h-8 w-auto object-contain lg:hidden ${isCrmWorkspace ? "max-w-[88px] sm:max-w-[120px]" : ""}`}
             />
-            <span className="mr-auto text-sm font-semibold">{title}</span>
+            <span className={`mr-auto font-semibold ${isCrmWorkspace ? "min-w-0 truncate text-xs sm:text-sm" : "text-sm"}`}>{title}</span>
             <CrmNotifications />
             <PushNotificationControl />
           </header>
