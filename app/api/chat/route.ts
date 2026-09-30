@@ -262,12 +262,15 @@ export async function GET(request: Request) {
         .eq("user_id", user.id);
       if (readUpdate.error && !isMissingReadColumn(readUpdate.error)) throw readUpdate.error;
 
+      const serverNow = Date.now();
       return NextResponse.json({
+        serverNow,
         messages: (messages ?? []).map((message) => ({
           id: message.id,
           sender: message.sender_user_id === user.id ? "me" : "them",
           text: message.deleted_at ? "This message has been deleted" : message.body,
           time: toTime(message.created_at),
+          editableForMs: Math.max(0, Math.min(60_000, 60_000 - Math.max(0, serverNow - new Date(message.created_at).getTime()))),
           senderName: userNames.get(message.sender_user_id) ?? "Employee",
           seen: message.sender_user_id === user.id && otherReadTimes.some((readAt) => readAt >= new Date(message.created_at).getTime()),
           editedAt: message.edited_at ? toTime(message.edited_at) : null,
@@ -695,12 +698,15 @@ export async function POST(request: Request) {
       if (attachmentError) throw attachmentError;
     }
 
+    const serverNow = Date.now();
     return NextResponse.json({
+      serverNow,
       message: {
         id: message.id,
         sender: "me",
         text: message.body,
         time: toTime(message.created_at),
+        editableForMs: Math.max(0, Math.min(60_000, 60_000 - Math.max(0, serverNow - new Date(message.created_at).getTime()))),
         editedAt: message.edited_at ? toTime(message.edited_at) : null,
         deletedAt: message.deleted_at ? toTime(message.deleted_at) : null,
         seen: false,

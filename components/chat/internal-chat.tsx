@@ -31,6 +31,8 @@ type Message = {
   editedAt?: string | null;
   deletedAt?: string | null;
   isDeleted?: boolean;
+  editableForMs?: number;
+  editableUntil?: number;
   pending?: boolean;
   failed?: boolean;
   attachments?: Attachment[];
@@ -88,6 +90,14 @@ function renderMessageText(text: string): ReactNode[] {
   return text.split(/(https?:\/\/[^\s<>"']+)/gi).map((part, index) => /^https?:\/\//i.test(part)
     ? <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="break-all underline decoration-current/40 underline-offset-2 hover:decoration-current">{part}</a>
     : <span key={index}>{part}</span>);
+}
+
+function normalizeServerMessages(messages: Message[]): Message[] {
+  const receivedAt = Date.now();
+  return messages.map((message) => {
+    const remainingMs = Math.max(0, Math.min(60_000, Number(message.editableForMs) || 0));
+    return { ...message, editableUntil: receivedAt + remainingMs };
+  });
 }
 
 function pendingAttachment(file: File): PendingAttachment {
@@ -217,8 +227,8 @@ export function InternalChatPage() {
 
   useEffect(() => {
     const nextExpiry = messages.reduce((soonest, message) => {
-      if (message.sender !== "me" || message.deletedAt || message.pending || message.failed) return soonest;
-      const expiresAt = new Date(message.time).getTime() + 60_001;
+      if (message.sender !== "me" || message.deletedAt || message.pending || message.failed || message.editableUntil === undefined) return soonest;
+      const expiresAt = message.editableUntil;
       return expiresAt > messageWindowNow ? Math.min(soonest, expiresAt) : soonest;
     }, Number.POSITIVE_INFINITY);
     if (!Number.isFinite(nextExpiry)) return;
@@ -270,7 +280,7 @@ export function InternalChatPage() {
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "Could not load messages.");
-        if (mounted) setMessages(Array.isArray(result.messages) ? result.messages : []);
+        if (mounted) setMessages(Array.isArray(result.messages) ? normalizeServerMessages(result.messages) : []);
       } catch (loadError) {
         if (!mounted) return;
         setMessages([]);
@@ -304,7 +314,7 @@ export function InternalChatPage() {
           : conversation));
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
-        if (mounted && response.ok && Array.isArray(result.messages)) setMessages(result.messages);
+        if (mounted && response.ok && Array.isArray(result.messages)) setMessages(normalizeServerMessages(result.messages));
       })
       .on("postgres_changes", {
         event: "UPDATE",
@@ -451,7 +461,8 @@ export function InternalChatPage() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send message.");
 
-      setMessages((current) => current.map((message) => message.id === pendingId ? result.message as Message : message));
+      const sentMessage = normalizeServerMessages([result.message as Message])[0];
+      setMessages((current) => current.map((message) => message.id === pendingId ? sentMessage : message));
       setDraft("");
       for (const item of files) if (item.preview) URL.revokeObjectURL(item.preview);
       setSelectedAttachments([]);
@@ -469,16 +480,13 @@ export function InternalChatPage() {
   }
 
   function canModifyMessage(message: Message) {
-    const sentAt = new Date(message.time).getTime();
-    const age = messageWindowNow - sentAt;
     return message.sender === "me"
       && !message.deletedAt
       && !message.isDeleted
       && !message.pending
       && !message.failed
-      && Number.isFinite(sentAt)
-      && age >= 0
-      && age <= 60_000;
+      && message.editableUntil !== undefined
+      && messageWindowNow <= message.editableUntil;
   }
 
   async function saveMessageEdit(messageId: string) {
@@ -938,10 +946,13 @@ export function InternalChatPage() {
                               <>
                                 {(message.attachments ?? (message.attachment ? [message.attachment] : [])).map((attachment, index) => <AttachmentThumbnail key={attachment.id ?? `${attachment.path}-${index}`} attachment={attachment} dark={false} onOpen={() => openAttachment(attachment)} />)}
                                 <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{renderMessageText(message.text)}</p>
-                                {canModifyMessage(message) ? (
-                                  <div className="mt-1 flex justify-end gap-3 text-[11px] font-semibold">
-                                    <button type="button" onClick={() => { setEditingMessageId(message.id); setEditingDraft(message.text); }} className="text-emerald-900/70 underline-offset-2 hover:text-emerald-950 hover:underline">Edit</button>
-                                    <button type="button" onClick={() => void deleteSentMessage(message)} disabled={sendingMessageId === message.id} className="text-rose-700/80 underline-offset-2 hover:text-rose-800 hover:underline disabled:opacity-50">Delete</button>
+                                {message.sender === "me" && !message.pending && !message.failed ? (
+                                  <div className="mt-1 flex items-center justify-end gap-3 text-[11px] font-semibold">
+                                    {message.deletedAt || message.isDeleted ? null : <>
+                                      <button type="button" onClick={() => { setEditingMessageId(message.id); setEditingDraft(message.text); }} disabled={!canModifyMessage(message) || sendingMessageId === message.id} title={canModifyMessage(message) ? "Edit this message" : "Edit is available for one minute after sending"} className="text-emerald-900/70 underline-offset-2 hover:text-emerald-950 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">Edit</button>
+                                      <button type="button" onClick={() => void deleteSentMessage(message)} disabled={!canModifyMessage(message) || sendingMessageId === message.id} title={canModifyMessage(message) ? "Delete this message" : "Delete is available for one minute after sending"} className="text-rose-700/80 underline-offset-2 hover:text-rose-800 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">Delete</button>
+                                      {!canModifyMessage(message) ? <span className="text-[10px] font-normal text-slate-400">1 min expired</span> : null}
+                                    </>}
                                   </div>
                                 ) : null}
                               </>
