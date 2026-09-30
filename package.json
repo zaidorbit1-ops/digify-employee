@@ -4,7 +4,6 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "crm:campaign-worker": "node --env-file=.env.local scripts/crm-campaign-worker.cjs",
     "attendance:worker": "node --env-file=.env.local scripts/attendance-worker.cjs",
     "office:sync": "scripts\\start-office-sync.bat",
     "office:autostart": "powershell -ExecutionPolicy Bypass -File scripts\\install-windows-autostart.ps1",

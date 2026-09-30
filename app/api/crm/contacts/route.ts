@@ -35,8 +35,21 @@ export async function GET(request: Request) {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
     const params = new URL(request.url).searchParams;
-    let query = client.from("crm_contacts").select("*, crm_contact_tag_links(crm_contact_tags(id, name))").order("created_at", { ascending: false });
-    if (params.get("company_id")) query = query.eq("company_id", Number(params.get("company_id")));
+    const companyId = Number(params.get("company_id"));
+    const listId = Number(params.get("contact_list_id"));
+    let contactIds: number[] | null = null;
+    if (Number.isInteger(listId) && listId > 0) {
+      const { data: list, error: listError } = await client.from("crm_contact_lists").select("id, company_id").eq("id", listId).maybeSingle();
+      if (listError) throw listError;
+      if (!list || (Number.isInteger(companyId) && companyId > 0 && list.company_id !== companyId)) return fail("The selected contact list is not available for this company.", "Contact list is not available.", 403);
+      const { data: members, error: memberError } = await client.from("crm_contact_list_members").select("contact_id").eq("contact_list_id", listId);
+      if (memberError) throw memberError;
+      contactIds = (members ?? []).map((member) => member.contact_id);
+      if (!contactIds.length) return NextResponse.json({ contacts: [] });
+    }
+    let query = client.from("crm_contacts").select("*, crm_contact_tag_links(crm_contact_tags(id, name)), crm_contact_list_members(contact_list_id)").order("created_at", { ascending: false });
+    if (Number.isInteger(companyId) && companyId > 0) query = query.eq("company_id", companyId);
+    if (contactIds) query = query.in("id", contactIds);
     if (params.get("status")) query = query.eq("status", params.get("status"));
     if (params.get("search")) {
       const search = params.get("search");
@@ -57,8 +70,18 @@ export async function POST(request: Request) {
     const body = await request.json() as Record<string, unknown>;
     const companyId = Number(body.company_id);
     if (!Number.isInteger(companyId) || companyId <= 0) return fail("A valid company is required.", "A valid company is required.", 400);
+    const contactListId = Number(body.contact_list_id);
+    if (!Number.isInteger(contactListId) || contactListId <= 0) return fail("Choose a contact list before adding a contact.", "A contact list is required.", 400);
+    const { data: list, error: listError } = await client.from("crm_contact_lists").select("id").eq("id", contactListId).eq("company_id", companyId).maybeSingle();
+    if (listError) throw listError;
+    if (!list) return fail("The selected contact list does not belong to this company.", "Contact list is not available.", 400);
     const { data, error } = await client.from("crm_contacts").insert({ company_id: companyId, ...contactValues(body) }).select().single();
     if (error) return fail(error, "Could not create contact.", error.code === "23505" ? 409 : 500);
+    const { error: membershipError } = await client.from("crm_contact_list_members").insert({ contact_list_id: contactListId, contact_id: data.id });
+    if (membershipError) {
+      await client.from("crm_contacts").delete().eq("id", data.id);
+      return fail(membershipError, "Could not add contact to the selected list.");
+    }
     await syncTags(client, companyId, data.id, body.tags);
     return NextResponse.json({ contact: data }, { status: 201 });
   } catch (error) {
