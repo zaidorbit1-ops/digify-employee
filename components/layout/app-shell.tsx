@@ -10,6 +10,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 import { GlobalLoader } from "@/components/ui/global-loader";
 import { InternalChatLauncher, InternalChatNotifications } from "@/components/chat/internal-chat";
+import { PushNotificationControl } from "@/components/notifications/push-notification-control";
 
 const titles: Record<string, string> = {
   "/dashboard": "Overview",
@@ -54,11 +55,11 @@ export function AppShell({ children }: { children: ReactNode }) {
         <Sidebar open={open} onClose={() => setOpen(false)} />
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-white/90 px-4 py-3 backdrop-blur-md lg:hidden">
+          <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-border bg-white/90 px-4 py-3 backdrop-blur-md">
             <button
               type="button"
               onClick={() => setOpen(true)}
-              className="grid h-10 w-10 place-items-center rounded-xl border border-border text-foreground"
+              className="grid h-10 w-10 place-items-center rounded-xl border border-border text-foreground lg:hidden"
               aria-label="Open sidebar"
             >
               <IconMenu className="h-5 w-5" />
@@ -68,9 +69,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               alt="Company logo"
               width={120}
               height={32}
-              className="h-8 w-auto object-contain"
+              className="h-8 w-auto object-contain lg:hidden"
             />
-            <span className="ml-auto text-sm font-semibold">{title}</span>
+            <span className="mr-auto text-sm font-semibold">{title}</span>
+            <PushNotificationControl />
           </header>
 
           <main className="min-w-0 flex-1 overflow-y-auto">

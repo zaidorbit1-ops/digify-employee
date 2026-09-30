@@ -4,6 +4,7 @@ import { constantTimeSecretMatches, getHostingerMessage, sanitizeEmailHtml } fro
 import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { sendCrmPush } from "@/lib/web-push";
 
 export const dynamic = "force-dynamic";
 
@@ -230,6 +231,12 @@ export async function POST(request: Request) {
     stage = "database.status_update";
     await client.from("crm_mailboxes").update({ status: "connected", last_webhook_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
+    await sendCrmPush({
+      title: "New email received",
+      body: `${sender}: ${subject}`.slice(0, 180),
+      url: "/dashboard/crm/webmail",
+      tag: `crm-email-${stored.id}`,
+    });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {

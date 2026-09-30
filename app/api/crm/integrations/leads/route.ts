@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { sendCrmPush } from "@/lib/web-push";
 
 type LeadPayload = {
   name?: unknown;
@@ -135,6 +136,12 @@ export async function POST(request: Request) {
     const { data, error } = await client.from("crm_leads").insert({ company_id: integration.company_id, website_id: integration.website_id, integration_id: integration.id, source: "website", ...lead }).select("id, company_id, website_id, name, email, status, created_at").single();
     if (error) throw error;
     await client.from("crm_website_integrations").update({ last_received_at: new Date().toISOString() }).eq("id", integration.id);
+    await sendCrmPush({
+      title: "New CRM lead",
+      body: `${data.name} (${data.email})`,
+      url: "/dashboard/crm",
+      tag: `crm-lead-${data.id}`,
+    });
     return withCorsHeaders(NextResponse.json({ ok: true, lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 }));
   } catch (error) {
     return errorResponse(error, "Could not create CRM lead.");
