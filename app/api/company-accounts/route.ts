@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { encryptCompanyPassword } from "@/lib/company-accounts-crypto";
+import { decryptCompanyPassword, encryptCompanyPassword } from "@/lib/company-accounts-crypto";
 import { canAccessCompany, getCompanyAccessContext } from "@/lib/company-access";
 import { supabase } from "@/lib/supabase";
 
@@ -8,19 +8,36 @@ function client() {
   return supabase;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const access = await getCompanyAccessContext();
     if (!access) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    const searchQuery = new URL(request.url).searchParams.get("search")?.trim().toLowerCase() ?? "";
     const [{ data: companies, error: companiesError }, { data: accounts, error: accountsError }] = await Promise.all([
       client().from("companies").select("*").order("name"),
-      client().from("company_accounts").select("id, company_id, platform_name, login, created_at, updated_at").order("platform_name"),
+      client().from("company_accounts").select("id, company_id, platform_name, login, encrypted_password, created_at, updated_at").order("platform_name"),
     ]);
     if (companiesError) throw companiesError;
     if (accountsError) throw accountsError;
     const visibleCompanies = access.isSuperadmin ? companies ?? [] : (companies ?? []).filter((company) => access.allowedCompanyIds.includes(company.id));
     const visibleCompanyIds = new Set(visibleCompanies.map((company) => company.id));
-    return NextResponse.json({ companies: visibleCompanies, accounts: (accounts ?? []).filter((account) => visibleCompanyIds.has(account.company_id)) });
+    const visibleAccounts = (accounts ?? []).filter((account) => visibleCompanyIds.has(account.company_id));
+    if (searchQuery.length >= 2) {
+      const companyNames = new Map(visibleCompanies.map((company) => [company.id, company.name]));
+      const results = visibleAccounts
+        .filter((account) => `${companyNames.get(account.company_id) ?? ""} ${account.platform_name} ${account.login}`.toLowerCase().includes(searchQuery))
+        .slice(0, 100)
+        .map((account) => ({
+          id: account.id,
+          company_id: account.company_id,
+          company_name: companyNames.get(account.company_id) ?? "Company",
+          platform_name: account.platform_name,
+          login: account.login,
+          password: decryptCompanyPassword(String(account.encrypted_password)),
+        }));
+      return NextResponse.json({ results });
+    }
+    return NextResponse.json({ companies: visibleCompanies, accounts: visibleAccounts.map(({ encrypted_password: _encryptedPassword, ...account }) => account) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load company accounts." }, { status: 500 });
   }

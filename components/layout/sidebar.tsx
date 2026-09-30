@@ -19,6 +19,7 @@ import {
   IconSettings,
   IconFile,
   IconRefresh,
+  IconPin,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -71,6 +72,8 @@ export function Sidebar({
   const { profile, user, signOut } = useAuth();
   const [grantedModules, setGrantedModules] = useState<string[]>([]);
   const [pendingNotes, setPendingNotes] = useState(0);
+  const [pinnedHrefs, setPinnedHrefs] = useState<string[]>([]);
+  const [pinsLoaded, setPinsLoaded] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
@@ -113,6 +116,24 @@ export function Sidebar({
       )
       .catch(() => setGrantedModules([]));
   }, [profile?.role]);
+
+  useEffect(() => {
+    const storageKey = user?.id ? `sidebar-pinned-links:${user.id}` : null;
+    if (!storageKey) {
+      setPinnedHrefs([]);
+      setPinsLoaded(true);
+      return;
+    }
+    setPinsLoaded(false);
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
+      setPinnedHrefs(Array.isArray(stored) ? stored.filter((href): href is string => typeof href === "string") : []);
+    } catch {
+      setPinnedHrefs([]);
+    } finally {
+      setPinsLoaded(true);
+    }
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user) return;
@@ -228,6 +249,22 @@ export function Sidebar({
         ? employeeCrmItems
         : [...employeeDefaultItems, ...employeeGrantedItems]
       : navItems;
+  const orderedNavItems = pinsLoaded
+    ? [...visibleNavItems].sort((first, second) => Number(pinnedHrefs.includes(second.href)) - Number(pinnedHrefs.includes(first.href)))
+    : visibleNavItems;
+
+  function togglePinnedPage(href: string) {
+    if (!user?.id) return;
+    setPinnedHrefs((current) => {
+      const next = current.includes(href) ? current.filter((item) => item !== href) : [href, ...current];
+      try {
+        window.localStorage.setItem(`sidebar-pinned-links:${user.id}`, JSON.stringify(next));
+      } catch {
+        // Keep the current session usable if browser storage is unavailable.
+      }
+      return next;
+    });
+  }
 
   return (
     <>
@@ -294,45 +331,62 @@ export function Sidebar({
             </div>
           ) : null}
           <nav className="space-y-1">
-            {visibleNavItems.map((item) => {
+            {orderedNavItems.map((item) => {
               const active = item.href === "/dashboard"
                 ? pathname === "/dashboard"
                 : item.href === "/dashboard/crm"
                   ? pathname === "/dashboard/crm"
                   : pathname.startsWith(item.href);
+              const isPinned = pinnedHrefs.includes(item.href);
               const Icon = item.icon;
 
               return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onClose}
-                  className={cn(
-                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-200",
-                    active
-                      ? "bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(228,90,90,0.12)]"
-                      : "text-stone-500 hover:bg-[#fbf6f5] hover:text-foreground",
-                  )}
-                >
-                  <span
+                <div key={item.href} className="group flex items-center gap-1">
+                  <Link
+                    href={item.href}
+                    onClick={onClose}
                     className={cn(
-                      "grid h-9 w-9 place-items-center rounded-xl",
+                      "flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-200",
                       active
-                        ? "bg-white text-primary shadow-sm"
-                        : "bg-stone-50 text-stone-400",
+                        ? "bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(228,90,90,0.12)]"
+                        : "text-stone-500 hover:bg-[#fbf6f5] hover:text-foreground",
                     )}
                   >
-                    <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
-                  </span>
-                  <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <span className="truncate">{item.label}</span>
-                    {item.href === "/dashboard/notes" && pendingNotes > 0 ? (
-                      <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                        {pendingNotes > 99 ? "99+" : pendingNotes}
-                      </span>
-                    ) : null}
-                  </span>
-                </Link>
+                    <span
+                      className={cn(
+                        "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
+                        active
+                          ? "bg-white text-primary shadow-sm"
+                          : "bg-stone-50 text-stone-400",
+                      )}
+                    >
+                      <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
+                    </span>
+                    <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                      <span className="truncate">{item.label}</span>
+                      {item.href === "/dashboard/notes" && pendingNotes > 0 ? (
+                        <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {pendingNotes > 99 ? "99+" : pendingNotes}
+                        </span>
+                      ) : null}
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    aria-label={isPinned ? `Unpin ${item.label}` : `Pin ${item.label} to top`}
+                    aria-pressed={isPinned}
+                    title={isPinned ? "Unpin page" : "Pin page to top"}
+                    onClick={() => togglePinnedPage(item.href)}
+                    className={cn(
+                      "grid h-9 w-8 shrink-0 place-items-center rounded-lg transition",
+                      isPinned
+                        ? "bg-primary-soft text-primary"
+                        : "text-stone-300 opacity-0 hover:bg-primary-soft hover:text-primary group-hover:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <IconPin className={cn("h-4 w-4", isPinned && "-rotate-45")} />
+                  </button>
+                </div>
               );
             })}
           </nav>

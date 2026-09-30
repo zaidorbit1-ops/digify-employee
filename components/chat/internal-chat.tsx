@@ -30,6 +30,7 @@ type Message = {
   seen?: boolean;
   pending?: boolean;
   failed?: boolean;
+  attachments?: Attachment[];
   attachment?: Attachment | null;
 };
 
@@ -40,6 +41,8 @@ type Attachment = {
   type: string;
   size: number;
 };
+
+type PendingAttachment = { id: string; file: File; preview: string | null };
 
 type ChatParticipant = {
   id: string;
@@ -65,15 +68,25 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
 }
 
 function formatTime(value: string | null | undefined) {
-  if (!value) return "Now";
+  if (!value || value === "Now") return "Now";
   try {
-    return new Date(value).toLocaleTimeString([], {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
   } catch {
     return "Now";
   }
+}
+
+function pendingAttachment(file: File): PendingAttachment {
+  return {
+    id: crypto.randomUUID(),
+    file,
+    preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+  };
 }
 
 let notificationAudioContext: AudioContext | null = null;
@@ -179,9 +192,8 @@ export function InternalChatPage() {
   const [uploading, setUploading] = useState(false);
   const [isOtherOnline, setIsOtherOnline] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [pastedImage, setPastedImage] = useState<string | null>(null);
-  const [attachmentViewer, setAttachmentViewer] = useState<{ attachment: Attachment; url: string } | null>(null);
+  const [selectedAttachments, setSelectedAttachments] = useState<PendingAttachment[]>([]);
+  const [attachmentViewer, setAttachmentViewer] = useState<{ attachment: Attachment; url: string; downloadUrl: string } | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [sendingMessageId, setSendingMessageId] = useState<string | null>(null);
@@ -260,10 +272,10 @@ export function InternalChatPage() {
           id: String(nextMessage.id),
           sender: "them",
           text: nextMessage.body,
-          time: formatTime(nextMessage.created_at),
+          time: nextMessage.created_at,
         }));
         setConversations((current) => current.map((conversation) => conversation.id === conversationId
-          ? { ...conversation, preview: nextMessage.body, time: formatTime(nextMessage.created_at) }
+          ? { ...conversation, preview: nextMessage.body, time: nextMessage.created_at }
           : conversation));
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
@@ -344,8 +356,7 @@ export function InternalChatPage() {
         ?.getAsFile();
       if (!image || !activeConversationId) return;
       event.preventDefault();
-      setSelectedFile(image);
-      setPastedImage(URL.createObjectURL(image));
+      setSelectedAttachments((current) => current.length < 10 ? [...current, pendingAttachment(image)] : current);
     }
 
     window.addEventListener("paste", handlePaste);
@@ -359,8 +370,8 @@ export function InternalChatPage() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeConversationId, messages.length, typingUsers.length]);
 
-  async function sendMessage(body: string, file: File | null = null) {
-    if ((!body && !file) || !activeConversationId || sending || uploading) return;
+  async function sendMessage(body: string, files: PendingAttachment[] = []) {
+    if ((!body && !files.length) || !activeConversationId || sending || uploading) return;
 
     const pendingId = `pending-${Date.now()}`;
     const conversationId = activeConversationId;
@@ -368,40 +379,45 @@ export function InternalChatPage() {
     setSendingMessageId(pendingId);
     setError(null);
     try {
-      let attachment: Attachment | null = null;
-      if (file) {
+      const attachments: Attachment[] = [];
+      if (files.length) {
         setUploading(true);
-        if (file.size > 10 * 1024 * 1024) throw new Error("Attachments must be smaller than 10 MB.");
+        if (files.length > 10) throw new Error("You can attach up to 10 files per message.");
+        if (files.some(({ file }) => file.size > 10 * 1024 * 1024)) throw new Error("Each attachment must be smaller than 10 MB.");
         const supabase = getSupabaseBrowserClient();
-        const path = `${activeConversationId}/${user?.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        const upload = await supabase.storage.from("chat-attachments").upload(path, file, { contentType: file.type, upsert: false });
-        if (upload.error) throw upload.error;
-        attachment = { name: file.name, path, type: file.type, size: file.size };
+        for (const { file } of files) {
+          const path = `${activeConversationId}/${user?.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+          const upload = await supabase.storage.from("chat-attachments").upload(path, file, { contentType: file.type, upsert: false });
+          if (upload.error) throw upload.error;
+          attachments.push({ name: file.name, path, type: file.type || "application/octet-stream", size: file.size });
+        }
       }
 
+      const preview = body || (attachments.length === 1 ? `Attachment: ${attachments[0].name}` : `${attachments.length} attachments`);
       setMessages((current) => [...current, {
         id: pendingId,
         sender: "me",
-        text: body || "Attachment",
+        text: preview,
         time: "Now",
         pending: true,
-        attachment,
+        attachments,
+        attachment: attachments[0] ?? null,
       }]);
 
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: activeConversationId, body, attachment }),
+        body: JSON.stringify({ conversation_id: activeConversationId, body, attachments }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send message.");
 
       setMessages((current) => current.map((message) => message.id === pendingId ? result.message as Message : message));
       setDraft("");
-      setSelectedFile(null);
-      setPastedImage(null);
+      for (const item of files) if (item.preview) URL.revokeObjectURL(item.preview);
+      setSelectedAttachments([]);
       setConversations((current) => current.map((conversation) => conversation.id === conversationId
-        ? { ...conversation, preview: attachment ? `Attachment: ${attachment.name}` : body, time: result.message.time }
+        ? { ...conversation, preview, time: result.message.time }
         : conversation));
     } catch (sendError) {
       setMessages((current) => current.map((message) => message.id === pendingId ? { ...message, pending: false, failed: true } : message));
@@ -425,17 +441,20 @@ export function InternalChatPage() {
 
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await sendMessage(draft.trim(), selectedFile);
+    await sendMessage(draft.trim(), selectedAttachments);
   }
 
   async function openAttachment(attachment: Attachment) {
-    const { data, error: signedUrlError } = await getSupabaseBrowserClient()
-      .storage.from("chat-attachments").createSignedUrl(attachment.path, 300);
-    if (signedUrlError || !data?.signedUrl) {
+    const storage = getSupabaseBrowserClient().storage.from("chat-attachments");
+    const [{ data, error: signedUrlError }, { data: downloadData, error: downloadError }] = await Promise.all([
+      storage.createSignedUrl(attachment.path, 300),
+      storage.createSignedUrl(attachment.path, 300, { download: attachment.name }),
+    ]);
+    if (signedUrlError || downloadError || !data?.signedUrl || !downloadData?.signedUrl) {
       setError("Could not open this attachment.");
       return;
     }
-    setAttachmentViewer({ attachment, url: data.signedUrl });
+    setAttachmentViewer({ attachment, url: data.signedUrl, downloadUrl: downloadData.signedUrl });
   }
 
   async function enableChatNotifications() {
@@ -655,7 +674,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -690,7 +709,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -725,7 +744,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -798,10 +817,10 @@ export function InternalChatPage() {
                         <div key={message.id} className={cn("flex chat-message-in", message.sender === "me" ? "justify-end" : "justify-start")}>
                           <div className={cn("max-w-[75%] rounded-2xl px-4 py-3 shadow-sm transition", message.sender === "me" ? "bg-primary text-white" : "border border-border bg-stone-50 text-foreground", message.pending && "opacity-70", message.failed && "ring-2 ring-red-300")}>
                             {activeConversation.type === "group" ? <p className={cn("mb-1 text-[11px] font-bold", message.sender === "me" ? "text-white/80" : "text-primary")}>{message.sender === "me" ? "You" : message.senderName || "Group member"}</p> : null}
-                            {message.attachment ? <AttachmentThumbnail attachment={message.attachment} dark={message.sender === "me"} onOpen={() => openAttachment(message.attachment as Attachment)} /> : null}
+                            {(message.attachments ?? (message.attachment ? [message.attachment] : [])).map((attachment, index) => <AttachmentThumbnail key={attachment.id ?? `${attachment.path}-${index}`} attachment={attachment} dark={message.sender === "me"} onOpen={() => openAttachment(attachment)} />)}
                             <p className="text-sm leading-relaxed">{message.text}</p>
                             <p className={cn("mt-1 flex items-center text-[10px] font-medium", message.sender === "me" ? "text-white/80" : "text-stone-400")}>
-                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : message.time}{message.sender === "me" && !message.pending && !message.failed ? (
+                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : formatTime(message.time)}{message.sender === "me" && !message.pending && !message.failed ? (
                                 <span className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5", message.seen ? "bg-white/20 text-white" : "bg-black/10 text-white/75")}>
                                   <span aria-hidden>{message.seen ? "✓✓" : "✓"}</span>
                                   {message.seen ? "Seen" : "Sent"}
@@ -820,15 +839,17 @@ export function InternalChatPage() {
 
                   <form onSubmit={handleSendMessage} className="border-t border-border bg-white p-4">
                     {typingUsers.length ? <p className="mb-2 px-1 text-xs font-medium text-primary animate-pulse">{typingUsers.join(" and ")} {typingUsers.length === 1 ? "is" : "are"} typing...</p> : null}
-                    {selectedFile ? (
-                      <div className="mb-2 flex items-center gap-3 rounded-xl border border-primary/20 bg-primary-soft px-3 py-2 text-xs text-foreground">
-                        {pastedImage ? <img src={pastedImage} alt="Pasted screenshot preview" className="h-12 w-12 rounded-lg object-cover" /> : <IconUpload className="h-4 w-4 text-primary" />}
-                        <span className="min-w-0 flex-1 truncate font-semibold">{selectedFile.name}</span>
-                        <button type="button" onClick={() => { setSelectedFile(null); setPastedImage(null); }} className="font-bold text-stone-400 hover:text-primary" aria-label="Remove attachment">×</button>
+                    {selectedAttachments.length ? (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {selectedAttachments.map((item) => <div key={item.id} className="flex max-w-full items-center gap-2 rounded-xl border border-primary/20 bg-primary-soft px-2 py-1.5 text-xs text-foreground">
+                          {item.preview ? <img src={item.preview} alt="Attachment preview" className="h-9 w-9 rounded-lg object-cover" /> : <IconUpload className="ml-1 h-4 w-4 shrink-0 text-primary" />}
+                          <span className="max-w-52 truncate font-semibold">{item.file.name}</span>
+                          <button type="button" onClick={() => { if (item.preview) URL.revokeObjectURL(item.preview); setSelectedAttachments((current) => current.filter((attachment) => attachment.id !== item.id)); }} className="px-1 font-bold text-stone-400 hover:text-primary" aria-label={`Remove ${item.file.name}`}>×</button>
+                        </div>)}
                       </div>
                     ) : null}
                     <div className="flex items-center gap-3 rounded-2xl border border-border bg-stone-50 px-3 py-2.5 shadow-inner">
-                      <input ref={fileInputRef} type="file" className="hidden" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip" onChange={(event) => { const file = event.target.files?.[0] ?? null; setSelectedFile(file); setPastedImage(file?.type.startsWith("image/") ? URL.createObjectURL(file) : null); event.currentTarget.value = ""; }} />
+                      <input ref={fileInputRef} type="file" multiple className="hidden" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); const remainingSlots = Math.max(0, 10 - selectedAttachments.length); const validFiles = files.filter((file) => file.size <= 10 * 1024 * 1024); if (validFiles.length < files.length) setError("Each attachment must be smaller than 10 MB."); if (validFiles.length > remainingSlots) setError("You can attach up to 10 files per message."); setSelectedAttachments((current) => [...current, ...validFiles.slice(0, remainingSlots).map(pendingAttachment)]); event.currentTarget.value = ""; }} />
                       <button type="button" onClick={() => fileInputRef.current?.click()} className="grid h-9 w-9 place-items-center rounded-lg bg-white text-stone-500 hover:text-primary" aria-label="Attach file">
                         <IconUpload className="h-4 w-4" />
                       </button>
@@ -836,12 +857,12 @@ export function InternalChatPage() {
                         type="text"
                         value={draft}
                         onChange={(event) => handleDraftChange(event.target.value)}
-                        placeholder={selectedFile ? "Add a caption..." : "Type a message or paste an image..."}
+                        placeholder={selectedAttachments.length ? "Add a caption..." : "Type a message or paste an image..."}
                         className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-stone-400 outline-none"
                       />
                       <button
                         type="submit"
-                        disabled={(!draft.trim() && !selectedFile) || sending || uploading}
+                        disabled={(!draft.trim() && !selectedAttachments.length) || sending || uploading}
                         className="grid h-9 w-9 place-items-center rounded-lg bg-primary text-white shadow-[0_10px_24px_rgba(228,90,90,0.22)] transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
                         aria-label="Send message"
                       >
@@ -866,7 +887,7 @@ export function InternalChatPage() {
             <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
               <span className="min-w-0 truncate text-sm font-semibold text-foreground">{attachmentViewer.attachment.name}</span>
               <div className="flex items-center gap-2">
-                <a href={attachmentViewer.url} download={attachmentViewer.attachment.name} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white transition hover:bg-primary/90">Download</a>
+                <a href={attachmentViewer.downloadUrl} download={attachmentViewer.attachment.name} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white transition hover:bg-primary/90">Download</a>
                 <button type="button" onClick={() => setAttachmentViewer(null)} className="rounded-lg px-3 py-2 text-xs font-semibold text-stone-500 hover:bg-stone-100" aria-label="Close attachment preview">Close</button>
               </div>
             </div>

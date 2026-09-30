@@ -305,6 +305,12 @@ export default function CrmLeadsPage() {
   }, [search]);
 
   useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      if (canAddLead) openLeadEditor();
+      else setMessage({ text: "You do not have permission to create leads.", tone: "danger" });
+      window.history.replaceState(null, "", "/dashboard/crm/leads");
+      return;
+    }
     const editId = searchParams.get("edit");
     if (!editId) return;
     fetch(`/api/crm/leads/${editId}`, { cache: "no-store" })

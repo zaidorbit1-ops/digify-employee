@@ -11,10 +11,10 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 function toTime(value: string | null | undefined) {
-  if (!value) return "Now";
+  if (!value) return new Date().toISOString();
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Now";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (Number.isNaN(date.getTime())) return new Date().toISOString();
+  return date.toISOString();
 }
 
 function computeUnreadCount(
@@ -198,21 +198,23 @@ export async function GET(request: Request) {
         : { data: [], error: null };
       if (attachmentsError && !isMissingAttachmentsTable(attachmentsError)) throw attachmentsError;
 
-      const attachmentMap = new Map<string, {
+      const attachmentMap = new Map<string, Array<{
         id: string;
         name: string;
         path: string;
         type: string;
         size: number;
-      }>();
+      }>>();
       for (const attachment of attachments ?? []) {
-        attachmentMap.set(String(attachment.message_id), {
+        const messageAttachments = attachmentMap.get(String(attachment.message_id)) ?? [];
+        messageAttachments.push({
           id: String(attachment.id),
           name: attachment.file_name,
           path: attachment.file_path,
           type: attachment.file_type,
           size: Number(attachment.file_size),
         });
+        attachmentMap.set(String(attachment.message_id), messageAttachments);
       }
 
       let { data: readMembers, error: readMembersError } = await client
@@ -268,7 +270,8 @@ export async function GET(request: Request) {
           time: toTime(message.created_at),
           senderName: userNames.get(message.sender_user_id) ?? "Employee",
           seen: message.sender_user_id === user.id && otherReadTimes.some((readAt) => readAt >= new Date(message.created_at).getTime()),
-          attachment: attachmentMap.get(String(message.id)) ?? null,
+          attachments: attachmentMap.get(String(message.id)) ?? [],
+          attachment: attachmentMap.get(String(message.id))?.[0] ?? null,
         })),
       });
     }
@@ -583,17 +586,18 @@ export async function POST(request: Request) {
 
     const conversationId = String(body.conversation_id ?? "").trim();
     const text = String(body.body ?? "").trim();
-    const requestedAttachment = body.attachment && typeof body.attachment === "object"
-      ? body.attachment as { name?: string; path?: string; type?: string; size?: number }
-      : null;
+    const requestedAttachments = Array.isArray(body.attachments)
+      ? body.attachments.filter((attachment: unknown) => attachment && typeof attachment === "object") as Array<{ name?: string; path?: string; type?: string; size?: number }>
+      : body.attachment && typeof body.attachment === "object"
+        ? [body.attachment as { name?: string; path?: string; type?: string; size?: number }]
+        : [];
     if (!conversationId) {
       return NextResponse.json({ error: "A conversation is required." }, { status: 400 });
     }
-    if ((!text && !requestedAttachment) || text.length > 4000) {
+    if ((!text && !requestedAttachments.length) || text.length > 4000) {
       return NextResponse.json({ error: "Your message must be between 1 and 4000 characters." }, { status: 400 });
     }
-    const attachmentSize = requestedAttachment?.size;
-    if (requestedAttachment && (!requestedAttachment.name || !requestedAttachment.path || !requestedAttachment.type || !Number.isFinite(attachmentSize) || (attachmentSize as number) <= 0 || (attachmentSize as number) > 10 * 1024 * 1024)) {
+    if (requestedAttachments.length > 10 || requestedAttachments.some((attachment) => !attachment.name || !attachment.path || !attachment.type || !Number.isFinite(attachment.size) || (attachment.size as number) <= 0 || (attachment.size as number) > 10 * 1024 * 1024)) {
       return NextResponse.json({ error: "Attachments must be valid files up to 10 MB." }, { status: 400 });
     }
 
@@ -622,16 +626,16 @@ export async function POST(request: Request) {
 
     if (messageError) throw messageError;
 
-    if (requestedAttachment) {
-      const { error: attachmentError } = await client.from("chat_attachments").insert({
+    if (requestedAttachments.length) {
+      const { error: attachmentError } = await client.from("chat_attachments").insert(requestedAttachments.map((attachment) => ({
         message_id: message.id,
         conversation_id: conversationId,
         uploaded_by: user.id,
-        file_name: requestedAttachment.name,
-        file_path: requestedAttachment.path,
-        file_type: requestedAttachment.type,
-        file_size: requestedAttachment.size,
-      });
+        file_name: attachment.name,
+        file_path: attachment.path,
+        file_type: attachment.type,
+        file_size: attachment.size,
+      })));
       if (attachmentError) throw attachmentError;
     }
 
@@ -642,11 +646,17 @@ export async function POST(request: Request) {
         text: message.body,
         time: toTime(message.created_at),
         seen: false,
-        attachment: requestedAttachment ? {
-          name: requestedAttachment.name,
-          path: requestedAttachment.path,
-          type: requestedAttachment.type,
-          size: requestedAttachment.size,
+        attachments: requestedAttachments.map((attachment) => ({
+          name: attachment.name!,
+          path: attachment.path!,
+          type: attachment.type!,
+          size: attachment.size!,
+        })),
+        attachment: requestedAttachments[0] ? {
+          name: requestedAttachments[0].name!,
+          path: requestedAttachments[0].path!,
+          type: requestedAttachments[0].type!,
+          size: requestedAttachments[0].size!,
         } : null,
       },
     }, { status: 201 });
