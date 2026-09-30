@@ -68,12 +68,13 @@ export async function GET(request: Request) {
             const fetched = await getHostingerMessage(mailbox.email_address, folder, Number(message.hostinger_uid));
             const textBody = fetched.body.text?.trim() || null;
             const htmlBody = fetched.body.html?.trim() || null;
-            if (!hasRenderableBody(textBody, htmlBody)) return message;
+            if (!textBody && !htmlBody) return message;
             const safeHtml = htmlBody ? sanitizeEmailHtml(htmlBody) : null;
             const { error: updateError } = await client.from("crm_email_messages").update({ text_body: textBody, html_body: safeHtml }).eq("id", message.id);
             if (updateError) console.warn("[hostinger] recovered message body could not be cached", { message_id: message.id });
             return { ...message, text_body: textBody, html_body: safeHtml };
-          } catch {
+          } catch (error) {
+            console.warn("[hostinger] message body recovery failed", { message_id: message.id, error: error instanceof Error ? error.message : "Unknown error" });
             return message;
           }
         }))
@@ -84,7 +85,10 @@ export async function GET(request: Request) {
           try {
             const folder = message.hostinger_folder || "INBOX";
             const providerMessage = await findHostingerMessage(mailbox.email_address, folder, message.message_id);
-            if (!providerMessage?.uid) return message;
+            if (!providerMessage?.uid) {
+              console.warn("[hostinger] message recovery lookup found no exact Message-ID match", { message_id: message.id });
+              return message;
+            }
             const providerFolder = providerMessage.path || folder;
             const fetched = await getHostingerMessage(mailbox.email_address, providerFolder, providerMessage.uid);
             const textBody = fetched.body.text?.trim() || null;
@@ -94,7 +98,8 @@ export async function GET(request: Request) {
             const { error: updateError } = await client.from("crm_email_messages").update(values).eq("id", message.id);
             if (updateError) console.warn("[hostinger] recovered message metadata could not be cached", { message_id: message.id });
             return { ...message, ...values };
-          } catch {
+          } catch (error) {
+            console.warn("[hostinger] message recovery lookup failed", { message_id: message.id, error: error instanceof Error ? error.message : "Unknown error" });
             return message;
           }
         }))

@@ -8,6 +8,7 @@ import {
   type V1SendRequest,
   WebhooksApi,
 } from "hostinger-mail-api-sdk";
+import { simpleParser } from "mailparser";
 import sanitizeHtml from "sanitize-html";
 import postcss from "postcss";
 import { getConfiguredHostingerMailbox, getHostingerApiToken } from "@/lib/hostinger-env";
@@ -71,6 +72,22 @@ export async function regenerateHostingerWebhookSecret(address: string, webhookI
   return { resourceId: mailbox.resourceId, webhookId: webhook.id, secret: webhook.secret };
 }
 
+async function parseHostingerMessageSource(source: unknown) {
+  let rawMessage: Buffer;
+  if (typeof source === "string") rawMessage = Buffer.from(source);
+  else if (Buffer.isBuffer(source)) rawMessage = source;
+  else if (source instanceof Uint8Array) rawMessage = Buffer.from(source);
+  else if (source instanceof ArrayBuffer) rawMessage = Buffer.from(source);
+  else if (source && typeof source === "object" && "arrayBuffer" in source && typeof source.arrayBuffer === "function") {
+    rawMessage = Buffer.from(await source.arrayBuffer());
+  } else {
+    throw new Error("Hostinger returned an unsupported raw message format.");
+  }
+
+  const parsed = await simpleParser(rawMessage);
+  return { text: parsed.text || "", html: typeof parsed.html === "string" ? parsed.html : "" };
+}
+
 export async function getHostingerMessage(address: string, folder: string, uid: number) {
   const mailbox = await getHostingerMailbox(address);
   const api = new MessagesApi(configuration(address));
@@ -78,11 +95,21 @@ export async function getHostingerMessage(address: string, folder: string, uid: 
     api.getMessage(mailbox.resourceId, folder, uid),
     api.getMessageText(mailbox.resourceId, folder, uid),
   ]);
-  if (messageResult.status === "rejected" && textResult.status === "rejected") throw textResult.reason;
+  const renderedBody = textResult.status === "fulfilled" ? textResult.value.data.data : null;
+  let body = { text: renderedBody?.text || "", html: renderedBody?.html || "" };
+  if (!body.text.trim() && !body.html.trim()) {
+    try {
+      const source = await api.getMessageSource(mailbox.resourceId, folder, uid);
+      body = await parseHostingerMessageSource(source.data);
+    } catch (error) {
+      console.warn("[hostinger] raw message source fallback failed", { uid, folder, error: error instanceof Error ? error.message : "Unknown error" });
+    }
+  }
+  if (messageResult.status === "rejected" && textResult.status === "rejected" && !body.text.trim() && !body.html.trim()) throw textResult.reason;
   return {
     mailbox,
     message: messageResult.status === "fulfilled" ? messageResult.value.data.data : {},
-    body: textResult.status === "fulfilled" ? textResult.value.data.data : { text: "", html: "" },
+    body,
   };
 }
 
@@ -92,12 +119,24 @@ function normalizeMessageId(value: string) {
 
 export async function findHostingerMessage(address: string, folder: string, messageId: string) {
   const mailbox = await getHostingerMailbox(address);
-  const search: V1FolderMessagesSearchRequest = {
-    since: "", before: "", flags: [], uid: "", subject: "", from: "", to: "", cc: "", body: "",
-    header: `Message-ID ${messageId}`, larger: 0, smaller: 0, text: "",
-  };
-  const response = await new MessagesApi(configuration(address)).searchMessages(mailbox.resourceId, folder, 1, 10, "-uid", search);
-  return response.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId)) ?? null;
+  const api = new MessagesApi(configuration(address));
+  const headers = [`Message-ID: ${messageId}`, `Message-ID ${messageId}`];
+  for (const header of headers) {
+    const search: V1FolderMessagesSearchRequest = {
+      since: "", before: "", flags: [], uid: "", subject: "", from: "", to: "", cc: "", body: "",
+      header, larger: 0, smaller: 0, text: "",
+    };
+    try {
+      const response = await api.searchMessages(mailbox.resourceId, folder, 1, 10, "-uid", search);
+      const match = response.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId));
+      if (match) return match;
+    } catch {
+      continue;
+    }
+  }
+
+  const recent = await api.listMessages(mailbox.resourceId, folder, 1, 100, "-date");
+  return recent.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId)) ?? null;
 }
 
 export async function getHostingerMessageAttachment(address: string, folder: string, uid: number, attachmentId: string) {
