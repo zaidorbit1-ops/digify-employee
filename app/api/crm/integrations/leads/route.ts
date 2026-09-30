@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
-import { sendCrmPush } from "@/lib/web-push";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 
 type LeadPayload = {
   name?: unknown;
@@ -136,11 +136,8 @@ export async function POST(request: Request) {
     const { data, error } = await client.from("crm_leads").insert({ company_id: integration.company_id, website_id: integration.website_id, integration_id: integration.id, source: "website", ...lead }).select("id, company_id, website_id, name, email, status, created_at").single();
     if (error) throw error;
     await client.from("crm_website_integrations").update({ last_received_at: new Date().toISOString() }).eq("id", integration.id);
-    await sendCrmPush({
-      title: "New Lead Arrived",
+    await createCrmActivityNotifications({
       body: `on ${company.name}`,
-      url: `/dashboard/crm/leads/${data.id}`,
-      tag: `crm-lead-${data.id}`,
       notificationType: "crm_lead",
       relatedRecordId: data.id,
       relatedUrl: `/dashboard/crm/leads/${data.id}`,

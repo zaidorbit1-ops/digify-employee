@@ -7,6 +7,7 @@ import type { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
 import { useAuth } from "@/components/auth/auth-provider";
 import { IconArrowRight, IconBell } from "@/components/icons";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { CRM_ALERTS_CHANGED_EVENT, getCrmInAppAlertsEnabled } from "@/lib/crm-alert-preferences";
 
 type CrmNotification = {
   id: number;
@@ -43,11 +44,6 @@ function NotificationLabel({ notification }: { notification: CrmNotification }) 
       {company ? <span className="rounded-md border border-rose-200 bg-rose-100 px-1.5 py-0.5 font-bold text-rose-800">{company}</span> : null}
     </span>
   );
-}
-
-function notificationTag(notification: CrmNotification) {
-  const prefix = notification.type === "crm_lead" ? "crm-lead" : "crm-email";
-  return `${prefix}-${notification.related_record_id ?? notification.id}`;
 }
 
 let crmNotificationAudioContext: AudioContext | null = null;
@@ -88,12 +84,37 @@ export function CrmNotifications() {
   const router = useRouter();
   const [notifications, setNotifications] = useState<CrmNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const [available, setAvailable] = useState(false);
   const [toast, setToast] = useState<CrmNotification | null>(null);
   const [open, setOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
   const toastTimer = useRef<number | null>(null);
   const seenNotificationIds = useRef(new Set<number>());
+  const alertsEnabled = useRef(true);
+
+  useEffect(() => {
+    if (!user) return;
+    const syncPreference = (enabled: boolean) => {
+      alertsEnabled.current = enabled;
+      if (!enabled) {
+        setToast(null);
+        if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+      }
+    };
+    syncPreference(getCrmInAppAlertsEnabled(user.id));
+    const handlePreferenceChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ userId?: string; enabled?: boolean }>).detail;
+      if (detail?.userId === user.id && typeof detail.enabled === "boolean") syncPreference(detail.enabled);
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === `crm-in-app-alerts-enabled:${user.id}`) syncPreference(event.newValue !== "false");
+    };
+    window.addEventListener(CRM_ALERTS_CHANGED_EVENT, handlePreferenceChange);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener(CRM_ALERTS_CHANGED_EVENT, handlePreferenceChange);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user || (profile?.role !== "superadmin" && profile?.role !== "employee")) return;
@@ -103,20 +124,18 @@ export function CrmNotifications() {
     fetch("/api/crm/notifications", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Could not load notifications.");
-        return response.json() as Promise<{ notifications: CrmNotification[]; unreadCount: number; enabled: boolean }>;
+        return response.json() as Promise<{ notifications: CrmNotification[]; unreadCount: number }>;
       })
       .then((result) => {
         if (active) {
           setNotifications(result.notifications ?? []);
           setUnreadCount(result.unreadCount ?? 0);
-          setAvailable(result.enabled);
           setLoadError("");
           for (const item of result.notifications ?? []) seenNotificationIds.current.add(item.id);
         }
       })
       .catch((error: unknown) => {
         if (active) {
-          setAvailable(false);
           setLoadError(error instanceof Error ? error.message : "Could not load notifications.");
         }
       });
@@ -137,17 +156,11 @@ export function CrmNotifications() {
           ? current
           : [item, ...current].slice(0, 10));
         if (!item.is_read) setUnreadCount((current) => current + 1);
-        setToast(item);
-        playCrmNotificationSound(item.type);
-        if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-        toastTimer.current = window.setTimeout(() => setToast(null), 8000);
-
-        if (document.visibilityState === "hidden" && "Notification" in window && Notification.permission === "granted") {
-          new Notification(notificationTitle(item.type), {
-            body: item.message,
-            icon: "/logo.png",
-            tag: notificationTag(item),
-          });
+        if (alertsEnabled.current) {
+          setToast(item);
+          playCrmNotificationSound(item.type);
+          if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+          toastTimer.current = window.setTimeout(() => setToast(null), 8000);
         }
       })
       .subscribe();
@@ -159,7 +172,7 @@ export function CrmNotifications() {
     };
   }, [profile?.role, user]);
 
-  if (profile?.role !== "superadmin" && (profile?.role !== "employee" || !available)) return null;
+  if (profile?.role !== "superadmin" && profile?.role !== "employee") return null;
 
   async function openNotification(item: CrmNotification) {
     if (!item.is_read) {

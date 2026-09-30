@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSupabaseServerClient } from "@/lib/supabase-server";
+import { getSupabaseServerClient, getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+
+function isMissingCompanyScopeColumn(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const databaseError = error as { code?: string; message?: string; details?: string };
+  const message = `${databaseError.message ?? ""} ${databaseError.details ?? ""}`.toLowerCase();
+  return (databaseError.code === "42703" || databaseError.code === "PGRST204") && message.includes("company_id");
+}
 
 async function getNotificationContext() {
   const client = await getSupabaseServerClient();
@@ -19,7 +26,8 @@ async function getNotificationContext() {
   return { client, user, profile, status: 200 };
 }
 
-async function getEmployeeScopes(client: Awaited<ReturnType<typeof getSupabaseServerClient>>, employeeId: number) {
+async function getEmployeeScopes(employeeId: number) {
+  const client = getSupabaseServiceRoleClient();
   const modules = ["crm_leads", "crm_webmail"];
   const { data: permissions, error: permissionsError } = await client
     .from("permissions")
@@ -60,7 +68,7 @@ export async function GET(request: Request) {
     const supportedType = typeFilter === "crm_lead" || typeFilter === "crm_email" ? typeFilter : null;
     const supportedRead = readFilter === "read" || readFilter === "unread" ? readFilter : null;
     const employeeScopes = profile.role === "employee"
-      ? await getEmployeeScopes(client, Number(profile.employee_id))
+      ? await getEmployeeScopes(Number(profile.employee_id))
       : [];
     const scopeFilters = employeeScopes.map((scope) => {
       const notificationType = scope.module === "crm_leads" ? "crm_lead" : "crm_email";
@@ -104,6 +112,9 @@ export async function GET(request: Request) {
       enabled: true,
     });
   } catch (error) {
+    if (isMissingCompanyScopeColumn(error)) {
+      return NextResponse.json({ error: "Apply migration 20260930190000_employee_crm_notifications.sql to enable company-scoped CRM notifications." }, { status: 500 });
+    }
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load CRM notifications." }, { status: 500 });
   }
 }
@@ -115,6 +126,20 @@ export async function PATCH(request: Request) {
     const body = await request.json() as { id?: unknown };
     const id = Number(body.id);
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid notification is required." }, { status: 400 });
+    if (profile.role === "employee") {
+      const { data: notification, error: notificationError } = await client
+        .from("notifications")
+        .select("id, type, company_id")
+        .eq("id", id)
+        .eq("recipient_id", user.id)
+        .maybeSingle();
+      if (notificationError) throw notificationError;
+      const scopes = await getEmployeeScopes(Number(profile.employee_id));
+      const requiredModule = notification?.type === "crm_lead" ? "crm_leads" : notification?.type === "crm_email" ? "crm_webmail" : null;
+      const allowed = notification && requiredModule && scopes.some((scope) =>
+        scope.module === requiredModule && scope.companyIds.includes(Number(notification.company_id)));
+      if (!allowed) return NextResponse.json({ error: "Notification not found." }, { status: 404 });
+    }
     const { error } = await client
       .from("notifications")
       .update({ is_read: true })

@@ -4,7 +4,7 @@ import { constantTimeSecretMatches, getHostingerMessage, sanitizeEmailHtml } fro
 import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
-import { sendCrmPush } from "@/lib/web-push";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 
 export const dynamic = "force-dynamic";
 
@@ -238,11 +238,8 @@ export async function POST(request: Request) {
     stage = "database.status_update";
     await client.from("crm_mailboxes").update({ status: "connected", last_webhook_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
-    await sendCrmPush({
-      title: "New Email Arrived",
+    await createCrmActivityNotifications({
       body: `on ${companyName}`,
-      url: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
-      tag: `crm-email-${stored.id}`,
       notificationType: "crm_email",
       relatedRecordId: stored.id,
       relatedUrl: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,

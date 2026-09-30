@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminContext } from "@/lib/crm-admin";
-import { sendCrmPush } from "@/lib/web-push";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 
 const statuses = ["new", "contacted", "qualified", "converted", "lost"];
 
@@ -87,11 +87,8 @@ export async function POST(request: Request) {
       updated_by: user.id,
     }).select("*, crm_websites(name, website_url)").single();
     if (error) throw error;
-    await sendCrmPush({
-      title: "New Lead Arrived",
+    await createCrmActivityNotifications({
       body: `on ${company.name}`,
-      url: `/dashboard/crm/leads/${data.id}`,
-      tag: `crm-lead-${data.id}`,
       notificationType: "crm_lead",
       relatedRecordId: data.id,
       relatedUrl: `/dashboard/crm/leads/${data.id}`,

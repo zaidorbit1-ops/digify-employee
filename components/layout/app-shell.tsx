@@ -11,7 +11,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { GlobalLoader } from "@/components/ui/global-loader";
 import { InternalChatLauncher, InternalChatNotifications } from "@/components/chat/internal-chat";
 import { CrmNotifications } from "@/components/notifications/crm-notifications";
-import { PushNotificationControl } from "@/components/notifications/push-notification-control";
+import { CrmInAppAlertControl } from "@/components/notifications/crm-in-app-alert-control";
 
 const titles: Record<string, string> = {
   "/dashboard": "Overview",
@@ -75,7 +75,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             />
             <span className={`mr-auto font-semibold ${isCrmWorkspace ? "min-w-0 truncate text-xs sm:text-sm" : "text-sm"}`}>{title}</span>
             <CrmNotifications />
-            <PushNotificationControl />
+            {isCrmWorkspace ? <CrmInAppAlertControl /> : null}
           </header>
 
           <main className="min-w-0 flex-1 overflow-y-auto">

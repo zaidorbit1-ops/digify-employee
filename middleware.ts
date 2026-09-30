@@ -171,6 +171,8 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith(`${route}/`),
       );
       const isCrmCompanyLookup = request.nextUrl.pathname === "/api/crm/companies";
+      const isCrmNotificationsRoute = request.nextUrl.pathname === "/dashboard/crm/notifications"
+        || request.nextUrl.pathname === "/api/crm/notifications";
       const module = permissionModule(request.nextUrl.pathname);
       const permission =
         module && profile.employee_id
@@ -209,9 +211,20 @@ export async function middleware(request: NextRequest) {
             ].includes(row.module) &&
             (row.can_read || row.can_add || row.can_edit || row.can_delete),
         );
+      const hasCrmNotificationAccess =
+        !!profile.employee_id &&
+        (await supabase
+          .from("permissions")
+          .select("module")
+          .eq("employee_id", profile.employee_id)
+          .in("module", ["crm_leads", "crm_webmail"])
+          .eq("can_read", true)
+          .limit(1)
+          .maybeSingle()).data !== null;
       const allowed =
         employeeDefaultRoute ||
         permission.data?.[requiredPermission] === true ||
+        (isCrmNotificationsRoute && hasCrmNotificationAccess) ||
         (isCrmRoute && hasAnyCrmAccess && requiredPermission === "can_read") ||
         (isCrmCompanyLookup && requiredPermission === "can_read") ||
         (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess);
