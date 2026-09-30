@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { IconEdit, IconPlus, IconTrash } from "@/components/icons";
 import { Alert } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -136,9 +137,12 @@ export default function CrmCampaignsPage() {
     {message ? <div className="mb-5"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
     <Card className="mb-5"><Field label="Company"><SelectInput value={companyId} onChange={(event) => setCompanyId(event.target.value)}><option value="">Select company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}</SelectInput></Field></Card>
     {campaigns.length ? <div className="grid gap-4 xl:grid-cols-2">{campaigns.map((campaign) => <Card key={campaign.id}>
-      <div className="flex items-start justify-between gap-4"><div><Badge tone={campaign.status === "completed" ? "success" : campaign.status === "failed" ? "danger" : campaign.status === "draft" || campaign.status === "paused" ? "neutral" : "warning"}>{campaign.status}</Badge><h2 className="mt-3 text-lg font-bold">{campaign.name}</h2><p className="mt-1 text-sm text-muted">{campaign.crm_email_templates?.name ?? "Template"} · {campaign.crm_mailboxes?.email_address ?? "Mailbox"}</p></div><span className="text-right text-xs text-muted">{campaign.contact_list_id ? campaign.crm_contact_lists?.name ?? "Contact list" : campaign.segment_id ? segments.find((item) => item.id === campaign.segment_id)?.name ?? "Dynamic segment" : "All active contacts"}</span></div>
-      <p className="mt-4 rounded-lg bg-[#f5f7f5] p-3 text-sm text-muted">{campaign.subject || campaign.crm_email_templates?.subject || "No subject override"}</p>
-      <p className="mt-3 text-xs text-muted">{campaign.schedule_at ? `Scheduled ${new Date(campaign.schedule_at).toLocaleString()}` : "No scheduled start"} · Batch {campaign.batch_size} every {campaign.interval_seconds}s</p>
+      <Link href={`/dashboard/crm/campaigns/${campaign.id}?company_id=${campaign.company_id}`} className="block rounded-lg outline-none transition hover:bg-[#fbfcfb] focus-visible:ring-2 focus-visible:ring-primary/40">
+        <div className="flex items-start justify-between gap-4"><div><Badge tone={campaign.status === "completed" ? "success" : campaign.status === "failed" ? "danger" : campaign.status === "draft" || campaign.status === "paused" ? "neutral" : "warning"}>{campaign.status}</Badge><h2 className="mt-3 text-lg font-bold">{campaign.name}</h2><p className="mt-1 text-sm text-muted">{campaign.crm_email_templates?.name ?? "Template"} · {campaign.crm_mailboxes?.email_address ?? "Mailbox"}</p></div><span className="text-right text-xs text-muted">{campaign.contact_list_id ? campaign.crm_contact_lists?.name ?? "Contact list" : campaign.segment_id ? segments.find((item) => item.id === campaign.segment_id)?.name ?? "Dynamic segment" : "All active contacts"}</span></div>
+        <p className="mt-4 rounded-lg bg-[#f5f7f5] p-3 text-sm text-muted">{campaign.subject || campaign.crm_email_templates?.subject || "No subject override"}</p>
+        <p className="mt-3 text-xs text-muted">{campaign.schedule_at ? `Scheduled ${new Date(campaign.schedule_at).toLocaleString()}` : "No scheduled start"} · Batch {campaign.batch_size} every {campaign.interval_seconds}s</p>
+        <p className="mt-3 text-xs font-semibold text-primary">View recipients and delivery report</p>
+      </Link>
       <div className="mt-4 flex gap-2 border-t border-border pt-4"><Button variant="secondary" onClick={() => openEdit(campaign)}><IconEdit className="h-4 w-4" />Edit</Button><Button variant="ghost" className="text-rose-600" onClick={() => removeCampaign(campaign)}><IconTrash className="h-4 w-4" />Delete</Button></div>
     </Card>)}</div> : <Card><div className="py-12 text-center"><p className="text-lg font-bold">No campaigns yet</p><p className="mt-2 text-sm text-muted">Create a draft, test it, then schedule delivery to a saved audience.</p><Button className="mt-5" onClick={openNew} disabled={!companyId}><IconPlus className="h-4 w-4" />Create campaign</Button></div></Card>}
 
