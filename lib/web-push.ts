@@ -6,13 +6,11 @@ type CrmPushPayload = {
   body: string;
   url: string;
   tag: string;
+  notificationType: "crm_lead" | "crm_email";
+  relatedRecordId: number;
 };
 
 export async function sendCrmPush(payload: CrmPushPayload) {
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-  const privateKey = process.env.VAPID_PRIVATE_KEY;
-  if (!publicKey || !privateKey) return;
-
   try {
     const client = getSupabaseServiceRoleClient();
     const { data: admins, error: adminsError } = await client
@@ -24,6 +22,20 @@ export async function sendCrmPush(payload: CrmPushPayload) {
 
     const userIds = (admins ?? []).map((admin) => admin.user_id);
     if (!userIds.length) return;
+
+    const { error: notificationError } = await client.from("notifications").insert(
+      userIds.map((recipientId) => ({
+        recipient_id: recipientId,
+        type: payload.notificationType,
+        message: `${payload.title}: ${payload.body}`,
+        related_record_id: payload.relatedRecordId,
+      })),
+    );
+    if (notificationError) throw notificationError;
+
+    const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+    const privateKey = process.env.VAPID_PRIVATE_KEY;
+    if (!publicKey || !privateKey) return;
 
     const { data: subscriptions, error: subscriptionsError } = await client
       .from("push_subscriptions")

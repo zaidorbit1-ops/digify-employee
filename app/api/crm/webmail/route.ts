@@ -57,7 +57,7 @@ export async function GET(request: Request) {
     const rows = threads ?? [];
     const ids = rows.map((thread) => thread.id);
     const { data: messages, error: messageError } = ids.length
-      ? await client.from("crm_email_messages").select("id, thread_id, direction, sender, recipients, cc, subject, text_body, html_body, is_read, hostinger_uid, hostinger_folder, message_id, provider_message_id, received_at, sent_at, created_at, crm_email_attachments(id, file_name, content_type, content_id, storage_path, file_size)").in("thread_id", ids).order("created_at", { ascending: true })
+      ? await client.from("crm_email_messages").select("id, thread_id, direction, sender, sent_by_user_id, sent_by_name, recipients, cc, subject, text_body, html_body, is_read, hostinger_uid, hostinger_folder, message_id, provider_message_id, received_at, sent_at, created_at, crm_email_attachments(id, file_name, content_type, content_id, storage_path, file_size)").in("thread_id", ids).order("created_at", { ascending: true })
       : { data: [], error: null };
     if (messageError) throw messageError;
     const detailedMessages = Number.isInteger(threadId) && threadId > 0
@@ -125,6 +125,11 @@ export async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
+    const { data: { user: senderUser } } = await client.auth.getUser();
+    if (!senderUser) return fail("Authentication required.", "Authentication required.", 401);
+    const { data: senderProfile, error: senderProfileError } = await client.from("profiles").select("full_name").eq("user_id", senderUser.id).maybeSingle();
+    if (senderProfileError) throw senderProfileError;
+    const sentByName = senderProfile?.full_name?.trim() || senderUser.email || "CRM user";
     const body = await request.json() as { mailbox_id?: number; action?: string; to?: string; cc?: string; bcc?: string; subject?: string; text?: string; html?: string; thread_id?: number; attachments?: AttachmentInput[] };
     if (body.action !== "send") return fail("Inbox delivery is handled by Hostinger webhooks.", "Inbox delivery is handled by Hostinger webhooks.", 405);
     const mailboxId = Number(body.mailbox_id);
@@ -155,7 +160,7 @@ export async function POST(request: Request) {
       if (error) throw error;
       thread = data;
     }
-    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: sanitizeHtml(html) || null, is_read: true, sent_at: new Date().toISOString() }).select("id").single();
+    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", sent_by_user_id: senderUser.id, sent_by_name: sentByName, provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: sanitizeHtml(html) || null, is_read: true, sent_at: new Date().toISOString() }).select("id").single();
     if (messageError) throw messageError;
     if (stored && attachments.length) {
       const attachmentRows = attachments.map((item) => ({ company_id: mailbox.company_id, message_id: stored.id, file_name: item.name, content_type: item.type || "application/octet-stream", storage_path: `data:${item.type || "application/octet-stream"};base64,${item.base64.includes(",") ? item.base64.split(",", 2)[1] : item.base64}`, file_size: item.size || 0 }));

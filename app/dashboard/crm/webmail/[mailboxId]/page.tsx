@@ -38,6 +38,8 @@ type Message = {
   id: number;
   thread_id?: number;
   direction?: "inbound" | "outbound";
+  sent_by_user_id?: string | null;
+  sent_by_name?: string | null;
   sender: string | null;
   recipients: string[];
   cc?: string[];
@@ -1294,6 +1296,7 @@ function EmailReaderView({
                   <div className="flex items-center gap-2 text-sm">
                     <span className={`rounded-md px-2 py-1 text-[10px] font-extrabold uppercase ${isOutgoing ? "bg-sky-100 text-sky-800" : "bg-rose-100 text-rose-800"}`}>{isOutgoing ? "You sent" : "Received"}</span>
                     <span className="font-bold text-slate-900">{isOutgoing ? "You" : messageSender}</span>
+                    {isOutgoing && message.sent_by_name ? <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">Sent by {message.sent_by_name}</span> : null}
                     <span className="text-xs text-slate-500">&lt;{isOutgoing ? mailbox?.email_address || messageEmail : messageEmail}&gt;</span>
                     {index === messages.length - 1 && (
                       <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">Latest</span>

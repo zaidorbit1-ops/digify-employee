@@ -10,6 +10,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { Sidebar } from "@/components/layout/sidebar";
 import { GlobalLoader } from "@/components/ui/global-loader";
 import { InternalChatLauncher, InternalChatNotifications } from "@/components/chat/internal-chat";
+import { CrmNotifications } from "@/components/notifications/crm-notifications";
 import { PushNotificationControl } from "@/components/notifications/push-notification-control";
 
 const titles: Record<string, string> = {
@@ -72,6 +73,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               className="h-8 w-auto object-contain lg:hidden"
             />
             <span className="mr-auto text-sm font-semibold">{title}</span>
+            <CrmNotifications />
             <PushNotificationControl />
           </header>
 
