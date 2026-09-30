@@ -1325,7 +1325,14 @@ function EmailReaderView({
                         onLoad={(event) => {
                           const body = event.currentTarget.contentDocument?.body;
                           if (body) {
-                            const hasContent = Boolean(body.innerText.trim() || body.querySelector("img, picture, video, audio, table, svg, canvas"));
+                            const hasVisibleBackground = Array.from(body.querySelectorAll<HTMLElement>("*"))
+                              .some((element) => {
+                                const bounds = element.getBoundingClientRect();
+                                if (!bounds.width || !bounds.height) return false;
+                                const style = event.currentTarget.contentWindow?.getComputedStyle(element);
+                                return Boolean(style && (style.backgroundImage !== "none" || (style.backgroundColor !== "transparent" && style.backgroundColor !== "rgba(0, 0, 0, 0)")));
+                              });
+                            const hasContent = Boolean(body.innerText.trim() || body.querySelector("img, picture, video, audio, table, svg, canvas") || hasVisibleBackground);
                             event.currentTarget.style.height = `${Math.min(1200, Math.max(80, body.scrollHeight + 20))}px`;
                             if (!hasContent) {
                               setEmptyHtmlMessages((current) => ({ ...current, [message.id]: true }));

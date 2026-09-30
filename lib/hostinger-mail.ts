@@ -9,6 +9,7 @@ import {
   WebhooksApi,
 } from "hostinger-mail-api-sdk";
 import sanitizeHtml from "sanitize-html";
+import postcss from "postcss";
 import { getConfiguredHostingerMailbox, getHostingerApiToken } from "@/lib/hostinger-env";
 
 export type HostingerAttachment = {
@@ -105,8 +106,70 @@ export async function getHostingerMessageAttachment(address: string, folder: str
   return response.data;
 }
 
+const emailCssValues: Record<string, RegExp[]> = {
+  "background-color": [/^#[\da-f]{3,8}$/i, /^rgba?\([\d.,%\s]+\)$/i, /^[a-z]{1,20}$/i],
+  border: [/^[\w#(),.%\s-]+$/i],
+  "border-color": [/^#[\da-f]{3,8}$/i, /^rgba?\([\d.,%\s]+\)$/i, /^[a-z]{1,20}$/i],
+  "border-radius": [/^[\d.]+(px|em|rem|%)?(\s+[\d.]+(px|em|rem|%)?){0,3}$/i],
+  "border-style": [/^(none|solid|dashed|dotted|double|groove|ridge|inset|outset)(\s+(none|solid|dashed|dotted|double|groove|ridge|inset|outset)){0,3}$/i],
+  "border-width": [/^[\d.]+(px|pt|em|rem)?(\s+[\d.]+(px|pt|em|rem)?){0,3}$/i],
+  color: [/^#[\da-f]{3,8}$/i, /^rgba?\([\d.,%\s]+\)$/i, /^[a-z]{1,20}$/i],
+  display: [/^(block|inline|inline-block|table|table-cell|table-row|none)$/i],
+  "font-family": [/^[\w\s"',-]{1,100}$/],
+  "font-size": [/^[\d.]+(px|pt|em|rem|%)$/i],
+  "font-style": [/^(normal|italic|oblique)$/i],
+  "font-weight": [/^(normal|bold|bolder|lighter|[1-9]00)$/i],
+  height: [/^(auto|[\d.]+(px|pt|em|rem|%)|\d+%)$/i],
+  "line-height": [/^(normal|[\d.]+(px|pt|em|rem|%)?)$/i],
+  margin: [/^(auto|0|[\d.]+(px|pt|em|rem|%))(\s+(auto|0|[\d.]+(px|pt|em|rem|%))){0,3}$/i],
+  "margin-bottom": [/^(auto|0|[\d.]+(px|pt|em|rem|%))$/i],
+  "margin-left": [/^(auto|0|[\d.]+(px|pt|em|rem|%))$/i],
+  "margin-right": [/^(auto|0|[\d.]+(px|pt|em|rem|%))$/i],
+  "margin-top": [/^(auto|0|[\d.]+(px|pt|em|rem|%))$/i],
+  "max-height": [/^(none|[\d.]+(px|pt|em|rem|%))$/i],
+  "max-width": [/^(none|[\d.]+(px|pt|em|rem|%))$/i],
+  "min-height": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  "min-width": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  padding: [/^(0|[\d.]+(px|pt|em|rem|%))(\s+(0|[\d.]+(px|pt|em|rem|%))){0,3}$/i],
+  "padding-bottom": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  "padding-left": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  "padding-right": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  "padding-top": [/^(0|[\d.]+(px|pt|em|rem|%))$/i],
+  "text-align": [/^(left|right|center|justify|start|end)$/i],
+  "text-decoration": [/^(none|underline|overline|line-through)(\s+(solid|double|dotted|dashed|wavy))?$/i],
+  "vertical-align": [/^(baseline|sub|super|top|text-top|middle|bottom|text-bottom)$/i],
+  width: [/^(auto|[\d.]+(px|pt|em|rem|%)|\d+%)$/i],
+  "white-space": [/^(normal|nowrap|pre|pre-wrap|pre-line|break-spaces)$/i],
+};
+
+function sanitizeEmailStylesheet(css: string) {
+  try {
+    const stylesheet = postcss.parse(css);
+    stylesheet.walkAtRules((rule) => {
+      if (rule.name.toLowerCase() !== "media") rule.remove();
+    });
+    stylesheet.walkDecls((declaration) => {
+      const allowedValues = emailCssValues[declaration.prop.toLowerCase()];
+      if (!allowedValues?.some((pattern) => pattern.test(declaration.value))) declaration.remove();
+    });
+    stylesheet.walkRules((rule) => {
+      if (!rule.nodes?.length) rule.remove();
+    });
+    return stylesheet.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function sanitizeEmailHtml(html: string) {
-  return sanitizeHtml(html, { allowedSchemes: [...sanitizeHtml.defaults.allowedSchemes, "cid"] });
+  const preparedHtml = html.replace(/<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi, (_match, attributes: string, css: string) => `<style${attributes}>${sanitizeEmailStylesheet(css)}</style>`);
+  return sanitizeHtml(preparedHtml, {
+    allowedTags: [...sanitizeHtml.defaults.allowedTags, "style"],
+    allowedAttributes: { ...sanitizeHtml.defaults.allowedAttributes, "*": ["class", "id", "style"] },
+    allowedStyles: { "*": emailCssValues },
+    allowedSchemes: [...sanitizeHtml.defaults.allowedSchemes, "cid"],
+    allowVulnerableTags: true,
+  });
 }
 
 function splitAddresses(value?: string) {
