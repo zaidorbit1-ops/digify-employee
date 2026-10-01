@@ -58,6 +58,7 @@ const crmNavItems = [
   { label: "Campaigns", href: "/dashboard/crm/campaigns", icon: IconWallet },
   { label: "Automations", href: "/dashboard/crm/automations", icon: IconRefresh },
   { label: "Analytics", href: "/dashboard/crm/analytics", icon: IconOverview },
+  { label: "System logs", href: "/dashboard/crm/logs", icon: IconOverview },
   { label: "CRM Settings", href: "/dashboard/crm/settings", icon: IconSettings },
 ];
 

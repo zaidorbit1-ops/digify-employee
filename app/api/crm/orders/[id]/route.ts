@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminContext } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const orderFields = "id, public_order_id, lead_id, expert_id, service_name, service_charges, service_deadline, is_writing, word_count, subject_area, status, created_by, completed_by, created_at, updated_at, completed_at, crm_leads(id, name, email, phone, company_id, deleted_at, crm_companies(name), crm_websites(name, website_url)), crm_experts(id, name, email, service_area, status)";
 const statuses = ["pending", "in_progress", "completed", "cancelled"];
@@ -31,7 +32,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   }
 }
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -59,9 +60,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   } catch (error) {
     return fail(error, "Could not update order.");
   }
-}
+});
 
-export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+export const POST = withCrmApiLogging(async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -75,4 +76,4 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   } catch (error) {
     return fail(error, "Could not add order note.");
   }
-}
+});

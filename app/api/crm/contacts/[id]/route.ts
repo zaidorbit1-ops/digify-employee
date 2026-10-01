@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string };
   return NextResponse.json({ error: error instanceof Error ? error.message : value.message ?? fallback }, { status });
 }
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -34,9 +35,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   } catch (error) {
     return fail(error, "Could not update contact.");
   }
-}
+});
 
-export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const DELETE = withCrmApiLogging(async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -48,4 +49,4 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   } catch (error) {
     return fail(error, "Could not archive contact.");
   }
-}
+});

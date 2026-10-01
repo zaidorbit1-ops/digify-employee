@@ -1,3 +1,4 @@
+import { withCrmApiLogging } from "@/lib/crm-logs";
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient, getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
@@ -119,7 +120,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, user, profile, status } = await getNotificationContext();
     if (!user || !profile) return NextResponse.json({ error: "CRM notification access required." }, { status });
@@ -150,4 +151,4 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not update notification." }, { status: 500 });
   }
-}
+});

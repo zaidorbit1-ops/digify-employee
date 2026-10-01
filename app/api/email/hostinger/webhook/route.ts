@@ -5,6 +5,7 @@ import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 import { createCrmActivityNotifications } from "@/lib/crm-notifications";
+import { writeCrmLog } from "@/lib/crm-logs";
 
 export const dynamic = "force-dynamic";
 
@@ -246,10 +247,12 @@ export async function POST(request: Request) {
       companyId: mailbox.company_id,
     });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
+    await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webmail.email.received", message: "Incoming email received and stored.", route: "/api/email/hostinger/webhook", requestId, companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id } });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unknown error";
     console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, reason });
+    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId } });
     return fail(`Webhook processing failed at ${stage}.`, 500, requestId, "WEBHOOK_PROCESSING_FAILED");
   }
 }

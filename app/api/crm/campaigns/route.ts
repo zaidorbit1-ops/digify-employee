@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { sendHostingerEmail } from "@/lib/hostinger-mail";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["draft", "scheduled", "running", "paused", "completed", "cancelled", "failed"];
 
@@ -66,7 +67,7 @@ export async function GET(request: Request) {
   } catch (error) { return fail(error, "Could not load campaigns."); }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -89,9 +90,9 @@ export async function POST(request: Request) {
     if (error) throw error;
     return NextResponse.json({ campaign: data }, { status: 201 });
   } catch (error) { return fail(error, "Could not create campaign.", 400); }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -104,9 +105,9 @@ export async function PATCH(request: Request) {
     if (error) throw error;
     return NextResponse.json({ campaign: data });
   } catch (error) { return fail(error, "Could not update campaign.", 400); }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -116,4 +117,4 @@ export async function DELETE(request: Request) {
     if (error) throw error;
     return NextResponse.json({ ok: true });
   } catch (error) { return fail(error, "Could not delete campaign."); }
-}
+});

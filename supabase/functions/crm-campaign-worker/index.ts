@@ -31,6 +31,28 @@ async function allRows(makeQuery: () => any) {
   }
 }
 
+function safeLogMessage(value: string) {
+  return value.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[email]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").slice(0, 500);
+}
+
+async function writeSystemLog(db: ReturnType<typeof createClient>, input: { level: "success" | "info" | "warning" | "error"; event: string; message: string; companyId?: number; requestId?: string; metadata?: Record<string, unknown> }) {
+  try {
+    const { error } = await db.rpc("insert_crm_system_log", {
+      p_level: input.level,
+      p_source: "crm-campaign-worker",
+      p_event: input.event,
+      p_message: safeLogMessage(input.message),
+      p_route: "supabase/functions/crm-campaign-worker",
+      p_request_id: input.requestId ?? workerId,
+      p_company_id: input.companyId ?? null,
+      p_metadata: input.metadata ?? {},
+    });
+    if (error) console.error("CRM system log write failed:", error.message);
+  } catch (error) {
+    console.error("CRM system log write failed:", error instanceof Error ? error.message : "Unknown error");
+  }
+}
+
 function matchesRule(contact: Record<string, unknown>, rule: { field: string; operator: string; value: string }) {
   const actual = String(contact[rule.field] ?? "").toLowerCase();
   const expected = String(rule.value ?? "").toLowerCase();
@@ -156,6 +178,13 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     db.from("crm_contact_timeline").insert({ company_id: campaign.company_id, contact_id: contact.id, event_type: "campaign_email_sent", event_data: { campaign_id: campaign.id, campaign_message_id: message.id, provider_message_id: providerMessageId, subject } }),
   ]);
   for (const error of [messageUpdateError, contactUpdateError, eventError, timelineError]) if (error) throw error;
+  await writeSystemLog(db, {
+    level: "success",
+    event: "campaign.email.sent",
+    message: "Campaign email sent successfully.",
+    companyId: campaign.company_id,
+    metadata: { campaign_id: campaign.id, message_id: message.id, mailbox_id: campaign.mailbox_id },
+  });
 }
 
 async function failClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>, error: unknown) {
@@ -170,6 +199,13 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
   ]);
   if (messageError) throw messageError;
   if (contactError) throw contactError;
+  await writeSystemLog(db, {
+    level: permanent ? "error" : "warning",
+    event: permanent ? "campaign.email.failed" : "campaign.email.retry_scheduled",
+    message: safeLogMessage(reason),
+    companyId: message.company_id,
+    metadata: { message_id: message.id, attempt_count: attempts, permanent },
+  });
   if (permanent) {
     const { error: eventError } = await db.from("crm_email_events").insert({ company_id: message.company_id, campaign_message_id: message.id, event_type: "failed", metadata: { error: reason.slice(0, 1000), attempts } });
     if (eventError) console.error("Failed to persist campaign failure event:", eventError.message);
@@ -222,9 +258,17 @@ Deno.serve(async (request) => {
     await prepareDueCampaigns(db);
     const delivery = await deliverDueMessages(db);
     await finishCampaigns(db);
+    await writeSystemLog(db, {
+      level: delivery.failed ? "warning" : "success",
+      event: "campaign.worker.completed",
+      message: `Campaign worker processed ${delivery.processed} message(s), with ${delivery.failed} failure(s).`,
+      requestId: workerId,
+      metadata: delivery,
+    });
     return json({ ok: true, ...delivery });
   } catch (error) {
     console.error("CRM campaign Edge Function failed:", error);
+    await writeSystemLog(db, { level: "error", event: "campaign.worker.failed", message: error instanceof Error ? error.message : "Campaign processing failed." });
     return json({ error: error instanceof Error ? error.message : "Campaign processing failed." }, 500);
   }
 });

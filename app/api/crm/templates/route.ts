@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { sendHostingerEmail } from "@/lib/hostinger-mail";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["draft", "active", "archived"] as const;
 const allowedVariables = ["first_name", "last_name", "email", "company_name"];
@@ -60,7 +61,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -95,9 +96,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return fail(error, "Could not create email template.", 400);
   }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -111,9 +112,9 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return fail(error, "Could not update email template.", 400);
   }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -125,4 +126,4 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return fail(error, "Could not delete email template.");
   }
-}
+});

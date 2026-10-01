@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 
@@ -97,7 +98,7 @@ export async function OPTIONS() {
   return withCorsHeaders(new NextResponse(null, { status: 204 }));
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   const { identifier, secret } = getCredentials(request);
   if (!identifier || !secret) return errorResponse("Integration identifier and secret are required.", "Integration credentials are required.", 401);
 
@@ -147,4 +148,4 @@ export async function POST(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not create CRM lead.");
   }
-}
+});

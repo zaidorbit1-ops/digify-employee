@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const technologies = ["react", "nextjs", "php", "wordpress", "other"];
 const hostingProviders = ["hostinger", "orangehost", "other"];
@@ -88,7 +89,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -104,9 +105,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not create CRM website.");
   }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -119,9 +120,9 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not update CRM website.");
   }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -133,4 +134,4 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not delete CRM website.");
   }
-}
+});

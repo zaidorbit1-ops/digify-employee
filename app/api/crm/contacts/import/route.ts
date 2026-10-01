@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string };
@@ -22,7 +23,7 @@ function validateRow(row: Record<string, unknown>, rowNumber: number) {
   return { rowNumber, row: normalizedRow, fullName, email, errors };
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -76,4 +77,4 @@ export async function POST(request: Request) {
   } catch (error) {
     return fail(error, "Could not import contacts.");
   }
-}
+});

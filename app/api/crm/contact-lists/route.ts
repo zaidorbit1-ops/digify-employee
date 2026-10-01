@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string; code?: string };
@@ -38,7 +39,7 @@ export async function GET(request: Request) {
   } catch (error) { return fail(error, "Could not load contact lists."); }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -47,9 +48,9 @@ export async function POST(request: Request) {
     if (error) throw error;
     return NextResponse.json({ list: { ...data, contact_count: 0 } }, { status: 201 });
   } catch (error) { return fail(error, "Could not create contact list.", 400); }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -60,9 +61,9 @@ export async function PATCH(request: Request) {
     if (error) throw error;
     return NextResponse.json({ list: data });
   } catch (error) { return fail(error, "Could not update contact list.", 400); }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -72,4 +73,4 @@ export async function DELETE(request: Request) {
     if (error) throw error;
     return NextResponse.json({ ok: true });
   } catch (error) { return fail(error, "Could not delete contact list."); }
-}
+});

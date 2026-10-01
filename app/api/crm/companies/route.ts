@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSupabaseServerClient, getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 async function getAccessClient() {
   const client = await getSupabaseServerClient();
@@ -123,7 +124,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -148,9 +149,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return responseForError(error, "Could not create CRM company.");
   }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -179,9 +180,9 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return responseForError(error, "Could not update CRM company.");
   }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, profile, permission, error: authError } = await getAccessClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -196,4 +197,4 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return responseForError(error, "Could not delete CRM company.");
   }
-}
+});

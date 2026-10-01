@@ -59,6 +59,21 @@ export async function getHostingerWebhook(address: string, webhookId: string) {
   return { resourceId: mailbox.resourceId, webhook: response.data?.data };
 }
 
+export async function activateHostingerWebhook(address: string, webhookId: string) {
+  const { resourceId, webhook } = await getHostingerWebhook(address, webhookId);
+  if (!webhook) throw new Error("Hostinger webhook was not found.");
+  const response = await new WebhooksApi(configuration(address)).updateWebhook(resourceId, webhookId, {
+    name: webhook.name,
+    description: webhook.description ?? null,
+    events: webhook.events,
+    status: "active",
+    url: webhook.url,
+  });
+  const updated = response.data?.data;
+  if (updated?.status !== "active") throw new Error(`Hostinger webhook was not activated. Current status: ${updated?.status ?? "unknown"}.`);
+  return { resourceId, webhook: updated };
+}
+
 export async function testHostingerWebhook(address: string, resourceId: string, webhookId: string) {
   const response = await new WebhooksApi(configuration(address)).testWebhook(resourceId, webhookId);
   return response.data?.data;

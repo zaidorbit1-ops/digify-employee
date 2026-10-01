@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminContext } from "@/lib/crm-admin";
 import { createCrmActivityNotifications } from "@/lib/crm-notifications";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["new", "contacted", "qualified", "converted", "lost"];
 
@@ -45,7 +46,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -98,4 +99,4 @@ export async function POST(request: Request) {
   } catch (error) {
     return fail(error, "Could not create CRM lead.");
   }
-}
+});
