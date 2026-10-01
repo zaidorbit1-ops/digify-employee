@@ -13,6 +13,7 @@ type TemplatePayload = {
   subject?: string;
   html_body?: string;
   text_body?: string;
+  content_mode?: "html" | "plain";
   variables?: string[];
   status?: string;
 };
@@ -26,20 +27,28 @@ function clean(value: unknown, max = 100000) {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
+}
+
 function parseTemplate(body: TemplatePayload) {
   const companyId = Number(body.company_id);
   const name = clean(body.name, 150);
   const subject = clean(body.subject, 500);
   const htmlBody = clean(body.html_body);
   const textBody = clean(body.text_body, 100000) || null;
+  const contentMode = body.content_mode === "plain" ? "plain" : "html";
   const status = clean(body.status, 20) || "draft";
   const variables = Array.isArray(body.variables) ? [...new Set(body.variables.filter((item) => allowedVariables.includes(item)))] : [];
   if (!Number.isInteger(companyId) || companyId <= 0) throw new Error("A valid company is required.");
   if (!name) throw new Error("Template name is required.");
   if (!subject) throw new Error("Template subject is required.");
-  if (!htmlBody) throw new Error("HTML/body content is required.");
+  if (contentMode === "plain" ? !textBody : !htmlBody) throw new Error(contentMode === "plain" ? "Plain-text email content is required." : "HTML email content is required.");
   if (!statuses.includes(status as (typeof statuses)[number])) throw new Error("Choose a valid template status.");
-  return { company_id: companyId, name, subject, html_body: htmlBody, text_body: textBody, variables, status };
+  const compatibleHtml = contentMode === "plain"
+    ? `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.6">${escapeHtml(textBody ?? "")}</div>`
+    : htmlBody;
+  return { company_id: companyId, name, subject, html_body: compatibleHtml, text_body: textBody, content_mode: contentMode, variables, status };
 }
 
 function renderVariables(value: string, values: Record<string, string>) {
@@ -50,7 +59,15 @@ export async function GET(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
-    const companyId = Number(new URL(request.url).searchParams.get("company_id"));
+    const params = new URL(request.url).searchParams;
+    const templateId = Number(params.get("id"));
+    if (Number.isInteger(templateId) && templateId > 0) {
+      const { data, error } = await client.from("crm_email_templates").select("*").eq("id", templateId).maybeSingle();
+      if (error) throw error;
+      if (!data) return fail("Email template not found.", "Email template not found.", 404);
+      return NextResponse.json({ template: data });
+    }
+    const companyId = Number(params.get("company_id"));
     let query = client.from("crm_email_templates").select("*").order("updated_at", { ascending: false });
     if (companyId) query = query.eq("company_id", companyId);
     const { data, error } = await query;
@@ -86,7 +103,10 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       if (templateError) throw templateError;
       if (mailboxError) throw mailboxError;
       const values = { first_name: "Test", last_name: "Recipient", email: recipient, company_name: "Your company" };
-      await sendHostingerEmail({ to: recipient, subject: `[TEST] ${renderVariables(template.subject, values)}`, html: renderVariables(template.html_body, values), text: renderVariables(template.text_body || template.subject, values), mailboxAddress: mailbox.email_address });
+      const htmlBody = template.content_mode === "plain"
+        ? `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.6">${escapeHtml(renderVariables(template.text_body ?? "", values))}</div>`
+        : renderVariables(template.html_body, values);
+      await sendHostingerEmail({ to: recipient, subject: `[TEST] ${renderVariables(template.subject, values)}`, html: htmlBody, text: renderVariables(template.text_body || template.subject, values), mailboxAddress: mailbox.email_address });
       return NextResponse.json({ ok: true, message: "Test email sent successfully." });
     }
     const parsed = parseTemplate(body);
