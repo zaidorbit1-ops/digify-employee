@@ -250,9 +250,11 @@ export async function POST(request: Request) {
     await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webmail.email.received", message: "Incoming email received and stored.", route: "/api/email/hostinger/webhook", requestId, companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id } });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "unknown error";
-    console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, reason });
-    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId } });
+    const errorRecord = record(error);
+    const reason = error instanceof Error ? error.message : firstString(errorRecord.message, errorRecord.details, "Unknown webhook processing error.");
+    const errorCode = stringValue(errorRecord.code) || null;
+    console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, error_code: errorCode, reason });
+    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}${errorCode ? ` [${errorCode}]` : ""}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId, stage, error_code: errorCode } });
     return fail(`Webhook processing failed at ${stage}.`, 500, requestId, "WEBHOOK_PROCESSING_FAILED");
   }
 }
