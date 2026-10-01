@@ -94,6 +94,7 @@ export async function POST(request: Request) {
   const requestId = randomUUID();
   let stage = "payload.parse";
   let mailboxId: number | null = null;
+  let diagnosticSubject: string | null = null;
   let payload: RecordValue;
   try {
     payload = record(await request.json());
@@ -168,6 +169,7 @@ export async function POST(request: Request) {
     let recipients = addressList(message.to ?? message.recipients);
     let cc = addressList(message.cc);
     let subject = firstString(message.subject) || "(no subject)";
+    diagnosticSubject = subject;
     const payloadBodies = extractBodyParts(message);
     let textBody = firstString(message.text, message.textBody, record(message.body).text, payloadBodies.text);
     let htmlBody = firstString(message.html, message.htmlBody, record(message.body).html, payloadBodies.html);
@@ -183,6 +185,7 @@ export async function POST(request: Request) {
       recipients = addressList(message.to ?? message.recipients);
       cc = addressList(message.cc);
       subject = firstString(message.subject) || subject;
+      diagnosticSubject = subject;
       textBody = firstString(message.text, message.textBody, fetched.body.text, record(message.body).text, fetchedBodies.text);
       htmlBody = firstString(message.html, message.htmlBody, fetched.body.html, record(message.body).html, fetchedBodies.html);
       messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
@@ -224,7 +227,10 @@ export async function POST(request: Request) {
       ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, folder: "inbox", updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
       : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: "inbox", updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
     if (threadResult.error) throw threadResult.error;
-    const receivedAt = firstString(message.receivedAt, message.received_at, message.date) || new Date().toISOString();
+    const receivedAtValue = firstString(message.receivedAt, message.received_at, message.date);
+    const receivedAtDate = receivedAtValue ? new Date(receivedAtValue) : new Date();
+    if (Number.isNaN(receivedAtDate.getTime())) throw new Error("Hostinger message received timestamp is invalid.");
+    const receivedAt = receivedAtDate.toISOString();
     stage = "database.message_save";
     const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, hostinger_folder: folder, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeEmailHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
     if (messageError) throw messageError;
@@ -247,14 +253,14 @@ export async function POST(request: Request) {
       companyId: mailbox.company_id,
     });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
-    await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webmail.email.received", message: "Incoming email received and stored.", route: "/api/email/hostinger/webhook", requestId, companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id } });
+    await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webmail.email.received", message: "Incoming email received and stored.", route: "/api/email/hostinger/webhook", requestId, companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id, email_subject: subject } });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {
     const errorRecord = record(error);
     const reason = error instanceof Error ? error.message : firstString(errorRecord.message, errorRecord.details, "Unknown webhook processing error.");
     const errorCode = stringValue(errorRecord.code) || null;
     console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, error_code: errorCode, reason });
-    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}${errorCode ? ` [${errorCode}]` : ""}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId, stage, error_code: errorCode } });
+    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}${errorCode ? ` [${errorCode}]` : ""}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId, stage, error_code: errorCode, email_subject: diagnosticSubject } });
     return fail(`Webhook processing failed at ${stage}.`, 500, requestId, "WEBHOOK_PROCESSING_FAILED");
   }
 }

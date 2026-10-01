@@ -122,7 +122,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
@@ -169,14 +169,14 @@ export async function POST(request: Request) {
       if (error) console.error("[hostinger] outgoing attachment metadata failed", error.message);
     }
     console.info("[hostinger] outgoing email sent", { mailbox_id: mailbox.id, message_id: providerMessageId });
-    await writeCrmLog({ level: "success", source: "hostinger-webmail", event: "webmail.email.sent", message: "Webmail email sent successfully.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id, recipient_count: addresses(to).length + addresses(body.cc).length + addresses(body.bcc).length } });
+    await writeCrmLog({ level: "success", source: "hostinger-webmail", event: "webmail.email.sent", message: "Webmail email sent successfully.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id, email_subject: subject, recipient_count: addresses(to).length + addresses(body.cc).length + addresses(body.bcc).length } });
     return NextResponse.json({ ok: true, message: "Email sent successfully." });
   } catch (error) {
     console.error("[hostinger] outgoing email failed", error instanceof Error ? error.message : "unknown error");
     await writeCrmLog({ level: "error", source: "hostinger-webmail", event: "webmail.email.failed", message: error instanceof Error ? error.message : "Email send failed.", route: "/api/crm/webmail" });
     return fail(error, "Failed to send email.", 400);
   }
-}
+});
 
 export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {

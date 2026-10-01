@@ -183,7 +183,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     event: "campaign.email.sent",
     message: "Campaign email sent successfully.",
     companyId: campaign.company_id,
-    metadata: { campaign_id: campaign.id, message_id: message.id, mailbox_id: campaign.mailbox_id },
+    metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id, email_subject: subject },
   });
 }
 
@@ -199,12 +199,17 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
   ]);
   if (messageError) throw messageError;
   if (contactError) throw contactError;
+  const { data: campaignContext } = await db.from("crm_campaign_contacts")
+    .select("campaign_id, crm_campaigns(name, mailbox_id, subject)")
+    .eq("id", message.campaign_contact_id)
+    .maybeSingle();
+  const campaign = Array.isArray(campaignContext?.crm_campaigns) ? campaignContext.crm_campaigns[0] : campaignContext?.crm_campaigns;
   await writeSystemLog(db, {
     level: permanent ? "error" : "warning",
     event: permanent ? "campaign.email.failed" : "campaign.email.retry_scheduled",
     message: safeLogMessage(reason),
     companyId: message.company_id,
-    metadata: { message_id: message.id, attempt_count: attempts, permanent },
+    metadata: { campaign_id: campaignContext?.campaign_id, campaign_name: campaign?.name, campaign_message_id: message.id, mailbox_id: campaign?.mailbox_id, email_subject: campaign?.subject, attempt_count: attempts, permanent },
   });
   if (permanent) {
     const { error: eventError } = await db.from("crm_email_events").insert({ company_id: message.company_id, campaign_message_id: message.id, event_type: "failed", metadata: { error: reason.slice(0, 1000), attempts } });
