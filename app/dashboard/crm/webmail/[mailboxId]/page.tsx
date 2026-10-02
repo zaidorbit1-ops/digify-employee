@@ -1979,6 +1979,7 @@ export default function MailboxWorkspace() {
               ) : visibleThreads.length > 0 ? (
                 visibleThreads.map((thread) => {
                   const latest = thread.crm_email_messages.at(-1);
+                  const latestOutbound = [...thread.crm_email_messages].reverse().find((message) => message.direction === "outbound");
                   const isSelected = selectedThreadId === thread.id;
                   const isUnread = latest ? !latest.is_read : false;
                   const senderName = latest?.direction === "outbound" ? "You" : getSenderName(latest?.sender ?? "");
@@ -2010,13 +2011,13 @@ export default function MailboxWorkspace() {
                       {/* Content preview */}
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
-                          <span
-                            className={`truncate text-sm ${
-                              isUnread ? "font-extrabold text-slate-900" : "font-semibold text-slate-700"
-                            }`}
-                          >
-                            {senderName}
-                          </span>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className={`truncate text-sm ${isUnread ? "font-extrabold text-slate-900" : "font-semibold text-slate-700"}`}>
+                              {senderName}
+                            </span>
+                            {latestOutbound?.opened_at ? <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700" title={`Viewed ${formatFullDate(latestOutbound.opened_at)}`}><IconEye className="h-3 w-3" />Viewed</span> : null}
+                            {latestOutbound?.clicked_at ? <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-bold text-sky-700" title={`Link clicked ${formatFullDate(latestOutbound.clicked_at)}`}><IconArrowRight className="h-3 w-3" />Clicked</span> : null}
+                          </div>
                           <span className="shrink-0 text-[11px] font-medium text-slate-400">
                             {dateText}
                           </span>

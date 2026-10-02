@@ -43,9 +43,9 @@ export async function middleware(request: NextRequest) {
   );
   const isCrmLeadIngest =
     request.nextUrl.pathname === "/api/crm/integrations/leads";
-  const isCrmTracking = request.nextUrl.pathname.startsWith(
-    "/api/crm/tracking/",
-  );
+  const isCrmTracking =
+    request.nextUrl.pathname.startsWith("/api/crm/tracking/") ||
+    request.nextUrl.pathname.startsWith("/api/crm/webmail/tracking/");
   const isHostingerWebhook =
     request.nextUrl.pathname === "/api/email/hostinger/webhook";
 
