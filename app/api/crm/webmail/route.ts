@@ -1,7 +1,7 @@
 import sanitizeHtml from "sanitize-html";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { findHostingerMessage, getHostingerMessage, sanitizeEmailHtml, sendHostingerEmail } from "@/lib/hostinger-mail";
+import { findHostingerMessage, getHostingerMessage, isIncompleteEmailBody, sanitizeEmailHtml, sendHostingerEmail } from "@/lib/hostinger-mail";
 import { withCrmApiLogging, writeCrmLog } from "@/lib/crm-logs";
 
 type AttachmentInput = { name: string; size: number; type: string; base64: string };
@@ -15,17 +15,15 @@ function addresses(value?: string) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-function hasRenderableBody(textBody?: string | null, htmlBody?: string | null) {
-  if (textBody?.trim()) return true;
-  if (!htmlBody?.trim()) return false;
-  const visibleHtml = htmlBody
-    .replace(/<!--(?:.|\n|\r)*?-->/g, " ")
-    .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
-    .replace(/&nbsp;|&#160;|&#x0*a0;/gi, " ")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return Boolean(visibleHtml || /<(img|picture|video|audio|object|svg|canvas)\b/i.test(htmlBody));
+function looksLikePartialBody(textBody?: string | null, htmlBody?: string | null) {
+  if (isIncompleteEmailBody(textBody, htmlBody)) return true;
+  if (textBody?.trim()) return false;
+  const html = htmlBody?.trim() ?? "";
+  if (!html) return true;
+  const visible = html.replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const endsMidToken = /(?:&(?:[a-z]+|#\d*|#x[\da-f]*)?|<)\s*$/i.test(html);
+  const hasBodyStructure = /<(?:html|body|div|p|table|tr|td|h[1-6]|ul|ol|blockquote)\b/i.test(html);
+  return endsMidToken || (!hasBodyStructure && visible.length < 160);
 }
 
 function normalizeContentId(value?: string | null) {
@@ -63,44 +61,49 @@ export async function GET(request: Request) {
     if (messageError) throw messageError;
     const detailedMessages = Number.isInteger(threadId) && threadId > 0
       ? await Promise.all((messages ?? []).map(async (message) => {
-          if (hasRenderableBody(message.text_body, message.html_body) || !message.hostinger_uid) return message;
+          if (message.direction !== "inbound" || !message.hostinger_uid || !looksLikePartialBody(message.text_body, message.html_body)) return message;
           try {
             const folder = message.hostinger_folder || "INBOX";
             const fetched = await getHostingerMessage(mailbox.email_address, folder, Number(message.hostinger_uid));
             const textBody = fetched.body.text?.trim() || null;
             const htmlBody = fetched.body.html?.trim() || null;
-            if (!textBody && !htmlBody) return message;
+            if (isIncompleteEmailBody(textBody, htmlBody)) return message;
             const safeHtml = htmlBody ? sanitizeEmailHtml(htmlBody) : null;
             const { error: updateError } = await client.from("crm_email_messages").update({ text_body: textBody, html_body: safeHtml }).eq("id", message.id);
             if (updateError) console.warn("[hostinger] recovered message body could not be cached", { message_id: message.id });
+            else await writeCrmLog({ level: "success", source: "hostinger-webmail", event: "webmail.email.body_recovered", message: "Canonical email body recovered from Hostinger.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: message.id, email_subject: message.subject, body_source: "hostinger_raw_source", text_length: textBody?.length ?? 0, html_length: safeHtml?.length ?? 0 } });
             return { ...message, text_body: textBody, html_body: safeHtml };
           } catch (error) {
             console.warn("[hostinger] message body recovery failed", { message_id: message.id, error: error instanceof Error ? error.message : "Unknown error" });
+            await writeCrmLog({ level: "error", source: "hostinger-webmail", event: "webmail.email.body_recovery_failed", message: error instanceof Error ? error.message : "Could not recover email body from Hostinger.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: message.id, email_subject: message.subject, hostinger_uid: message.hostinger_uid } });
             return message;
           }
         }))
       : messages ?? [];
     const recoveredMessages = Number.isInteger(threadId) && threadId > 0
       ? await Promise.all(detailedMessages.map(async (message) => {
-          if (message.hostinger_uid || message.direction !== "inbound" || !message.message_id || hasRenderableBody(message.text_body, message.html_body)) return message;
+          if (message.direction !== "inbound" || !looksLikePartialBody(message.text_body, message.html_body)) return message;
           try {
             const folder = message.hostinger_folder || "INBOX";
-            const providerMessage = await findHostingerMessage(mailbox.email_address, folder, message.message_id);
+            const providerMessage = await findHostingerMessage(mailbox.email_address, folder, message.message_id, { subject: message.subject, sender: message.sender, receivedAt: message.received_at });
             if (!providerMessage?.uid) {
-              console.warn("[hostinger] message recovery lookup found no exact Message-ID match", { message_id: message.id });
+              console.warn("[hostinger] message recovery lookup found no safe provider match", { message_id: message.id });
               return message;
             }
             const providerFolder = providerMessage.path || folder;
             const fetched = await getHostingerMessage(mailbox.email_address, providerFolder, providerMessage.uid);
             const textBody = fetched.body.text?.trim() || null;
             const htmlBody = fetched.body.html?.trim() || null;
+            if (isIncompleteEmailBody(textBody, htmlBody)) return message;
             const safeHtml = htmlBody ? sanitizeEmailHtml(htmlBody) : null;
             const values = { hostinger_uid: providerMessage.uid, hostinger_folder: providerFolder, text_body: textBody, html_body: safeHtml };
             const { error: updateError } = await client.from("crm_email_messages").update(values).eq("id", message.id);
             if (updateError) console.warn("[hostinger] recovered message metadata could not be cached", { message_id: message.id });
+            else await writeCrmLog({ level: "success", source: "hostinger-webmail", event: "webmail.email.body_recovered", message: "Email body and Hostinger UID recovered by Message-ID or strict metadata match.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: message.id, hostinger_uid: providerMessage.uid, email_subject: message.subject, body_source: "hostinger_raw_source", text_length: textBody?.length ?? 0, html_length: safeHtml?.length ?? 0 } });
             return { ...message, ...values };
           } catch (error) {
             console.warn("[hostinger] message recovery lookup failed", { message_id: message.id, error: error instanceof Error ? error.message : "Unknown error" });
+            await writeCrmLog({ level: "error", source: "hostinger-webmail", event: "webmail.email.body_recovery_failed", message: error instanceof Error ? error.message : "Could not resolve and recover email body from Hostinger.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: message.id, email_subject: message.subject, hostinger_uid: message.hostinger_uid } });
             return message;
           }
         }))

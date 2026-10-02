@@ -103,24 +103,43 @@ async function parseHostingerMessageSource(source: unknown) {
   return { text: parsed.text || "", html: typeof parsed.html === "string" ? parsed.html : "" };
 }
 
-export async function getHostingerMessage(address: string, folder: string, uid: number) {
+export function isIncompleteEmailBody(textBody?: string | null, htmlBody?: string | null) {
+  if (textBody?.trim()) return false;
+  const html = htmlBody?.trim() ?? "";
+  if (!html) return true;
+  const visibleHtml = html
+    .replace(/<!--(?:.|\n|\r)*?-->/g, " ")
+    .replace(/<(head|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/&nbsp;|&#160;|&#x0*a0;/gi, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!visibleHtml && !/<(img|picture|video|audio|object|svg|canvas)\b/i.test(html)) return true;
+  return /(?:&(?:[a-z]{1,20}|#\d+|#x[\da-f]+);?|<[^>]*|<)\s*$/i.test(html);
+}
+
+export async function getHostingerMessage(address: string, folder: string, uid: number, options: { markSeen?: boolean } = {}) {
   const mailbox = await getHostingerMailbox(address);
   const api = new MessagesApi(configuration(address));
+  const messagePromise = api.getMessage(mailbox.resourceId, folder, uid);
+  const textPromise = options.markSeen === false
+    ? null
+    : api.getMessageText(mailbox.resourceId, folder, uid);
   const [messageResult, textResult] = await Promise.allSettled([
-    api.getMessage(mailbox.resourceId, folder, uid),
-    api.getMessageText(mailbox.resourceId, folder, uid),
+    messagePromise,
+    textPromise ?? Promise.resolve(null),
   ]);
-  const renderedBody = textResult.status === "fulfilled" ? textResult.value.data.data : null;
+  const renderedBody = textResult.status === "fulfilled" ? textResult.value?.data.data ?? null : null;
   let body = { text: renderedBody?.text || "", html: renderedBody?.html || "" };
-  if (!body.text.trim() && !body.html.trim()) {
-    try {
-      const source = await api.getMessageSource(mailbox.resourceId, folder, uid);
-      body = await parseHostingerMessageSource(source.data);
-    } catch (error) {
-      console.warn("[hostinger] raw message source fallback failed", { uid, folder, error: error instanceof Error ? error.message : "Unknown error" });
-    }
+  try {
+    const source = await api.getMessageSource(mailbox.resourceId, folder, uid);
+    const sourceBody = await parseHostingerMessageSource(source.data);
+    if (!isIncompleteEmailBody(sourceBody.text, sourceBody.html)) body = sourceBody;
+    else if (isIncompleteEmailBody(body.text, body.html)) body = sourceBody;
+  } catch (error) {
+    console.warn("[hostinger] raw message source recovery failed", { uid, folder, error: error instanceof Error ? error.message : "Unknown error" });
   }
-  if (messageResult.status === "rejected" && textResult.status === "rejected" && !body.text.trim() && !body.html.trim()) throw textResult.reason;
+  if (messageResult.status === "rejected" && textResult.status === "rejected" && !body.text.trim() && !body.html.trim()) throw messageResult.reason;
   return {
     mailbox,
     message: messageResult.status === "fulfilled" ? messageResult.value.data.data : {},
@@ -132,26 +151,63 @@ function normalizeMessageId(value: string) {
   return value.trim().replace(/^<|>$/g, "").toLowerCase();
 }
 
-export async function findHostingerMessage(address: string, folder: string, messageId: string) {
+function normalizeAddress(value?: string | null) {
+  return (value ?? "").match(/<([^>]+)>/)?.[1]?.trim().toLowerCase() || (value ?? "").trim().toLowerCase();
+}
+
+function normalizeSubject(value?: string | null) {
+  return (value ?? "").replace(/^(?:(?:re|fw|fwd):\s*)+/i, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export async function findHostingerMessage(address: string, folder: string, messageId?: string | null, match?: { subject?: string; sender?: string; receivedAt?: string }) {
   const mailbox = await getHostingerMailbox(address);
   const api = new MessagesApi(configuration(address));
-  const headers = [`Message-ID: ${messageId}`, `Message-ID ${messageId}`];
-  for (const header of headers) {
-    const search: V1FolderMessagesSearchRequest = {
-      since: "", before: "", flags: [], uid: "", subject: "", from: "", to: "", cc: "", body: "",
-      header, larger: 0, smaller: 0, text: "",
-    };
-    try {
-      const response = await api.searchMessages(mailbox.resourceId, folder, 1, 10, "-uid", search);
-      const match = response.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId));
-      if (match) return match;
-    } catch {
-      continue;
+  if (messageId?.trim()) {
+    const headers = [`Message-ID: ${messageId}`, `Message-ID ${messageId}`];
+    for (const header of headers) {
+      const search: V1FolderMessagesSearchRequest = {
+        since: "", before: "", flags: [], uid: "", subject: "", from: "", to: "", cc: "", body: "",
+        header, larger: 0, smaller: 0, text: "",
+      };
+      try {
+        const response = await api.searchMessages(mailbox.resourceId, folder, 1, 10, "-uid", search);
+        const exact = response.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId));
+        if (exact) return exact;
+      } catch {
+        continue;
+      }
     }
   }
 
-  const recent = await api.listMessages(mailbox.resourceId, folder, 1, 100, "-date");
-  return recent.data.data.find((message) => normalizeMessageId(message.messageId ?? "") === normalizeMessageId(messageId)) ?? null;
+  const receivedAt = match?.receivedAt ? new Date(match.receivedAt).getTime() : Number.NaN;
+  const expectedSubject = normalizeSubject(match?.subject);
+  const expectedSender = normalizeAddress(match?.sender);
+  const pageLimit = 10;
+  let totalPages = pageLimit;
+
+  for (let page = 1; page <= Math.min(pageLimit, totalPages); page += 1) {
+    const response = await api.listMessages(mailbox.resourceId, folder, page, 100, "-date");
+    const messages = response.data.data ?? [];
+    const exact = messageId?.trim()
+      ? messages.find((item) => normalizeMessageId(item.messageId ?? "") === normalizeMessageId(messageId))
+      : null;
+    if (exact) return exact;
+
+    if (expectedSubject && expectedSender && Number.isFinite(receivedAt)) {
+      const likelyMatch = messages.find((item) => {
+        if (normalizeSubject(item.subject) !== expectedSubject) return false;
+        if (normalizeAddress(item.from?.address) !== expectedSender) return false;
+        const itemTime = new Date(item.date).getTime();
+        return Number.isFinite(itemTime) && Math.abs(itemTime - receivedAt) <= 10 * 60 * 1000;
+      });
+      if (likelyMatch) return likelyMatch;
+    }
+
+    totalPages = Math.min(pageLimit, Number(response.data.pagination?.totalPages) || 1);
+    if (!messages.length || page >= totalPages) break;
+  }
+
+  return null;
 }
 
 export async function getHostingerMessageAttachment(address: string, folder: string, uid: number, attachmentId: string) {
