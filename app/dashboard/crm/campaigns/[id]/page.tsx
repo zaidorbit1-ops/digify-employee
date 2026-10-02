@@ -31,12 +31,23 @@ function tone(status: string): "success" | "warning" | "danger" | "neutral" | "p
   return "neutral";
 }
 
+function recipientMatchesMetric(recipient: Recipient, metric: keyof Summary) {
+  if (metric === "recipients") return true;
+  const statuses = (recipient.messages ?? []).map((message) => message.status);
+  const eventTypes = new Set((recipient.events ?? []).map((event) => event.event_type));
+  if (metric === "queued" || metric === "processing" || metric === "sent" || metric === "failed") {
+    return recipient.status === metric || statuses.includes(metric);
+  }
+  return eventTypes.has(metric) || statuses.includes(metric);
+}
+
 export default function CampaignDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ company_id?: string }> }) {
   const [campaignId, setCampaignId] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [summary, setSummary] = useState<Summary>(emptySummary);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [selectedMetric, setSelectedMetric] = useState<keyof Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +108,8 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
   }, [campaign?.status, campaignId, companyId]);
 
   if (loading) return <div className="p-8"><EmptyState text="Loading campaign delivery report..." /></div>;
+
+  const visibleRecipients = selectedMetric ? recipients.filter((recipient) => recipientMatchesMetric(recipient, selectedMetric)) : recipients;
 
   const cards: { key: keyof Summary; label: string; icon: typeof IconEmployees; style: string; stripe: string; iconStyle: string }[] = [
     { key: "recipients", label: "Recipients", icon: IconEmployees, style: "border-sky-200 from-white to-sky-50/70", stripe: "bg-sky-500", iconStyle: "bg-sky-100 text-sky-700 ring-sky-200/80" },
@@ -165,7 +178,16 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {cards.map(({ key, label, icon: MetricIcon, style, stripe, iconStyle }) => (
-            <Card key={key} className={`group relative overflow-hidden border bg-gradient-to-br ${style} p-4 shadow-[0_10px_25px_rgba(15,23,42,0.04)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_18px_35px_rgba(15,23,42,0.09)]`}>
+            <button
+              key={key}
+              type="button"
+              aria-pressed={selectedMetric === key}
+              onClick={() => {
+                setSelectedMetric((current) => current === key ? null : key);
+                requestAnimationFrame(() => document.getElementById("recipient-delivery")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+              }}
+              className={`group relative overflow-hidden rounded-2xl border bg-gradient-to-br ${style} p-4 text-left shadow-[0_10px_25px_rgba(15,23,42,0.04)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_18px_35px_rgba(15,23,42,0.09)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${selectedMetric === key ? "ring-2 ring-primary ring-offset-2" : ""}`}
+            >
               <div className={`absolute inset-x-0 top-0 h-1 ${stripe}`} />
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -176,23 +198,29 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                   <MetricIcon className="h-5 w-5" />
                 </span>
               </div>
-            </Card>
+            </button>
           ))}
         </div>
 
+        <div id="recipient-delivery" className="scroll-mt-6">
         <Card className="overflow-hidden border-stone-200 bg-white/90 p-0 shadow-[0_14px_40px_rgba(17,24,39,0.04)]">
           <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/70 px-5 py-4">
             <div>
-              <h2 className="text-lg font-semibold text-stone-900">Recipient delivery</h2>
+              <h2 className="text-lg font-semibold text-stone-900">{selectedMetric ? `${cards.find((card) => card.key === selectedMetric)?.label} recipients` : "Recipient delivery"}</h2>
               <p className="mt-1 text-xs text-stone-500">Refreshes every 15 seconds while the campaign is running.</p>
             </div>
-            <span className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-600">{recipients.length} rows</span>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-600">{visibleRecipients.length} of {recipients.length}</span>
+              {selectedMetric ? <button type="button" onClick={() => setSelectedMetric(null)} className="text-xs font-semibold text-primary hover:underline">Clear filter</button> : null}
+            </div>
           </div>
 
           {!recipients.length ? (
             <div className="p-8">
               <Alert tone="info">No recipients have been queued. Check that the campaign audience contains active contacts and that the latest campaign Edge Function and database changes are deployed.</Alert>
             </div>
+          ) : !visibleRecipients.length ? (
+            <div className="p-8 text-center text-sm text-stone-500">No recipients match this campaign outcome.</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[900px] text-left text-sm">
@@ -207,7 +235,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                   </tr>
                 </thead>
                 <tbody>
-                  {recipients.map((recipient) => {
+                  {visibleRecipients.map((recipient) => {
                     const latest = [...(recipient.messages ?? [])].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
                     return (
                       <tr key={recipient.id} className="border-t border-stone-200 align-top transition hover:bg-stone-50/60">
@@ -259,6 +287,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
             </div>
           )}
         </Card>
+        </div>
       </> : null}
     </div>
   </>;

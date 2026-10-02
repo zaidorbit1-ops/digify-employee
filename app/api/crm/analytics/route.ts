@@ -32,7 +32,7 @@ export async function GET(request: Request) {
     const ids = (campaigns ?? []).map((campaign) => campaign.id);
     if (!ids.length) return NextResponse.json({ campaigns: [], summary: { recipients: 0, queued: 0, processing: 0, sent: 0, pending: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 }, recipients: [] });
 
-    const campaignContacts = await allRows((start, end) => client.from("crm_campaign_contacts").select("id, campaign_id, contact_id, status, crm_contacts(id, full_name, email)").in("campaign_id", ids).order("id").range(start, end));
+    const campaignContacts = await allRows((start, end) => client.from("crm_campaign_contacts").select("id, campaign_id, contact_id, status, crm_contacts(id, company_id, full_name, email, status)").in("campaign_id", ids).order("id").range(start, end));
     const campaignContactIds = campaignContacts.map((item) => item.id);
     const messages = campaignContactIds.length
       ? await allRows((start, end) => client.from("crm_campaign_messages").select("id, campaign_contact_id, status, error_message, sent_at, scheduled_at, next_attempt_at, attempt_count, provider_message_id, updated_at").in("campaign_contact_id", campaignContactIds).order("id").range(start, end))

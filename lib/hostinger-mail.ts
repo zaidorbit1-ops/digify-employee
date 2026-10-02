@@ -283,7 +283,10 @@ function sanitizeEmailStylesheet(css: string) {
   }
 }
 
-export function sanitizeEmailHtml(html: string) {
+export function sanitizeEmailHtml(
+  html: string,
+  options: { transformTags?: NonNullable<NonNullable<Parameters<typeof sanitizeHtml>[1]>["transformTags"]> } = {},
+) {
   const preparedHtml = html.replace(/<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi, (_match, attributes: string, css: string) => `<style${attributes}>${sanitizeEmailStylesheet(css)}</style>`);
   return sanitizeHtml(preparedHtml, {
     allowedTags: [
@@ -309,6 +312,7 @@ export function sanitizeEmailHtml(html: string) {
       img: ["http", "https", "data", "cid"],
     },
     allowProtocolRelative: true,
+    transformTags: options.transformTags,
     allowVulnerableTags: true,
   });
 }

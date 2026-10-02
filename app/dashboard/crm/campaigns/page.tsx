@@ -64,6 +64,19 @@ export default function CrmCampaignsPage() {
   useEffect(() => { loadCampaignData().catch((error) => setMessage({ text: error.message, tone: "danger" })); }, [companyId]);
 
   useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const retargetCompanyId = query.get("company_id") ?? "";
+    const retargetListId = query.get("retarget_contact_list_id") ?? "";
+    if (!/^\d+$/.test(retargetCompanyId) || !/^\d+$/.test(retargetListId)) return;
+    const audienceName = query.get("retarget_name")?.trim() ?? "";
+    setCompanyId(retargetCompanyId);
+    setEditingId(null);
+    setForm({ ...blankForm, company_id: retargetCompanyId, name: audienceName ? `Follow-up: ${audienceName}`.slice(0, 150) : "", audience_type: "list", contact_list_id: retargetListId });
+    setEditorOpen(true);
+    window.history.replaceState(window.history.state, "", window.location.pathname);
+  }, []);
+
+  useEffect(() => {
     if (!editorOpen || !form.company_id) {
       setTemplates([]);
       setMailboxes([]);

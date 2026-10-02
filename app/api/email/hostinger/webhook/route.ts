@@ -47,6 +47,16 @@ function headerList(value: unknown): string[] {
   return result ? [result] : [];
 }
 
+function crmFolderFromProviderFolder(folder: string) {
+  const segments = folder.toLowerCase().split(/[./\\]+/).filter(Boolean);
+  if (segments.some((segment) => /spam|junk|bulk/.test(segment))) return "spam";
+  if (segments.some((segment) => /trash|deleted/.test(segment))) return "trash";
+  if (segments.some((segment) => /draft/.test(segment))) return "drafts";
+  if (segments.some((segment) => /archive|all mail/.test(segment))) return "archive";
+  if (segments.some((segment) => /sent/.test(segment))) return "sent";
+  return "inbox";
+}
+
 function extractBodyParts(value: unknown, depth = 0): { text: string; html: string } {
   if (depth > 6 || value == null) return { text: "", html: "" };
   if (typeof value === "string") {
@@ -171,6 +181,7 @@ export async function POST(request: Request) {
     if ((!Number.isInteger(uid) || uid <= 0) && /^\d+$/.test(stringValue(message.id))) uid = Number(message.id);
     diagnosticUid = Number.isInteger(uid) && uid > 0 ? uid : null;
     let folder = firstString(message.folder, message.path, data.folder, payload.folder) || "INBOX";
+    let crmFolder = crmFolderFromProviderFolder(folder);
     let sender = address(message.from ?? message.sender);
     let recipients = addressList(message.to ?? message.recipients);
     let cc = addressList(message.cc);
@@ -194,6 +205,7 @@ export async function POST(request: Request) {
         uid = providerMessage.uid;
         diagnosticUid = uid;
         folder = providerMessage.path || folder;
+        crmFolder = crmFolderFromProviderFolder(folder);
         stage = "hostinger.message.fetch";
         diagnosticBodySource = "hostinger_message_api";
         const fetched = await getHostingerMessage(resolvedMailboxAddress, folder, uid, { markSeen: false });
@@ -259,8 +271,8 @@ export async function POST(request: Request) {
     const threadKey = inReplyTo || references[0] || messageId || providerMessageId;
     stage = "database.thread_save";
     const threadResult = threadId
-      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, folder: "inbox", updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
-      : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: "inbox", updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
+      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, folder: crmFolder, updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
+      : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: crmFolder, updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
     if (threadResult.error) throw threadResult.error;
     const receivedAtValue = firstString(message.receivedAt, message.received_at, message.date);
     const receivedAtDate = receivedAtValue ? new Date(receivedAtValue) : new Date();

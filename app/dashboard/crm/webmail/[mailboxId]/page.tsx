@@ -12,6 +12,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { Alert } from "@/components/ui/empty-state";
+import { IconArrowRight, IconEye } from "@/components/icons";
 import { useParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
@@ -49,6 +50,8 @@ type Message = {
   is_read: boolean;
   received_at: string | null;
   sent_at: string | null;
+  opened_at?: string | null;
+  clicked_at?: string | null;
   crm_email_attachments?: EmailAttachment[];
 };
 
@@ -1297,6 +1300,8 @@ function EmailReaderView({
                     <span className={`rounded-md px-2 py-1 text-[10px] font-extrabold uppercase ${isOutgoing ? "bg-sky-100 text-sky-800" : "bg-rose-100 text-rose-800"}`}>{isOutgoing ? "You sent" : "Received"}</span>
                     <span className="font-bold text-slate-900">{isOutgoing ? "You" : messageSender}</span>
                     {isOutgoing && message.sent_by_name ? <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-semibold text-slate-600">Sent by {message.sent_by_name}</span> : null}
+                    {isOutgoing && message.opened_at ? <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-800" title={`Open recorded ${formatFullDate(message.opened_at)}. Image blocking and privacy features can affect tracking accuracy.`}><IconEye className="h-3.5 w-3.5" />Viewed</span> : null}
+                    {isOutgoing && message.clicked_at ? <span className="inline-flex items-center gap-1 rounded-md bg-sky-100 px-2 py-1 text-[10px] font-bold text-sky-800" title={`Link click recorded ${formatFullDate(message.clicked_at)}.`}><IconArrowRight className="h-3.5 w-3.5" />Clicked</span> : null}
                     <span className="text-xs text-slate-500">&lt;{isOutgoing ? mailbox?.email_address || messageEmail : messageEmail}&gt;</span>
                     {index === messages.length - 1 && (
                       <span className="rounded-full bg-primary-soft px-2 py-0.5 text-[10px] font-bold text-primary">Latest</span>
@@ -1460,7 +1465,8 @@ export default function MailboxWorkspace() {
   const [mailbox, setMailbox] = useState<Mailbox | null>(null);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [hasMoreThreads, setHasMoreThreads] = useState(false);
-  const [loadingMoreThreads, setLoadingMoreThreads] = useState(false);
+  const [threadPage, setThreadPage] = useState(1);
+  const [loadingPage, setLoadingPage] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<string>("inbox");
   const [searchQuery, setSearchQuery] = useState("");
   const [filterUnreadOnly, setFilterUnreadOnly] = useState(false);
@@ -1469,6 +1475,7 @@ export default function MailboxWorkspace() {
   const [loading, setLoading] = useState(true);
   const [notification, setNotification] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
   const requestedThreadId = useRef<number | null>(null);
+  const threadPageRef = useRef(1);
 
   // Compose Drawer State
   const [composeOpen, setComposeOpen] = useState(false);
@@ -1476,23 +1483,25 @@ export default function MailboxWorkspace() {
   const [composeInitialSubject, setComposeInitialSubject] = useState("");
 
   // Load Mailbox Data
-  async function loadMailbox(page = 1, append = false) {
-    if (append) setLoadingMoreThreads(true);
+  async function loadMailbox(page = 1, folder = selectedFolder, quiet = false) {
+    if (quiet) setLoadingPage(true);
     else setLoading(true);
     try {
-      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&page=${page}&limit=10`, { cache: "no-store" });
+      const response = await fetch(`/api/crm/webmail?mailbox_id=${mailboxId}&folder=${encodeURIComponent(folder)}&page=${page}&limit=10`, { cache: "no-store" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not load mailbox.");
       setMailbox(result.mailbox);
-      setThreads((current) => append ? [...current, ...(result.threads ?? [])] : (result.threads ?? []));
+      setThreads(result.threads ?? []);
       setHasMoreThreads(Boolean(result.hasMore));
+      threadPageRef.current = page;
+      setThreadPage(page);
     } catch (error) {
       setNotification({
         text: error instanceof Error ? error.message : "Could not load mailbox.",
         tone: "danger",
       });
     } finally {
-      if (append) setLoadingMoreThreads(false);
+      if (quiet) setLoadingPage(false);
       else setLoading(false);
     }
   }
@@ -1504,7 +1513,7 @@ export default function MailboxWorkspace() {
         return thread.updated_at > latest ? thread.updated_at : latest;
       }, "1970-01-01T00:00:00.000Z");
       const response = await fetch(
-        `/api/crm/webmail?mailbox_id=${mailboxId}&since=${encodeURIComponent(latestTimestamp)}`,
+        `/api/crm/webmail?mailbox_id=${mailboxId}&folder=${encodeURIComponent(selectedFolder)}&since=${encodeURIComponent(latestTimestamp)}`,
         { cache: "no-store" }
       );
       const result = await response.json();
@@ -1513,10 +1522,13 @@ export default function MailboxWorkspace() {
           const incomingById = new Map<number, Thread>(result.threads.map((thread: Thread) => [thread.id, thread]));
           const merged = current.map((thread) => incomingById.get(thread.id) ?? thread);
           const existingIds = new Set(current.map((thread) => thread.id));
+          const addedThreads = threadPageRef.current === 1
+            ? result.threads.filter((thread: Thread) => !existingIds.has(thread.id))
+            : [];
           return [
             ...merged,
-            ...result.threads.filter((thread: Thread) => !existingIds.has(thread.id)),
-          ].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+            ...addedThreads,
+          ].sort((left, right) => right.updated_at.localeCompare(left.updated_at)).slice(0, 10);
         });
       }
     } catch {
@@ -1584,7 +1596,7 @@ export default function MailboxWorkspace() {
     } catch {
       // ignore
     }
-  }, [mailboxId]);
+  }, [mailboxId, selectedFolder]);
 
   // Open Message & Mark Read
   async function handleSelectThread(thread: Thread) {
@@ -1850,6 +1862,8 @@ export default function MailboxWorkspace() {
                     onClick={() => {
                       setSelectedFolder(f.id);
                       setSelectedThreadId(null);
+                      setThreadPage(1);
+                      void loadMailbox(1, f.id);
                     }}
                     className={`group flex shrink-0 items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition xl:w-full ${
                       isActive
@@ -1914,7 +1928,7 @@ export default function MailboxWorkspace() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => loadMailbox()}
+                    onClick={() => void loadMailbox(threadPage, selectedFolder, true)}
                     className="rounded-lg p-1.5 text-xs text-slate-400 hover:bg-slate-100 hover:text-slate-700"
                     title="Refresh"
                   >
@@ -2062,16 +2076,27 @@ export default function MailboxWorkspace() {
                   </p>
                 </div>
               )}
-              {!loading && visibleThreads.length > 0 && hasMoreThreads && (
-                <div className="border-t border-slate-100 p-3 text-center">
-                  <button
-                    type="button"
-                    onClick={() => loadMailbox(Math.floor(threads.length / 10) + 1, true)}
-                    disabled={loadingMoreThreads}
-                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-primary hover:text-primary disabled:opacity-50"
-                  >
-                    {loadingMoreThreads ? "Loading…" : "Load 10 more emails"}
-                  </button>
+              {!loading && threads.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/70 px-4 py-3">
+                  <span className="text-xs font-medium text-slate-500">Page {threadPage} · {threads.length} conversations</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void loadMailbox(threadPage - 1, selectedFolder, true)}
+                      disabled={threadPage <= 1 || loadingPage}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <IconArrowRight className="h-3.5 w-3.5 rotate-180" />Previous
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void loadMailbox(threadPage + 1, selectedFolder, true)}
+                      disabled={!hasMoreThreads || loadingPage}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      Next<IconArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

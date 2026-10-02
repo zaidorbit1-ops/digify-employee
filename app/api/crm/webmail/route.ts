@@ -15,6 +15,32 @@ function addresses(value?: string) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function addOpenTrackingPixel(html: string, pixel: string) {
+  const closingBody = html.search(/<\/body\s*>/i);
+  return closingBody < 0 ? `${html}${pixel}` : `${html.slice(0, closingBody)}${pixel}${html.slice(closingBody)}`;
+}
+
+function sanitizeAndTrackLinks(html: string, publicUrl: string, trackingToken: string) {
+  return sanitizeEmailHtml(html, {
+    transformTags: {
+      a: (tagName, attributes) => {
+        const href = attributes.href;
+        if (!href) return { tagName, attribs: attributes };
+        try {
+          const target = new URL(href);
+          if (!["http:", "https:"].includes(target.protocol)) return { tagName, attribs: attributes };
+          return {
+            tagName,
+            attribs: { ...attributes, href: `${publicUrl}/api/crm/webmail/tracking/click/${trackingToken}?url=${encodeURIComponent(target.toString())}` },
+          };
+        } catch {
+          return { tagName, attribs: attributes };
+        }
+      },
+    },
+  });
+}
+
 function looksLikePartialBody(textBody?: string | null, htmlBody?: string | null) {
   if (isIncompleteEmailBody(textBody, htmlBody)) return true;
   if (textBody?.trim()) return false;
@@ -47,20 +73,42 @@ export async function GET(request: Request) {
     const mailbox = await getMailbox(client, mailboxId);
     const page = Math.max(1, Number(params.get("page") || 1));
     const limit = Math.min(50, Math.max(1, Number(params.get("limit") || 10)));
+    const folder = params.get("folder");
+    const since = params.get("since");
     const threadId = Number(params.get("thread_id"));
     let query = client.from("crm_email_threads").select("id, company_id, mailbox_id, contact_id, subject, folder, is_starred, created_at, updated_at").eq("mailbox_id", mailboxId);
     if (Number.isInteger(threadId) && threadId > 0) query = query.eq("id", threadId);
-    else query = query.gte("updated_at", params.get("since") || "1970-01-01T00:00:00.000Z").order("updated_at", { ascending: false }).range((page - 1) * limit, page * limit - 1);
+    else {
+      if (folder === "starred") query = query.eq("is_starred", true);
+      else if (["inbox", "sent", "drafts", "archive", "spam", "trash"].includes(folder ?? "")) query = query.eq("folder", folder);
+      query = query.gte("updated_at", since || "1970-01-01T00:00:00.000Z").order("updated_at", { ascending: false });
+      const start = (page - 1) * limit;
+      query = query.range(start, start + limit - (since ? 1 : 0));
+    }
     const { data: threads, error: threadError } = await query;
     if (threadError) throw threadError;
-    const rows = threads ?? [];
+    const hasMore = !since && Number(threads?.length ?? 0) > limit;
+    const rows = (threads ?? []).slice(0, limit);
     const ids = rows.map((thread) => thread.id);
     const { data: messages, error: messageError } = ids.length
       ? await client.from("crm_email_messages").select("id, thread_id, direction, sender, sent_by_user_id, sent_by_name, recipients, cc, subject, text_body, html_body, is_read, hostinger_uid, hostinger_folder, message_id, provider_message_id, received_at, sent_at, created_at, crm_email_attachments(id, file_name, content_type, content_id, storage_path, file_size)").in("thread_id", ids).order("created_at", { ascending: true })
       : { data: [], error: null };
     if (messageError) throw messageError;
+    const outboundMessageIds = (messages ?? []).filter((item) => item.direction === "outbound").map((item) => item.id);
+    const { data: trackingEvents, error: trackingEventsError } = outboundMessageIds.length
+      ? await client.from("crm_email_events").select("message_id, event_type, event_time").in("event_type", ["opened", "clicked"]).in("message_id", outboundMessageIds).order("event_time", { ascending: true })
+      : { data: [], error: null };
+    if (trackingEventsError) throw trackingEventsError;
+    const firstOpenAt = new Map<number, string>();
+    const firstClickAt = new Map<number, string>();
+    for (const event of trackingEvents ?? []) {
+      if (!event.message_id) continue;
+      if (event.event_type === "opened" && !firstOpenAt.has(event.message_id)) firstOpenAt.set(event.message_id, event.event_time);
+      if (event.event_type === "clicked" && !firstClickAt.has(event.message_id)) firstClickAt.set(event.message_id, event.event_time);
+    }
+    const trackedMessages = (messages ?? []).map((item) => ({ ...item, opened_at: firstOpenAt.get(item.id) ?? null, clicked_at: firstClickAt.get(item.id) ?? null }));
     const detailedMessages = Number.isInteger(threadId) && threadId > 0
-      ? await Promise.all((messages ?? []).map(async (message) => {
+      ? await Promise.all(trackedMessages.map(async (message) => {
           if (message.direction !== "inbound" || !message.hostinger_uid || !looksLikePartialBody(message.text_body, message.html_body)) return message;
           try {
             const folder = message.hostinger_folder || "INBOX";
@@ -86,7 +134,7 @@ export async function GET(request: Request) {
             return message;
           }
         }))
-      : messages ?? [];
+      : trackedMessages;
     const recoveredMessages = Number.isInteger(threadId) && threadId > 0
       ? await Promise.all(detailedMessages.map(async (message) => {
           if (message.direction !== "inbound" || !looksLikePartialBody(message.text_body, message.html_body)) return message;
@@ -134,7 +182,7 @@ export async function GET(request: Request) {
     });
     const byThread = new Map<number, typeof detailedMessages>();
     for (const message of messagesWithInlineAttachments) byThread.set(message.thread_id, [...(byThread.get(message.thread_id) ?? []), message]);
-    return NextResponse.json({ mailbox, threads: rows.map((thread) => ({ ...thread, crm_email_messages: byThread.get(thread.id) ?? [] })), page, hasMore: rows.length === limit });
+    return NextResponse.json({ mailbox, threads: rows.map((thread) => ({ ...thread, crm_email_messages: byThread.get(thread.id) ?? [] })), page, hasMore });
   } catch (error) {
     return fail(error, "Could not load mailbox messages.");
   }
@@ -166,8 +214,13 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       const { data: previous } = await client.from("crm_email_messages").select("hostinger_uid, provider_message_id").eq("thread_id", threadId).order("created_at", { ascending: false }).limit(1).maybeSingle();
       if (previous?.hostinger_uid) inReplyTo = { uid: Number(previous.hostinger_uid), folder: "INBOX" };
     }
-    await sendHostingerEmail({ to, cc: body.cc, bcc: body.bcc, subject, text, html: sanitizeHtml(html), displayName: mailbox.display_name ?? undefined, mailboxAddress: mailbox.email_address, attachments, inReplyTo });
-    const providerMessageId = `hostinger:sent:${crypto.randomUUID()}`;
+    const trackingToken = crypto.randomUUID();
+    const providerMessageId = `hostinger:sent:${trackingToken}`;
+    const safeHtml = sanitizeEmailHtml(html);
+    const publicUrl = (process.env.CRM_PUBLIC_URL || new URL(request.url).origin).replace(/\/$/, "");
+    const trackingPixel = `<img src="${publicUrl}/api/crm/webmail/tracking/open/${trackingToken}" width="1" height="1" alt="" />`;
+    const trackedHtml = addOpenTrackingPixel(sanitizeAndTrackLinks(html, publicUrl, trackingToken), trackingPixel);
+    await sendHostingerEmail({ to, cc: body.cc, bcc: body.bcc, subject, text, html: trackedHtml, displayName: mailbox.display_name ?? undefined, mailboxAddress: mailbox.email_address, attachments, inReplyTo });
     let thread: { id: number } | null = null;
     if (Number.isInteger(threadId) && threadId > 0) {
       const { data, error } = await client.from("crm_email_threads").update({ updated_at: new Date().toISOString() }).eq("id", threadId).eq("mailbox_id", mailbox.id).select("id").maybeSingle();
@@ -179,7 +232,7 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       if (error) throw error;
       thread = data;
     }
-    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", sent_by_user_id: senderUser.id, sent_by_name: sentByName, provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: sanitizeHtml(html) || null, is_read: true, sent_at: new Date().toISOString() }).select("id").single();
+    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", sent_by_user_id: senderUser.id, sent_by_name: sentByName, provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: safeHtml || null, is_read: true, sent_at: new Date().toISOString() }).select("id").single();
     if (messageError) throw messageError;
     if (stored && attachments.length) {
       const attachmentRows = attachments.map((item) => ({ company_id: mailbox.company_id, message_id: stored.id, file_name: item.name, content_type: item.type || "application/octet-stream", storage_path: `data:${item.type || "application/octet-stream"};base64,${item.base64.includes(",") ? item.base64.split(",", 2)[1] : item.base64}`, file_size: item.size || 0 }));
