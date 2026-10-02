@@ -220,10 +220,10 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
     const publicUrl = (process.env.CRM_PUBLIC_URL || new URL(request.url).origin).replace(/\/$/, "");
     const trackingPixel = `<img src="${publicUrl}/api/crm/webmail/tracking/open/${trackingToken}" width="1" height="1" alt="" />`;
     const trackedHtml = addOpenTrackingPixel(sanitizeAndTrackLinks(html, publicUrl, trackingToken), trackingPixel);
-    await sendHostingerEmail({ to, cc: body.cc, bcc: body.bcc, subject, text, html: trackedHtml, displayName: mailbox.display_name ?? undefined, mailboxAddress: mailbox.email_address, attachments, inReplyTo });
     let thread: { id: number } | null = null;
+    let createdThread = false;
     if (Number.isInteger(threadId) && threadId > 0) {
-      const { data, error } = await client.from("crm_email_threads").update({ updated_at: new Date().toISOString() }).eq("id", threadId).eq("mailbox_id", mailbox.id).select("id").maybeSingle();
+      const { data, error } = await client.from("crm_email_threads").select("id").eq("id", threadId).eq("mailbox_id", mailbox.id).maybeSingle();
       if (error) throw error;
       thread = data;
     }
@@ -231,9 +231,27 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       const { data, error } = await client.from("crm_email_threads").insert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, subject, provider_thread_id: providerMessageId, folder: "sent", updated_at: new Date().toISOString() }).select("id").single();
       if (error) throw error;
       thread = data;
+      createdThread = true;
     }
-    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", sent_by_user_id: senderUser.id, sent_by_name: sentByName, provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: safeHtml || null, is_read: true, sent_at: new Date().toISOString() }).select("id").single();
-    if (messageError) throw messageError;
+    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: thread.id, mailbox_id: mailbox.id, direction: "outbound", sent_by_user_id: senderUser.id, sent_by_name: sentByName, provider_message_id: providerMessageId, message_id: providerMessageId, sender: mailbox.email_address, recipients: addresses(to), cc: addresses(body.cc), subject, text_body: text || null, html_body: safeHtml || null, is_read: true }).select("id").single();
+    if (messageError) {
+      if (createdThread) await client.from("crm_email_threads").delete().eq("id", thread.id);
+      throw messageError;
+    }
+    try {
+      await sendHostingerEmail({ to, cc: body.cc, bcc: body.bcc, subject, text, html: trackedHtml, displayName: mailbox.display_name ?? undefined, mailboxAddress: mailbox.email_address, attachments, inReplyTo });
+    } catch (error) {
+      await client.from("crm_email_messages").delete().eq("id", stored.id);
+      if (createdThread) await client.from("crm_email_threads").delete().eq("id", thread.id);
+      throw error;
+    }
+    const sentAt = new Date().toISOString();
+    const [{ error: sentAtError }, { error: threadUpdateError }] = await Promise.all([
+      client.from("crm_email_messages").update({ sent_at: sentAt }).eq("id", stored.id),
+      client.from("crm_email_threads").update({ updated_at: sentAt }).eq("id", thread.id),
+    ]);
+    if (sentAtError) console.error("[hostinger] sent message timestamp could not be saved", sentAtError.message);
+    if (threadUpdateError) console.error("[hostinger] sent thread timestamp could not be saved", threadUpdateError.message);
     if (stored && attachments.length) {
       const attachmentRows = attachments.map((item) => ({ company_id: mailbox.company_id, message_id: stored.id, file_name: item.name, content_type: item.type || "application/octet-stream", storage_path: `data:${item.type || "application/octet-stream"};base64,${item.base64.includes(",") ? item.base64.split(",", 2)[1] : item.base64}`, file_size: item.size || 0 }));
       const { error } = await client.from("crm_email_attachments").insert(attachmentRows);

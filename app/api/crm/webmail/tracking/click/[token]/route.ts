@@ -7,18 +7,18 @@ function serviceClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function safeTarget(value: string | null) {
-  if (!value) return "/";
+function safeTarget(value: string | null, requestUrl: string) {
+  if (!value) return new URL("/", requestUrl).toString();
   try {
     const target = new URL(value);
-    return ["http:", "https:"].includes(target.protocol) ? target.toString() : "/";
+    return ["http:", "https:"].includes(target.protocol) ? target.toString() : new URL("/", requestUrl).toString();
   } catch {
-    return "/";
+    return new URL("/", requestUrl).toString();
   }
 }
 
 export async function GET(request: Request, context: { params: Promise<{ token: string }> }) {
-  const target = safeTarget(new URL(request.url).searchParams.get("url"));
+  const target = safeTarget(new URL(request.url).searchParams.get("url"), request.url);
   try {
     const { token } = await context.params;
     if (/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(token)) {
