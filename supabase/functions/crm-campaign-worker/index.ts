@@ -133,7 +133,16 @@ async function sendHostinger(input: { to: string; subject: string; html: string;
   const response = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${encodeURIComponent(resourceId)}/send`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ to: [input.to], cc: [], bcc: [], displayName: input.displayName ?? "", subject: input.subject, html: input.html, text: input.text, attachments: [] }),
+    body: JSON.stringify({
+      to: [input.to],
+      cc: [],
+      bcc: [],
+      displayName: input.displayName ?? "",
+      subject: input.subject,
+      html: input.html,
+      text: input.text,
+      attachments: [],
+    }),
     signal: AbortSignal.timeout(30000),
   });
   if (!response.ok) {
@@ -167,10 +176,48 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_match, url: string) => `href="${publicUrl}/api/crm/tracking/click/${message.id}?url=${encodeURIComponent(url)}"`);
     html += `<img src="${publicUrl}/api/crm/tracking/open/${message.id}" width="1" height="1" alt="" style="display:none" />`;
   }
-  await sendHostinger({ to: contact.email, subject, html, text: render(templateResult.data.text_body || subject, contact, companyName), displayName: campaign.from_name, mailbox: mailboxResult.data });
+  const text = render(templateResult.data.text_body || subject, contact, companyName);
+  await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox: mailboxResult.data });
 
   const providerMessageId = `hostinger:campaign:${message.id}`;
   const now = new Date().toISOString();
+  try {
+    const { data: thread, error: threadError } = await db.from("crm_email_threads").upsert({
+      company_id: campaign.company_id,
+      mailbox_id: campaign.mailbox_id,
+      contact_id: contact.id,
+      subject,
+      provider_thread_id: providerMessageId,
+      folder: "sent",
+      updated_at: now,
+    }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
+    if (threadError) throw threadError;
+    const { error: sentCopyError } = await db.from("crm_email_messages").upsert({
+      company_id: campaign.company_id,
+      thread_id: thread.id,
+      mailbox_id: campaign.mailbox_id,
+      contact_id: contact.id,
+      direction: "outbound",
+      provider_message_id: providerMessageId,
+      sender: mailboxResult.data.email_address,
+      recipients: [contact.email],
+      subject,
+      text_body: text || null,
+      html_body: html || null,
+      is_read: true,
+      sent_at: now,
+    }, { onConflict: "mailbox_id,provider_message_id", ignoreDuplicates: true });
+    if (sentCopyError) throw sentCopyError;
+  } catch (error) {
+    console.error("Campaign email sent, but its CRM Sent copy could not be stored:", error instanceof Error ? error.message : "Unknown error");
+    await writeSystemLog(db, {
+      level: "warning",
+      event: "campaign.email.sent_copy_failed",
+      message: "Hostinger accepted the campaign email, but the CRM Sent copy could not be stored.",
+      companyId: campaign.company_id,
+      metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id },
+    });
+  }
   const [{ error: messageUpdateError }, { error: contactUpdateError }, { error: eventError }, { error: timelineError }] = await Promise.all([
     db.from("crm_campaign_messages").update({ status: "sent", sent_at: now, provider_message_id: providerMessageId, error_message: null, updated_at: now }).eq("id", message.id),
     db.from("crm_campaign_contacts").update({ status: "sent" }).eq("id", message.campaign_contact_id),

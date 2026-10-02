@@ -1,9 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { IconArrowRight, IconCopy, IconMail } from "@/components/icons";
+import { html } from "@codemirror/lang-html";
+import { openSearchPanel } from "@codemirror/search";
+import type { EditorView } from "@uiw/react-codemirror";
+import { IconArrowRight, IconCopy, IconExpand, IconMail, IconSearch } from "@/components/icons";
 import { Alert } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +15,8 @@ import { Card } from "@/components/ui/card";
 import { Field, SelectInput, TextInput } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { PageHeader } from "@/components/ui/page-header";
+
+const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), { ssr: false });
 
 type Company = { id: number; name: string };
 type Mailbox = { id: number; email_address: string; status: string };
@@ -54,6 +60,9 @@ export function TemplateEditor({ templateId }: Props) {
   const router = useRouter();
   const subjectRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  const htmlEditorRef = useRef<EditorView | null>(null);
+  const expandedHtmlEditorRef = useRef<EditorView | null>(null);
+  const htmlSelectionRef = useRef({ anchor: 0, head: 0 });
   const [companies, setCompanies] = useState<Company[]>([]);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [form, setForm] = useState<TemplateForm>({ company_id: "", name: "", subject: "", html_body: defaultHtml, text_body: defaultText, content_mode: "html", status: "draft" });
@@ -65,6 +74,7 @@ export function TemplateEditor({ templateId }: Props) {
   const [loadedTemplate, setLoadedTemplate] = useState<Template | null>(null);
   const [message, setMessage] = useState<{ text: string; tone: "success" | "danger" } | null>(null);
   const [testOpen, setTestOpen] = useState(false);
+  const [htmlExpanded, setHtmlExpanded] = useState(false);
   const [testTo, setTestTo] = useState("");
   const [testMailboxId, setTestMailboxId] = useState("");
 
@@ -125,6 +135,34 @@ export function TemplateEditor({ templateId }: Props) {
   const renderedPlain = replaceVariables(form.text_body);
   const previewDocument = useMemo(() => makePreviewDocument(form.content_mode === "html" ? form.html_body : `<div style="white-space:pre-wrap">${escapeHtml(form.text_body)}</div>`), [form.content_mode, form.html_body, form.text_body]);
 
+  function activeHtmlEditor() {
+    return htmlExpanded ? expandedHtmlEditorRef.current : htmlEditorRef.current;
+  }
+
+  function handleHtmlEditorCreated(editor: EditorView, expanded: boolean) {
+    const documentLength = editor.state.doc.length;
+    const selection = htmlSelectionRef.current;
+    editor.dispatch({ selection: {
+      anchor: Math.min(selection.anchor, documentLength),
+      head: Math.min(selection.head, documentLength),
+    } });
+    if (expanded) expandedHtmlEditorRef.current = editor;
+    else htmlEditorRef.current = editor;
+  }
+
+  function handleHtmlEditorUpdate(update: { state: EditorView["state"]; view: EditorView; focusChanged: boolean }) {
+    const { anchor, head } = update.state.selection.main;
+    htmlSelectionRef.current = { anchor, head };
+    if (update.focusChanged && update.view.hasFocus) setInsertTarget("body");
+  }
+
+  function findInHtml() {
+    const editor = activeHtmlEditor();
+    if (!editor) return;
+    editor.focus();
+    openSearchPanel(editor);
+  }
+
   function insertToken(key: string) {
     const token = `{{${key}}}`;
     if (insertTarget === "subject") {
@@ -134,6 +172,17 @@ export function TemplateEditor({ templateId }: Props) {
       const next = `${form.subject.slice(0, start)}${token}${form.subject.slice(end)}`;
       setForm((current) => ({ ...current, subject: next }));
       requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + token.length, start + token.length); });
+      return;
+    }
+    const htmlEditor = form.content_mode === "html" ? activeHtmlEditor() : null;
+    if (htmlEditor) {
+      const editor = htmlEditor;
+      const { from, to } = editor.state.selection.main;
+      editor.dispatch({
+        changes: { from, to, insert: token },
+        selection: { anchor: from + token.length },
+      });
+      editor.focus();
       return;
     }
     const textarea = bodyRef.current;
@@ -146,6 +195,22 @@ export function TemplateEditor({ templateId }: Props) {
   }
 
   function insertBlock(html: string) {
+    const htmlEditor = activeHtmlEditor();
+    if (htmlEditor) {
+      const editor = htmlEditor;
+      const { from, to } = editor.state.selection.main;
+      const before = editor.state.doc.sliceString(0, from);
+      const after = editor.state.doc.sliceString(to);
+      const prefix = before && !before.endsWith("\n") ? "\n\n" : "";
+      const suffix = after && !after.startsWith("\n") ? "\n\n" : "";
+      const insertion = `${prefix}${html}${suffix}`;
+      editor.dispatch({
+        changes: { from, to, insert: insertion },
+        selection: { anchor: from + insertion.length },
+      });
+      editor.focus();
+      return;
+    }
     const textarea = bodyRef.current;
     const current = form.html_body;
     const start = textarea?.selectionStart ?? current.length;
@@ -159,6 +224,7 @@ export function TemplateEditor({ templateId }: Props) {
 
   function changeContentMode(contentMode: "html" | "plain") {
     setPreviewTab("rendered");
+    if (contentMode !== "html") htmlEditorRef.current = null;
     setForm((current) => ({ ...current, content_mode: contentMode }));
   }
 
@@ -220,10 +286,29 @@ export function TemplateEditor({ templateId }: Props) {
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.95fr)]">
         <section className="min-w-0">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold">Email content</h2><p className="mt-1 text-xs text-muted">Changes appear in the preview as you type.</p></div><div role="tablist" aria-label="Email content format" className="flex rounded-lg border border-border bg-white p-1"><button type="button" role="tab" aria-selected={form.content_mode === "html"} onClick={() => changeContentMode("html")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "html" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>HTML</button><button type="button" role="tab" aria-selected={form.content_mode === "plain"} onClick={() => changeContentMode("plain")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "plain" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>Plain text</button></div></div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold">Email content</h2><p className="mt-1 text-xs text-muted">Changes appear in the preview as you type.</p></div><div className="flex flex-wrap items-center gap-2"><div role="tablist" aria-label="Email content format" className="flex rounded-lg border border-border bg-white p-1"><button type="button" role="tab" aria-selected={form.content_mode === "html"} onClick={() => changeContentMode("html")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "html" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>HTML</button><button type="button" role="tab" aria-selected={form.content_mode === "plain"} onClick={() => changeContentMode("plain")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "plain" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>Plain text</button></div>{form.content_mode === "html" ? <><Button variant="secondary" className="px-3 py-2" onClick={findInHtml} title="Find in HTML (Ctrl+F)"><IconSearch className="h-4 w-4" /><span className="hidden sm:inline">Find</span></Button><Button variant="secondary" className="px-3 py-2" onClick={() => setHtmlExpanded(true)} title="Open full-screen HTML editor"><IconExpand className="h-4 w-4" /><span className="hidden sm:inline">Expand</span></Button></> : null}</div></div>
           {form.content_mode === "html" ? <div className="mb-3 flex flex-wrap items-center gap-2"><span className="mr-1 text-xs font-semibold text-muted">Insert block</span>{starterBlocks.map((block) => <Button type="button" key={block.label} variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => insertBlock(block.html)}>{block.label}</Button>)}</div> : null}
-          <label className="sr-only" htmlFor="template-content">{form.content_mode === "html" ? "HTML email source" : "Plain-text email content"}</label>
-          <textarea id="template-content" ref={bodyRef} value={bodyValue} onFocus={() => setInsertTarget("body")} onChange={(event) => setForm((current) => current.content_mode === "html" ? { ...current, html_body: event.target.value } : { ...current, text_body: event.target.value })} spellCheck={form.content_mode === "plain"} className={`min-h-[440px] w-full resize-y rounded-lg border border-border bg-[#fbfcfa] p-4 text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-4 focus:ring-primary/10 ${form.content_mode === "html" ? "font-mono" : "font-sans"}`} placeholder={form.content_mode === "html" ? "Write or paste email-safe HTML…" : "Write a clear plain-text email…"} />
+          {form.content_mode === "html" ? htmlExpanded ? (
+            <div className="grid min-h-[440px] place-items-center rounded-xl border border-dashed border-border bg-stone-50 text-sm text-muted">HTML editor is open in the expanded workspace.</div>
+          ) : (
+            <div className="overflow-hidden rounded-xl border border-border bg-white shadow-sm transition focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10">
+              <CodeMirror
+                id="template-content"
+                value={form.html_body}
+                height="520px"
+                theme="light"
+                extensions={[html({ autoCloseTags: true })]}
+                basicSetup
+                onCreateEditor={(editor) => handleHtmlEditorCreated(editor, false)}
+                onChange={(value) => setForm((current) => ({ ...current, html_body: value }))}
+                onUpdate={handleHtmlEditorUpdate}
+                aria-label="HTML email source"
+                className="text-[13px]"
+              />
+            </div>
+          ) : (
+            <textarea id="template-content" ref={bodyRef} value={bodyValue} onFocus={() => setInsertTarget("body")} onChange={(event) => setForm((current) => ({ ...current, text_body: event.target.value }))} spellCheck className="min-h-[440px] w-full resize-y rounded-lg border border-border bg-[#fbfcfa] p-4 font-sans text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" placeholder="Write a clear plain-text email…" />
+          )}
           <p className="mt-2 text-xs text-muted">{form.content_mode === "html" ? "Paste email-compatible HTML. Inline styles are recommended for consistent inbox rendering." : "Plain text works in every email client and is sent as both text and a simple HTML fallback."}</p>
         </section>
 
@@ -238,6 +323,46 @@ export function TemplateEditor({ templateId }: Props) {
       </div>
       <div className="mt-8 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5"><p className="text-xs text-muted">{loadedTemplate ? `Last saved template · ${loadedTemplate.status}` : "Unsaved template"}</p><div className="flex gap-2"><Link href="/dashboard/crm/templates" className="inline-flex items-center rounded-lg px-4 py-2.5 text-sm font-semibold text-muted hover:bg-stone-50">Cancel</Link><Button loading={saving} onClick={() => void saveTemplate()}>{templateId ? "Save changes" : "Save template"}</Button></div></div>
     </>}
+
+    <Modal size="full" open={htmlExpanded} onClose={() => setHtmlExpanded(false)} title="HTML editor and preview" description="Edit the full email, search HTML, and review the live rendering side by side.">
+      <div className="flex h-full min-h-0 flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2 border-b border-stone-200 pb-3">
+          <Button variant="secondary" className="px-3 py-2" onClick={findInHtml}><IconSearch className="h-4 w-4" />Find in HTML</Button>
+          <span className="ml-1 text-xs font-semibold text-stone-500">Insert variable at cursor:</span>
+          {variableDefinitions.map((variable) => <button type="button" key={variable.key} onMouseDown={(event) => event.preventDefault()} onClick={() => { setInsertTarget("body"); insertToken(variable.key); }} className="rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 font-mono text-xs font-semibold text-primary transition hover:border-primary/30 hover:bg-rose-50">{`{{${variable.key}}}`}</button>)}
+        </div>
+        <div className="grid min-h-0 flex-1 grid-rows-2 gap-3 xl:grid-cols-2 xl:grid-rows-1">
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-stone-200 bg-white">
+            <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50 px-3 py-2"><span className="text-xs font-bold uppercase tracking-wider text-stone-600">HTML source</span><span className="text-xs text-stone-500">Ctrl/Cmd + F to search</span></div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <CodeMirror
+                id="template-content-expanded"
+                value={form.html_body}
+                height="100%"
+                theme="light"
+                extensions={[html({ autoCloseTags: true })]}
+                basicSetup
+                onCreateEditor={(editor) => handleHtmlEditorCreated(editor, true)}
+                onChange={(value) => setForm((current) => ({ ...current, html_body: value }))}
+                onUpdate={handleHtmlEditorUpdate}
+                aria-label="Expanded HTML email source"
+                className="h-full text-[13px]"
+              />
+            </div>
+          </section>
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-stone-200 bg-stone-100">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 bg-white px-3 py-2.5">
+              <div><p className="text-xs font-bold uppercase tracking-wider text-stone-700">Live preview</p><p className="mt-0.5 max-w-[50vw] truncate text-xs text-stone-500">{renderedSubject}</p></div>
+              <div className="flex rounded-lg border border-stone-200 p-1"><button type="button" onClick={() => setPreviewSize("desktop")} aria-pressed={previewSize === "desktop"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "desktop" ? "bg-rose-100 text-rose-700" : "text-stone-500"}`}>Desktop</button><button type="button" onClick={() => setPreviewSize("mobile")} aria-pressed={previewSize === "mobile"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "mobile" ? "bg-rose-100 text-rose-700" : "text-stone-500"}`}>Mobile</button></div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              <iframe title="Expanded rendered HTML email preview" sandbox="" srcDoc={previewDocument} className="mx-auto h-full min-h-[420px] border-0 bg-white shadow-sm" style={{ width: previewSize === "mobile" ? "min(100%, 390px)" : "100%" }} />
+            </div>
+          </section>
+        </div>
+        <div className="flex justify-end border-t border-stone-200 pt-3"><Button variant="secondary" onClick={() => setHtmlExpanded(false)}>Done</Button></div>
+      </div>
+    </Modal>
 
     <Modal open={testOpen} onClose={() => setTestOpen(false)} title="Send test email" description="Send this saved template through a connected Hostinger mailbox."><div className="space-y-4"><Field label="Connected mailbox"><SelectInput value={testMailboxId} onChange={(event) => setTestMailboxId(event.target.value)}><option value="">Select mailbox</option>{mailboxes.filter((mailbox) => mailbox.status === "connected").map((mailbox) => <option key={mailbox.id} value={mailbox.id}>{mailbox.email_address}</option>)}</SelectInput></Field><Field label="Send test to"><TextInput type="email" value={testTo} onChange={(event) => setTestTo(event.target.value)} placeholder="you@example.com" /></Field><div className="flex justify-end gap-2 border-t border-border pt-4"><Button variant="secondary" onClick={() => setTestOpen(false)}>Cancel</Button><Button loading={saving} onClick={() => void sendTest()} disabled={!testMailboxId || !testTo}>Send test</Button></div></div></Modal>
   </>;

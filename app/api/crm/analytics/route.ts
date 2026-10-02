@@ -30,7 +30,7 @@ export async function GET(request: Request) {
     const { data: campaigns, error: campaignsError } = await campaignsQuery;
     if (campaignsError) throw campaignsError;
     const ids = (campaigns ?? []).map((campaign) => campaign.id);
-    if (!ids.length) return NextResponse.json({ campaigns: [], summary: { recipients: 0, sent: 0, pending: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 }, recipients: [] });
+    if (!ids.length) return NextResponse.json({ campaigns: [], summary: { recipients: 0, queued: 0, processing: 0, sent: 0, pending: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 }, recipients: [] });
 
     const campaignContacts = await allRows((start, end) => client.from("crm_campaign_contacts").select("id, campaign_id, contact_id, status, crm_contacts(id, full_name, email)").in("campaign_id", ids).order("id").range(start, end));
     const campaignContactIds = campaignContacts.map((item) => item.id);
@@ -42,13 +42,25 @@ export async function GET(request: Request) {
       ? await allRows((start, end) => client.from("crm_email_events").select("id, campaign_message_id, event_type, event_time, metadata").in("campaign_message_id", messageIds).order("event_time", { ascending: false }).range(start, end))
       : [];
 
-    const summary = { recipients: campaignContacts.length, sent: 0, pending: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 };
+    const summary = { recipients: campaignContacts.length, queued: 0, processing: 0, sent: 0, pending: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 };
     for (const message of messages) {
-      if (["sent", "delivered"].includes(message.status)) summary.sent += 1;
-      if (["queued", "processing"].includes(message.status)) summary.pending += 1;
-      if (message.status === "failed") summary.failed += 1;
+      const statusKeys = ["queued", "processing", "sent", "failed", "delivered", "bounced", "opened", "clicked", "replied", "unsubscribed"] as const;
+      if (statusKeys.includes(message.status as (typeof statusKeys)[number])) summary[message.status as keyof typeof summary] += 1;
     }
-    for (const event of events) if (event.event_type in summary && event.event_type !== "sent") summary[event.event_type as keyof typeof summary] += 1;
+    summary.pending = summary.queued + summary.processing;
+
+    const uniqueEventsByType = new Map<string, Set<number>>();
+    for (const event of events) {
+      const eventType = event.event_type;
+      if (!event.campaign_message_id || ["sent", "failed"].includes(eventType)) continue;
+      if (!["delivered", "bounced", "opened", "clicked", "replied", "unsubscribed", "complained"].includes(eventType)) continue;
+      const set = uniqueEventsByType.get(eventType) ?? new Set<number>();
+      set.add(event.campaign_message_id);
+      uniqueEventsByType.set(eventType, set);
+    }
+    for (const [eventType, ids] of uniqueEventsByType) {
+      if (eventType in summary) summary[eventType as keyof typeof summary] = Math.max(summary[eventType as keyof typeof summary], ids.size);
+    }
 
     const messagesByContact = new Map<number, typeof messages>();
     for (const message of messages) messagesByContact.set(message.campaign_contact_id, [...(messagesByContact.get(message.campaign_contact_id) ?? []), message]);

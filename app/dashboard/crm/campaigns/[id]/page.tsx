@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { IconArrowRight, IconRefresh } from "@/components/icons";
+import { IconArrowRight, IconBell, IconCheckCircle, IconClock, IconClose, IconEmployees, IconGlobe, IconMail, IconRefresh, IconSearch } from "@/components/icons";
 import { Alert, EmptyState } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -98,21 +98,168 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
 
   if (loading) return <div className="p-8"><EmptyState text="Loading campaign delivery report..." /></div>;
 
-  const cards: [keyof Summary, string][] = [
-    ["recipients", "Recipients"], ["queued", "Queued"], ["processing", "Processing"], ["sent", "Sent"], ["failed", "Failed"],
-    ["delivered", "Delivered"], ["bounced", "Bounced"], ["opened", "Opened"], ["clicked", "Clicked"], ["replied", "Replied"],
+  const cards: { key: keyof Summary; label: string; icon: typeof IconEmployees; style: string; stripe: string; iconStyle: string }[] = [
+    { key: "recipients", label: "Recipients", icon: IconEmployees, style: "border-sky-200 from-white to-sky-50/70", stripe: "bg-sky-500", iconStyle: "bg-sky-100 text-sky-700 ring-sky-200/80" },
+    { key: "queued", label: "Queued", icon: IconClock, style: "border-amber-200 from-white to-amber-50/70", stripe: "bg-amber-500", iconStyle: "bg-amber-100 text-amber-700 ring-amber-200/80" },
+    { key: "processing", label: "Processing", icon: IconRefresh, style: "border-cyan-200 from-white to-cyan-50/70", stripe: "bg-cyan-500", iconStyle: "bg-cyan-100 text-cyan-700 ring-cyan-200/80" },
+    { key: "sent", label: "Sent", icon: IconMail, style: "border-emerald-200 from-white to-emerald-50/70", stripe: "bg-emerald-500", iconStyle: "bg-emerald-100 text-emerald-700 ring-emerald-200/80" },
+    { key: "failed", label: "Failed", icon: IconClose, style: "border-rose-200 from-white to-rose-50/70", stripe: "bg-rose-500", iconStyle: "bg-rose-100 text-rose-700 ring-rose-200/80" },
+    { key: "delivered", label: "Delivered", icon: IconCheckCircle, style: "border-teal-200 from-white to-teal-50/70", stripe: "bg-teal-500", iconStyle: "bg-teal-100 text-teal-700 ring-teal-200/80" },
+    { key: "bounced", label: "Bounced", icon: IconGlobe, style: "border-orange-200 from-white to-orange-50/70", stripe: "bg-orange-500", iconStyle: "bg-orange-100 text-orange-700 ring-orange-200/80" },
+    { key: "opened", label: "Opened", icon: IconSearch, style: "border-indigo-200 from-white to-indigo-50/70", stripe: "bg-indigo-500", iconStyle: "bg-indigo-100 text-indigo-700 ring-indigo-200/80" },
+    { key: "clicked", label: "Clicked", icon: IconArrowRight, style: "border-lime-200 from-white to-lime-50/70", stripe: "bg-lime-500", iconStyle: "bg-lime-100 text-lime-700 ring-lime-200/80" },
+    { key: "replied", label: "Replied", icon: IconBell, style: "border-pink-200 from-white to-pink-50/70", stripe: "bg-pink-500", iconStyle: "bg-pink-100 text-pink-700 ring-pink-200/80" },
   ];
 
   return <>
-    <PageHeader eyebrow="Business CRM / Campaign report" title={campaign?.name ?? "Campaign report"} description="Recipient-by-recipient delivery status, retry history, and failure details." actions={<div className="flex gap-2"><Button variant="secondary" loading={refreshing} onClick={() => void loadReport(campaignId, companyId, true)}><IconRefresh className="h-4 w-4" />Refresh</Button><Link href="/dashboard/crm/campaigns" className="inline-flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-2 text-sm font-semibold text-muted hover:text-foreground"><IconArrowRight className="h-4 w-4 rotate-180" />Campaigns</Link></div>} />
-    {error ? <div className="mb-5"><Alert tone="danger">{error}</Alert></div> : null}
-    {campaign ? <>
-      <Card className="mb-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex flex-wrap items-center gap-3"><Badge tone={tone(campaign.status)}>{campaign.status}</Badge><span className="text-sm text-muted">{campaign.crm_email_templates?.name ?? "Template"} · {campaign.crm_mailboxes?.email_address ?? "Sender unavailable"}</span></div><p className="mt-3 text-sm font-semibold">{campaign.subject || campaign.crm_email_templates?.subject || "No subject"}</p><p className="mt-1 text-xs text-muted">Audience: {campaign.crm_contact_lists?.name ?? "Selected campaign audience"} · {campaign.schedule_at ? `Started/scheduled ${date(campaign.schedule_at)}` : "No start time recorded"}</p></div><span className="text-right text-xs text-muted">Batch {campaign.batch_size} every {campaign.interval_seconds}s</span></div></Card>
-  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{cards.map(([key, label]) => <Card key={key} className="p-4"><p className="text-xs font-semibold uppercase text-muted">{label}</p><p className="mt-2 text-2xl font-bold">{summary[key]}</p></Card>)}</div>
-      <Card className="mt-5 overflow-hidden p-0"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-semibold">Recipient delivery</h2><p className="mt-1 text-xs text-muted">Refreshes every 15 seconds while the campaign is running.</p></div><span className="text-xs text-muted">{recipients.length} rows</span></div>{!recipients.length ? <div className="p-8"><Alert tone="info">No recipients have been queued. Check that the campaign audience contains active contacts and that the latest campaign Edge Function and database changes are deployed.</Alert></div> : <div className="overflow-x-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="bg-[#f7f9f7] text-xs uppercase text-muted"><tr><th className="px-5 py-3">Recipient</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Last attempt</th><th className="px-5 py-3">Sent</th><th className="px-5 py-3">Failure</th><th className="px-5 py-3">History</th></tr></thead><tbody>{recipients.map((recipient) => {
-        const latest = [...(recipient.messages ?? [])].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
-        return <tr key={recipient.id} className="border-t border-border align-top"><td className="px-5 py-4"><p className="font-semibold">{recipient.crm_contacts?.full_name || "Unknown contact"}</p><p className="mt-1 text-xs text-muted">{recipient.crm_contacts?.email || "No email"}</p></td><td className="px-5 py-4"><Badge tone={tone(recipient.status)}>{recipient.status}</Badge>{latest ? <p className="mt-1 text-xs text-muted">Message: {latest.status}</p> : null}</td><td className="px-5 py-4 text-xs text-muted">{latest?.attempt_count ?? 0} attempt{latest?.attempt_count === 1 ? "" : "s"}<p className="mt-1">Next: {date(latest?.next_attempt_at)}</p></td><td className="px-5 py-4 text-xs text-muted">{date(latest?.sent_at)}</td><td className="max-w-[320px] px-5 py-4 text-xs text-rose-700">{latest?.error_message || "No delivery error recorded"}</td><td className="px-5 py-4"><details className="max-w-[360px]"><summary className="cursor-pointer text-xs font-semibold text-primary">{recipient.messages?.length ?? 0} message(s) · {recipient.events?.length ?? 0} event(s)</summary><div className="mt-3 space-y-3">{(recipient.messages ?? []).map((message) => <div key={message.id} className="rounded-lg bg-[#f7f9f7] p-3 text-xs"><div className="flex justify-between gap-2"><Badge tone={tone(message.status)}>{message.status}</Badge><span className="text-muted">{message.attempt_count} attempt{message.attempt_count === 1 ? "" : "s"}</span></div><p className="mt-2 text-muted">Scheduled: {date(message.scheduled_at)}</p><p className="mt-1 text-muted">Updated: {date(message.updated_at)}</p>{message.error_message ? <p className="mt-2 break-words text-rose-700">{message.error_message}</p> : null}</div>)}{(recipient.events ?? []).map((event) => <p key={event.id} className="text-xs text-muted">{event.event_type} · {date(event.event_time)}</p>)}</div></details></td></tr>;
-      })}</tbody></table></div>}</Card>
-    </> : null}
+    <div className="space-y-6 pb-10">
+      <PageHeader
+        eyebrow="Business CRM / Campaign report"
+        title={campaign?.name ?? "Campaign report"}
+        description="Recipient-by-recipient delivery status, retry history, and failure details."
+        actions={
+          <div className="flex gap-2">
+            <Button variant="secondary" loading={refreshing} onClick={() => void loadReport(campaignId, companyId, true)} className="rounded-xl bg-white/90 shadow-sm">
+              <IconRefresh className="h-4 w-4" />
+              Refresh
+            </Button>
+            <Link href="/dashboard/crm/campaigns" className="inline-flex items-center gap-2 rounded-xl border border-border bg-white px-3.5 py-2.5 text-sm font-semibold text-muted shadow-sm transition hover:border-primary/20 hover:text-foreground">
+              <IconArrowRight className="h-4 w-4 rotate-180" />
+              Campaigns
+            </Link>
+          </div>
+        }
+      />
+
+      {error ? <div className="mb-2"><Alert tone="danger">{error}</Alert></div> : null}
+
+      {campaign ? <>
+        <Card className="relative isolate overflow-hidden border-0 bg-gradient-to-br from-[#d94e4e] via-[#e85c50] to-[#f18452] p-0 text-white shadow-[0_20px_45px_rgba(192,70,62,0.2)]">
+          <div className="absolute -right-12 -top-20 -z-10 h-64 w-64 rounded-full border-[36px] border-white/10" />
+          <div className="absolute right-24 top-24 -z-10 h-24 w-24 rounded-full bg-amber-300/20 blur-2xl" />
+          <div className="flex flex-wrap items-center justify-between gap-6 p-6 sm:p-8">
+            <div className="flex min-w-0 flex-1 items-start gap-4">
+              <span className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-white/25 bg-white/15 shadow-inner backdrop-blur-sm">
+                <IconMail className="h-7 w-7" />
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Badge tone={tone(campaign.status)} className="!bg-white !px-3 !py-1.5 !text-emerald-700">{campaign.status}</Badge>
+                  <span className="text-sm font-medium text-white/85">{campaign.crm_email_templates?.name ?? "Template"}</span>
+                </div>
+                <p className="mt-3 text-xl font-bold text-white">{campaign.subject || campaign.crm_email_templates?.subject || "No subject"}</p>
+                <p className="mt-1 break-all text-sm text-white/80">{campaign.crm_mailboxes?.email_address ?? "Sender unavailable"}</p>
+                <p className="mt-3 text-xs text-white/75">Audience: {campaign.crm_contact_lists?.name ?? "Selected campaign audience"} · {campaign.schedule_at ? `Started/scheduled ${date(campaign.schedule_at)}` : "No start time recorded"}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 rounded-xl border border-white/25 bg-black/10 px-4 py-3 backdrop-blur-sm">
+              <IconClock className="h-5 w-5 text-white/90" />
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/70">Batch schedule</p>
+                <p className="mt-1 text-sm font-semibold text-white">{campaign.batch_size} every {campaign.interval_seconds}s</p>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          {cards.map(({ key, label, icon: MetricIcon, style, stripe, iconStyle }) => (
+            <Card key={key} className={`group relative overflow-hidden border bg-gradient-to-br ${style} p-4 shadow-[0_10px_25px_rgba(15,23,42,0.04)] transition duration-200 hover:-translate-y-1 hover:shadow-[0_18px_35px_rgba(15,23,42,0.09)]`}>
+              <div className={`absolute inset-x-0 top-0 h-1 ${stripe}`} />
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.17em] text-stone-500">{label}</p>
+                  <p className="mt-3 text-3xl font-bold tracking-tight text-stone-900">{summary[key]}</p>
+                </div>
+                <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-xl ring-1 ${iconStyle}`}>
+                  <MetricIcon className="h-5 w-5" />
+                </span>
+              </div>
+            </Card>
+          ))}
+        </div>
+
+        <Card className="overflow-hidden border-stone-200 bg-white/90 p-0 shadow-[0_14px_40px_rgba(17,24,39,0.04)]">
+          <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/70 px-5 py-4">
+            <div>
+              <h2 className="text-lg font-semibold text-stone-900">Recipient delivery</h2>
+              <p className="mt-1 text-xs text-stone-500">Refreshes every 15 seconds while the campaign is running.</p>
+            </div>
+            <span className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-600">{recipients.length} rows</span>
+          </div>
+
+          {!recipients.length ? (
+            <div className="p-8">
+              <Alert tone="info">No recipients have been queued. Check that the campaign audience contains active contacts and that the latest campaign Edge Function and database changes are deployed.</Alert>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] text-left text-sm">
+                <thead className="bg-stone-50 text-[11px] font-bold uppercase tracking-[0.18em] text-stone-500">
+                  <tr>
+                    <th className="px-5 py-3">Recipient</th>
+                    <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Last attempt</th>
+                    <th className="px-5 py-3">Sent</th>
+                    <th className="px-5 py-3">Failure</th>
+                    <th className="px-5 py-3">History</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recipients.map((recipient) => {
+                    const latest = [...(recipient.messages ?? [])].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+                    return (
+                      <tr key={recipient.id} className="border-t border-stone-200 align-top transition hover:bg-stone-50/60">
+                        <td className="px-5 py-4">
+                          <p className="font-semibold text-stone-900">{recipient.crm_contacts?.full_name || "Unknown contact"}</p>
+                          <p className="mt-1 text-xs text-stone-500">{recipient.crm_contacts?.email || "No email"}</p>
+                        </td>
+
+                        <td className="px-5 py-4">
+                          <Badge tone={tone(recipient.status)}>{recipient.status}</Badge>
+                          {latest ? <p className="mt-2 text-xs text-stone-500">Message: {latest.status}</p> : null}
+                        </td>
+
+                        <td className="px-5 py-4 text-xs text-stone-600">
+                          <div className="font-medium">{latest?.attempt_count ?? 0} attempt{latest?.attempt_count === 1 ? "" : "s"}</div>
+                          <p className="mt-1 text-stone-500">Next: {date(latest?.next_attempt_at)}</p>
+                        </td>
+
+                        <td className="px-5 py-4 text-xs text-stone-600">{date(latest?.sent_at)}</td>
+
+                        <td className="max-w-[320px] px-5 py-4 text-xs text-rose-700">{latest?.error_message || "No delivery error recorded"}</td>
+
+                        <td className="px-5 py-4">
+                          <details className="max-w-[360px]">
+                            <summary className="cursor-pointer text-xs font-semibold text-primary">{recipient.messages?.length ?? 0} message(s) · {recipient.events?.length ?? 0} event(s)</summary>
+                            <div className="mt-3 space-y-3">
+                              {(recipient.messages ?? []).map((message) => (
+                                <div key={message.id} className="rounded-xl border border-stone-200 bg-stone-50 p-3 text-xs">
+                                  <div className="flex justify-between gap-2">
+                                    <Badge tone={tone(message.status)}>{message.status}</Badge>
+                                    <span className="text-stone-500">{message.attempt_count} attempt{message.attempt_count === 1 ? "" : "s"}</span>
+                                  </div>
+                                  <p className="mt-2 text-stone-500">Scheduled: {date(message.scheduled_at)}</p>
+                                  <p className="mt-1 text-stone-500">Updated: {date(message.updated_at)}</p>
+                                  {message.error_message ? <p className="mt-2 break-words text-rose-700">{message.error_message}</p> : null}
+                                </div>
+                              ))}
+                              {(recipient.events ?? []).map((event) => (
+                                <p key={event.id} className="text-xs text-stone-500">{event.event_type} · {date(event.event_time)}</p>
+                              ))}
+                            </div>
+                          </details>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
+      </> : null}
+    </div>
   </>;
 }
