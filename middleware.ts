@@ -13,6 +13,8 @@ function trackingHost(value: string | undefined) {
 
 export async function middleware(request: NextRequest) {
   const configuredTrackingHosts = [
+    "track.classtakerspro.com",
+    "track.digifyitsolution.com",
     trackingHost(process.env.EMAIL_TRACKING_BASE_URL_CLASSTAKERSPRO),
     trackingHost(process.env.EMAIL_TRACKING_BASE_URL_DIGIFYITSOLUTION),
   ].filter((host): host is string => Boolean(host));
