@@ -1,7 +1,31 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+function trackingHost(value: string | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(request: NextRequest) {
+  const configuredTrackingHosts = [
+    trackingHost(process.env.EMAIL_TRACKING_BASE_URL_CLASSTAKERSPRO),
+    trackingHost(process.env.EMAIL_TRACKING_BASE_URL_DIGIFYITSOLUTION),
+  ].filter((host): host is string => Boolean(host));
+  if (configuredTrackingHosts.includes(request.nextUrl.hostname.toLowerCase())) {
+    const path = request.nextUrl.pathname;
+    const webmailTracker = /^\/api\/crm\/webmail\/tracking\/(?:open|click)\/[\da-f-]{36}$/i.test(path);
+    const campaignTracker = /^\/api\/crm\/tracking\/(?:open|click)\/\d+$/.test(path);
+    if (request.method !== "GET" || (!webmailTracker && !campaignTracker)) {
+      return new Response("Not Found", { status: 404, headers: { "Cache-Control": "no-store" } });
+    }
+    return NextResponse.next();
+  }
+
   let response = NextResponse.next({ request });
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
