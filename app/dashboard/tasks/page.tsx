@@ -10,6 +10,7 @@ import {
   IconCheck,
   IconClose,
   IconClock,
+  IconComment,
   IconEmployees,
   IconHistory,
   IconPlus,
@@ -60,6 +61,15 @@ type TaskActivity = {
   created_at: string;
 };
 
+type TaskComment = {
+  id: number;
+  author_user_id: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+};
+
 const statuses: TaskStatus[] = ["todo", "in_progress", "approved", "done"];
 
 const statusStyle: Record<TaskStatus, { label: string; color: string; dot: string; column: string; card: string }> = {
@@ -94,10 +104,10 @@ const statusStyle: Record<TaskStatus, { label: string; color: string; dot: strin
 };
 
 const priorityStyle: Record<TaskPriority, string> = {
-  low: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-  medium: "bg-amber-50 text-amber-800 ring-amber-200",
-  high: "bg-orange-50 text-orange-800 ring-orange-200",
-  urgent: "bg-rose-50 text-rose-800 ring-rose-200",
+  low: "bg-slate-100 text-slate-700 ring-slate-300",
+  medium: "bg-sky-100 text-sky-800 ring-sky-300",
+  high: "bg-orange-100 text-orange-900 ring-orange-300",
+  urgent: "bg-rose-600 text-white ring-rose-700",
 };
 
 const emptyForm = {
@@ -191,6 +201,11 @@ export default function TasksPage() {
   const [history, setHistory] = useState<TaskActivity[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [comments, setComments] = useState<TaskComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentSaving, setCommentSaving] = useState(false);
   const [draggedTaskId, setDraggedTaskId] = useState<number | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [message, setMessage] = useState<{ text: string; danger?: boolean } | null>(null);
@@ -324,15 +339,49 @@ export default function TasksPage() {
     setHistory([]);
     setHistoryError("");
     setHistoryLoading(true);
+    setComments([]);
+    setCommentsError("");
+    setCommentsLoading(true);
+    setCommentDraft("");
+    const [historyResult, commentsResult] = await Promise.allSettled([
+      fetch(`/api/tasks/${task.id}/history`, { cache: "no-store" }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not load task history.");
+        return Array.isArray(result.history) ? result.history as TaskActivity[] : [];
+      }),
+      fetch(`/api/tasks/${task.id}/comments`, { cache: "no-store" }).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Could not load task comments.");
+        return Array.isArray(result.comments) ? result.comments as TaskComment[] : [];
+      }),
+    ]);
+    if (historyResult.status === "fulfilled") setHistory(historyResult.value);
+    else setHistoryError(historyResult.reason instanceof Error ? historyResult.reason.message : "Could not load task history.");
+    if (commentsResult.status === "fulfilled") setComments(commentsResult.value);
+    else setCommentsError(commentsResult.reason instanceof Error ? commentsResult.reason.message : "Could not load task comments.");
+    setHistoryLoading(false);
+    setCommentsLoading(false);
+  }
+
+  async function postComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedTask || !commentDraft.trim()) return;
+    setCommentSaving(true);
+    setCommentsError("");
     try {
-      const response = await fetch(`/api/tasks/${task.id}/history`, { cache: "no-store" });
+      const response = await fetch(`/api/tasks/${selectedTask.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: commentDraft }),
+      });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not load task history.");
-      setHistory(Array.isArray(result.history) ? result.history : []);
+      if (!response.ok) throw new Error(result.error ?? "Could not post comment.");
+      setComments((current) => [...current, result.comment as TaskComment]);
+      setCommentDraft("");
     } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "Could not load task history.");
+      setCommentsError(error instanceof Error ? error.message : "Could not post comment.");
     } finally {
-      setHistoryLoading(false);
+      setCommentSaving(false);
     }
   }
 
@@ -948,6 +997,62 @@ export default function TasksPage() {
                   ))}
                 </div>
               ) : null}
+
+              <section className="rounded-2xl border border-[#e5e7f0] bg-[#fbfbfe] p-4">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-sm font-bold text-[#242047]">
+                      <IconComment className="h-4 w-4 text-[#087e8b]" />
+                      Comments
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">A shared conversation for people on this task.</p>
+                  </div>
+                  <span className="rounded-full bg-[#e5f7f8] px-2.5 py-1 text-[10px] font-bold text-[#087e8b]">{comments.length}</span>
+                </div>
+
+                {commentsLoading ? <p className="rounded-xl bg-white p-3 text-xs text-slate-500">Loading comments...</p> : null}
+                {!commentsLoading && comments.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-center text-xs text-slate-500">No comments yet. Start the conversation.</p>
+                ) : null}
+                {comments.length ? (
+                  <ol className="mb-4 max-h-72 space-y-2 overflow-y-auto">
+                    {comments.map((comment) => {
+                      const isOwnComment = comment.author_user_id === user?.id;
+                      return (
+                        <li key={comment.id} className={`flex ${isOwnComment ? "justify-end" : "justify-start"}`}>
+                          <article className={`max-w-[90%] rounded-2xl border px-3.5 py-2.5 ${isOwnComment ? "border-[#d6d1f4] bg-[#f1efff]" : "border-slate-200 bg-white"}`}>
+                            <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                              <span className="text-[11px] font-bold text-[#28244f]">{isOwnComment ? "You" : comment.author_name}</span>
+                              <time className="text-[10px] text-slate-400">{formatDate(comment.created_at, true)}</time>
+                            </div>
+                            <p className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-700">{comment.body}</p>
+                          </article>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                ) : null}
+                {commentsError ? <p role="alert" className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{commentsError}</p> : null}
+                {selectedTask.creator_user_id === user?.id || selectedTask.assignee_user_id === user?.id ? (
+                  <form onSubmit={postComment} className="space-y-2.5">
+                    <label htmlFor="task-comment" className="sr-only">Write a comment</label>
+                    <textarea
+                      id="task-comment"
+                      maxLength={5000}
+                      value={commentDraft}
+                      onChange={(event) => setCommentDraft(event.target.value)}
+                      placeholder="Write a comment..."
+                      className="min-h-20 w-full resize-y rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-sm outline-none transition placeholder:text-slate-400 focus:border-[#087e8b] focus:ring-4 focus:ring-[#087e8b]/10"
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] text-slate-400">{commentDraft.length}/5000</span>
+                      <Button type="submit" loading={commentSaving} disabled={!commentDraft.trim()} className="bg-[#087e8b] hover:bg-[#066874]">
+                        <IconComment className="h-4 w-4" /> Add comment
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+              </section>
 
               <section>
                 <div className="mb-4 flex items-center justify-between">
