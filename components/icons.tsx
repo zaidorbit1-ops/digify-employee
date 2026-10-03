@@ -639,3 +639,43 @@ export function IconClock({ className }: IconProps) {
     </svg>
   );
 }
+
+export function IconHistory({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2L3.5 8.5M3.5 4.5v4h4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 7.5V12l3 1.8"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconAlert({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="m10.3 4.7-7 12.1A1.8 1.8 0 0 0 4.9 19.5h14.2a1.8 1.8 0 0 0 1.6-2.7l-7-12.1a1.9 1.9 0 0 0-3.4 0Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 9v4.5m0 2.5h.01"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

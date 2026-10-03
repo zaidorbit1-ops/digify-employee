@@ -29,7 +29,7 @@ const navItems = [
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
-  { label: "Notes & Reminders", href: "/dashboard/notes", icon: IconBell },
+  { label: "Tasks & Projects", href: "/dashboard/tasks", icon: IconBell },
   { label: "Internal Chat", href: "/dashboard/internal-chat", icon: IconBell },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
   { label: "Holidays", href: "/dashboard/holidays", icon: IconCalendar },
@@ -139,18 +139,18 @@ export function Sidebar({
   useEffect(() => {
     if (!user) return;
     let mounted = true;
-    async function loadPendingNotes() {
+    async function loadPendingTasks() {
       try {
-        const response = await fetch("/api/notes", { cache: "no-store" });
+        const response = await fetch("/api/tasks", { cache: "no-store" });
         if (!response.ok) return;
         const result = await response.json();
-        if (mounted) setPendingNotes((result.notes ?? []).filter((note: { completed_at?: string | null }) => !note.completed_at).length);
+        if (mounted) setPendingNotes((result.tasks ?? []).filter((task: { status?: string }) => task.status !== "done").length);
       } catch {
         if (mounted) setPendingNotes(0);
       }
     }
-    loadPendingNotes();
-    const timer = window.setInterval(loadPendingNotes, 30000);
+    loadPendingTasks();
+    const timer = window.setInterval(loadPendingTasks, 30000);
     return () => {
       mounted = false;
       window.clearInterval(timer);
@@ -201,8 +201,8 @@ export function Sidebar({
       icon: IconAttendance,
     },
     {
-      label: "Notes & Reminders",
-      href: "/dashboard/notes",
+      label: "Tasks & Projects",
+      href: "/dashboard/tasks",
       icon: IconBell,
     },
     {
@@ -367,7 +367,7 @@ export function Sidebar({
                     </span>
                     <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
                       <span className="truncate">{item.label}</span>
-                      {item.href === "/dashboard/notes" && pendingNotes > 0 ? (
+                      {item.href === "/dashboard/tasks" && pendingNotes > 0 ? (
                         <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
                           {pendingNotes > 99 ? "99+" : pendingNotes}
                         </span>

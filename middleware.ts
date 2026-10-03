@@ -148,11 +148,13 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith("/dashboard/my-attendance") ||
         request.nextUrl.pathname.startsWith("/dashboard/my-salary") ||
         request.nextUrl.pathname.startsWith("/dashboard/apply-leave") ||
+        request.nextUrl.pathname.startsWith("/dashboard/tasks") ||
         request.nextUrl.pathname.startsWith("/dashboard/notes") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee/holidays") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee") ||
         request.nextUrl.pathname.startsWith("/dashboard/internal-chat") ||
         request.nextUrl.pathname.startsWith("/api/me") ||
+        request.nextUrl.pathname.startsWith("/api/tasks") ||
         request.nextUrl.pathname.startsWith("/api/notes") ||
         request.nextUrl.pathname.startsWith("/api/chat") ||
         /^\/api\/salaries\/[^/]+\/receipt$/.test(request.nextUrl.pathname);
@@ -308,6 +310,8 @@ function permissionModule(pathname: string) {
     attendance: "attendance",
     leaves: "leave",
     leave: "leave",
+    tasks: "tasks",
+    "task-projects": "tasks",
     salary: "salary",
     salaries: "salary",
     "company-accounts": "company_accounts",
