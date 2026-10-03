@@ -20,6 +20,32 @@ function addOpenTrackingPixel(html: string, pixel: string) {
   return closingBody < 0 ? `${html}${pixel}` : `${html.slice(0, closingBody)}${pixel}${html.slice(closingBody)}`;
 }
 
+function usablePublicOrigin(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const octets = hostname.split(".").map(Number);
+    const isPrivateIpv4 = octets.length === 4 && octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+      && (octets[0] === 10 || octets[0] === 127 || octets[0] === 0 || (octets[0] === 192 && octets[1] === 168) || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31));
+    if (!["http:", "https:"].includes(url.protocol) || hostname === "localhost" || hostname === "::1" || hostname.endsWith(".local") || isPrivateIpv4) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function emailTrackingOrigin(mailboxAddress: string) {
+  const domain = mailboxAddress.trim().toLowerCase().split("@")[1] ?? "";
+  const suffix = domain.split(".")[0].replace(/[^a-z0-9]/g, "").toUpperCase();
+  if (!suffix) return null;
+  const configured = process.env[`EMAIL_TRACKING_BASE_URL_${suffix}`]?.trim();
+  if (!configured || !configured.startsWith("https://")) return null;
+  const trackingOrigin = usablePublicOrigin(configured);
+  const crmOrigin = usablePublicOrigin(process.env.CRM_PUBLIC_URL);
+  return trackingOrigin && trackingOrigin !== crmOrigin ? trackingOrigin : null;
+}
+
 function sanitizeAndTrackLinks(html: string, publicUrl: string, trackingToken: string) {
   return sanitizeEmailHtml(html, {
     transformTags: {
@@ -217,9 +243,13 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
     const trackingToken = crypto.randomUUID();
     const providerMessageId = `hostinger:sent:${trackingToken}`;
     const safeHtml = sanitizeEmailHtml(html);
-    const publicUrl = (process.env.CRM_PUBLIC_URL || new URL(request.url).origin).replace(/\/$/, "");
-    const trackingPixel = `<img src="${publicUrl}/api/crm/webmail/tracking/open/${trackingToken}" width="1" height="1" alt="" />`;
-    const trackedHtml = addOpenTrackingPixel(sanitizeAndTrackLinks(html, publicUrl, trackingToken), trackingPixel);
+    const trackingOrigin = emailTrackingOrigin(mailbox.email_address);
+    const trackedHtml = trackingOrigin
+      ? addOpenTrackingPixel(sanitizeAndTrackLinks(html, trackingOrigin, trackingToken), `<img src="${trackingOrigin}/api/crm/webmail/tracking/open/${trackingToken}" width="1" height="1" alt="" />`)
+      : safeHtml;
+    if (!trackingOrigin) {
+      await writeCrmLog({ level: "warning", source: "hostinger-webmail", event: "webmail.tracking.disabled", message: "Webmail sent without tracking because EMAIL_TRACKING_BASE_URL is missing or is not a public HTTPS host.", route: "/api/crm/webmail", companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id } });
+    }
     let thread: { id: number } | null = null;
     let createdThread = false;
     if (Number.isInteger(threadId) && threadId > 0) {

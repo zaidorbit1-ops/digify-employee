@@ -170,11 +170,30 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
 
   const companyName = companyResult.data.name;
   const subject = render(campaign.subject || templateResult.data.subject, contact, companyName);
-  const publicUrl = (Deno.env.get("CRM_PUBLIC_URL") ?? "").replace(/\/$/, "");
+  const mailboxDomain = String(mailboxResult.data.email_address ?? "").toLowerCase().split("@")[1] ?? "";
+  const trackingSuffix = mailboxDomain.split(".")[0].replace(/[^a-z0-9]/g, "").toUpperCase();
+  const configuredTrackingUrl = (trackingSuffix ? Deno.env.get(`EMAIL_TRACKING_BASE_URL_${trackingSuffix}`) : "")?.trim() ?? "";
+  let trackingBaseUrl = "";
+  try {
+    const trackingUrl = new URL(configuredTrackingUrl);
+    const crmUrl = Deno.env.get("CRM_PUBLIC_URL");
+    const crmOrigin = crmUrl ? new URL(crmUrl).origin : "";
+    if (trackingUrl.protocol === "https:" && trackingUrl.origin !== crmOrigin) trackingBaseUrl = trackingUrl.origin;
+  } catch {
+    trackingBaseUrl = "";
+  }
   let html = render(templateResult.data.html_body, contact, companyName);
-  if (publicUrl) {
-    html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_match, url: string) => `href="${publicUrl}/api/crm/tracking/click/${message.id}?url=${encodeURIComponent(url)}"`);
-    html += `<img src="${publicUrl}/api/crm/tracking/open/${message.id}" width="1" height="1" alt="" style="display:none" />`;
+  if (trackingBaseUrl) {
+    html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_match, url: string) => `href="${trackingBaseUrl}/api/crm/tracking/click/${message.id}?url=${encodeURIComponent(url)}"`);
+    html += `<img src="${trackingBaseUrl}/api/crm/tracking/open/${message.id}" width="1" height="1" alt="" style="display:none" />`;
+  } else {
+    await writeSystemLog(db, {
+      level: "warning",
+      event: "campaign.tracking.disabled",
+      message: "Campaign sent without tracking because EMAIL_TRACKING_BASE_URL is missing or is not a public HTTPS host.",
+      companyId: campaign.company_id,
+      metadata: { campaign_id: campaign.id, campaign_message_id: message.id },
+    });
   }
   const text = render(templateResult.data.text_body || subject, contact, companyName);
   await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox: mailboxResult.data });
