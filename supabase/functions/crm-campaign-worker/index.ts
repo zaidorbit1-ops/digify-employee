@@ -170,15 +170,11 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
 
   const companyName = companyResult.data.name;
   const subject = render(campaign.subject || templateResult.data.subject, contact, companyName);
-  const mailboxDomain = String(mailboxResult.data.email_address ?? "").toLowerCase().split("@")[1] ?? "";
-  const trackingSuffix = mailboxDomain.split(".")[0].replace(/[^a-z0-9]/g, "").toUpperCase();
-  const configuredTrackingUrl = (trackingSuffix ? Deno.env.get(`EMAIL_TRACKING_BASE_URL_${trackingSuffix}`) : "")?.trim() ?? "";
+  const configuredTrackingUrl = (Deno.env.get("CRM_PUBLIC_URL") ?? "https://office.digifyitsolution.com").trim();
   let trackingBaseUrl = "";
   try {
     const trackingUrl = new URL(configuredTrackingUrl);
-    const crmUrl = Deno.env.get("CRM_PUBLIC_URL");
-    const crmOrigin = crmUrl ? new URL(crmUrl).origin : "";
-    if (trackingUrl.protocol === "https:" && trackingUrl.origin !== crmOrigin) trackingBaseUrl = trackingUrl.origin;
+    if (trackingUrl.protocol === "https:") trackingBaseUrl = trackingUrl.origin;
   } catch {
     trackingBaseUrl = "";
   }

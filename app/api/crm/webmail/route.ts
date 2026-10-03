@@ -35,15 +35,8 @@ function usablePublicOrigin(value: string | null | undefined) {
   }
 }
 
-function emailTrackingOrigin(mailboxAddress: string) {
-  const domain = mailboxAddress.trim().toLowerCase().split("@")[1] ?? "";
-  const suffix = domain.split(".")[0].replace(/[^a-z0-9]/g, "").toUpperCase();
-  if (!suffix) return null;
-  const configured = process.env[`EMAIL_TRACKING_BASE_URL_${suffix}`]?.trim();
-  if (!configured || !configured.startsWith("https://")) return null;
-  const trackingOrigin = usablePublicOrigin(configured);
-  const crmOrigin = usablePublicOrigin(process.env.CRM_PUBLIC_URL);
-  return trackingOrigin && trackingOrigin !== crmOrigin ? trackingOrigin : null;
+function emailTrackingOrigin() {
+  return usablePublicOrigin(process.env.CRM_PUBLIC_URL) || "https://office.digifyitsolution.com";
 }
 
 function sanitizeAndTrackLinks(html: string, publicUrl: string, trackingToken: string) {
@@ -243,7 +236,7 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
     const trackingToken = crypto.randomUUID();
     const providerMessageId = `hostinger:sent:${trackingToken}`;
     const safeHtml = sanitizeEmailHtml(html);
-    const trackingOrigin = emailTrackingOrigin(mailbox.email_address);
+    const trackingOrigin = emailTrackingOrigin();
     const trackedHtml = trackingOrigin
       ? addOpenTrackingPixel(sanitizeAndTrackLinks(html, trackingOrigin, trackingToken), `<img src="${trackingOrigin}/api/crm/webmail/tracking/open/${trackingToken}" width="1" height="1" alt="" />`)
       : safeHtml;
