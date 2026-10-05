@@ -52,13 +52,35 @@ export async function GET(request: Request) {
     if (Number.isInteger(companyId) && companyId > 0) query = query.eq("company_id", companyId);
     if (contactIds) query = query.in("id", contactIds);
     if (params.get("status")) query = query.eq("status", params.get("status"));
+    else if (params.get("exclude_archived") === "true") query = query.neq("status", "archived");
     if (params.get("search")) {
       const search = params.get("search");
       query = query.or(`full_name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%`);
     }
     const { data, error } = await query;
     if (error) throw error;
-    return NextResponse.json({ contacts: data ?? [] });
+    const contacts = data ?? [];
+    const ids = contacts.map((contact) => contact.id);
+    const { data: campaignContacts, error: campaignError } = ids.length
+      ? await client.from("crm_campaign_contacts").select("contact_id, campaign_id, status, created_at, crm_campaigns(name), crm_campaign_messages(status, sent_at)").in("contact_id", ids).order("created_at", { ascending: false })
+      : { data: [], error: null };
+    if (campaignError) throw campaignError;
+    const campaignsByContact = new Map<number, Array<{ campaign_id: number; name: string; status: string; sent_at: string | null }>>();
+    for (const item of campaignContacts ?? []) {
+      const campaign = item.crm_campaigns as { name?: string } | null;
+      const messages = item.crm_campaign_messages as Array<{ status: string; sent_at: string | null }> | null;
+      const newestMessage = messages?.find((message) => message.sent_at || ["sent", "delivered", "opened", "clicked", "replied"].includes(message.status));
+      campaignsByContact.set(item.contact_id, [
+        ...(campaignsByContact.get(item.contact_id) ?? []),
+        {
+          campaign_id: item.campaign_id,
+          name: campaign?.name ?? "Campaign",
+          status: newestMessage?.status ?? item.status,
+          sent_at: newestMessage?.sent_at ?? null,
+        },
+      ]);
+    }
+    return NextResponse.json({ contacts: contacts.map((contact) => ({ ...contact, campaigns: campaignsByContact.get(contact.id) ?? [] })) });
   } catch (error) {
     return fail(error, "Could not load contacts.");
   }

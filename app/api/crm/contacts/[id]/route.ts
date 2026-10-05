@@ -37,6 +37,29 @@ export const PATCH = withCrmApiLogging(async function PATCH(request: Request, co
   }
 });
 
+export const POST = withCrmApiLogging(async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    const { client, error: authError } = await getCrmAdminClient();
+    if (authError) return fail(authError, authError, 403);
+    const id = Number((await context.params).id);
+    const body = await request.json() as { action?: string };
+    if (!Number.isInteger(id) || id <= 0) return fail("A valid contact is required.", "A valid contact is required.", 400);
+    if (body.action === "restore") {
+      const { data, error } = await client.from("crm_contacts").update({ status: "active", updated_at: new Date().toISOString() }).eq("id", id).eq("status", "archived").select("id").maybeSingle();
+      if (error) throw error;
+      if (!data) return fail("Only archived contacts can be restored.", "Contact is not archived or was not found.", 404);
+      return NextResponse.json({ ok: true });
+    }
+    if (body.action !== "permanent_delete") return fail("Unsupported contact action.", "Unsupported contact action.", 400);
+    const { data, error } = await client.from("crm_contacts").delete().eq("id", id).eq("status", "archived").select("id").maybeSingle();
+    if (error) throw error;
+    if (!data) return fail("Only archived contacts can be permanently deleted.", "Contact is not archived or was not found.", 404);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return fail(error, "Could not permanently delete contact.");
+  }
+});
+
 export const DELETE = withCrmApiLogging(async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, error: authError } = await getCrmAdminClient();

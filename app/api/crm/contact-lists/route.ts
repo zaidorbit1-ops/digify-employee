@@ -69,6 +69,8 @@ export const DELETE = withCrmApiLogging(async function DELETE(request: Request) 
     if (authError) return fail(authError, authError, 403);
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0) return fail("A valid contact list is required.", "A valid contact list is required.", 400);
+    const { error: unlinkError } = await client.from("crm_campaigns").update({ contact_list_id: null }).eq("contact_list_id", id);
+    if (unlinkError) throw unlinkError;
     const { error } = await client.from("crm_contact_lists").delete().eq("id", id);
     if (error) throw error;
     return NextResponse.json({ ok: true });
