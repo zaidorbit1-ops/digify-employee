@@ -53,7 +53,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <AttendanceNotifier />
       <NotesNotifier />
       <InternalChatLauncher currentPath={pathname} />
-      <InternalChatNotifications currentPath={pathname} />
+      <InternalChatNotifications />
       <div className="flex h-screen">
         <Sidebar open={open} onClose={() => setOpen(false)} />
 

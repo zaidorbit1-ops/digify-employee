@@ -137,7 +137,7 @@ export function Sidebar({
   }, [user?.id]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     let mounted = true;
     async function loadPendingTasks() {
       try {
@@ -155,7 +155,7 @@ export function Sidebar({
       mounted = false;
       window.clearInterval(timer);
     };
-  }, [user, pathname]);
+  }, [user?.id]);
 
   useEffect(() => {
     function closeWorkspaceMenu(event: MouseEvent) {

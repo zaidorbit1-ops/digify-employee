@@ -246,6 +246,27 @@ body {
   }
 }
 
+.crm-notification-toast-progress {
+  animation: crm-notification-toast-progress 5s linear forwards;
+  transform-origin: left;
+}
+
+@keyframes crm-notification-toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-notification-toast-progress {
+    animation: none;
+    transform: scaleX(0);
+  }
+}
+
 button,
 input,
 select {
@@ -656,4 +677,3 @@ select {
 .glow-subtle {
   box-shadow: 0 0 30px -5px rgba(228, 90, 90, 0.15);
 }
-

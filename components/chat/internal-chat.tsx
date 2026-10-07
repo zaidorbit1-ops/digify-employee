@@ -1158,7 +1158,7 @@ type ChatToast = {
   time: string;
 };
 
-export function InternalChatNotifications({ currentPath }: { currentPath?: string }) {
+export function InternalChatNotifications() {
   const { user } = useAuth();
   const [toast, setToast] = useState<ChatToast | null>(null);
   const [toastCount, setToastCount] = useState(0);
@@ -1228,7 +1228,7 @@ export function InternalChatNotifications({ currentPath }: { currentPath?: strin
       mounted = false;
       channels.forEach((channel) => supabase.removeChannel(channel));
     };
-  }, [currentPath, user?.id]);
+  }, [user?.id]);
 
   if (!toast) return null;
 

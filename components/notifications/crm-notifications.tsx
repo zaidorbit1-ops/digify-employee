@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { RealtimePostgresInsertPayload } from "@supabase/supabase-js";
 import { useAuth } from "@/components/auth/auth-provider";
-import { IconArrowRight, IconBell } from "@/components/icons";
+import { IconArrowRight, IconBell, IconClose, IconEye } from "@/components/icons";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { CRM_ALERTS_CHANGED_EVENT, getCrmInAppAlertsEnabled } from "@/lib/crm-alert-preferences";
+import { CRM_NOTIFICATION_READ_EVENT } from "@/lib/crm-notification-events";
 
 type CrmNotification = {
   id: number;
@@ -87,8 +88,10 @@ export function CrmNotifications() {
   const [toast, setToast] = useState<CrmNotification | null>(null);
   const [open, setOpen] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [activeType, setActiveType] = useState<CrmNotification["type"]>("crm_email");
   const toastTimer = useRef<number | null>(null);
   const seenNotificationIds = useRef(new Set<number>());
+  const handledReadNotificationIds = useRef(new Set<number>());
   const alertsEnabled = useRef(true);
 
   useEffect(() => {
@@ -117,11 +120,24 @@ export function CrmNotifications() {
   }, [user?.id]);
 
   useEffect(() => {
+    const handleNotificationRead = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: number }>).detail?.id;
+      if (!id || handledReadNotificationIds.current.has(id)) return;
+      handledReadNotificationIds.current.add(id);
+      setUnreadCount((count) => Math.max(0, count - 1));
+      setNotifications((current) => current.map((notification) => notification.id === id
+        ? { ...notification, is_read: true }
+        : notification));
+    };
+    window.addEventListener(CRM_NOTIFICATION_READ_EVENT, handleNotificationRead);
+    return () => window.removeEventListener(CRM_NOTIFICATION_READ_EVENT, handleNotificationRead);
+  }, []);
+
+  useEffect(() => {
     if (!user || (profile?.role !== "superadmin" && profile?.role !== "employee")) return;
     let active = true;
-    seenNotificationIds.current.clear();
 
-    fetch("/api/crm/notifications", { cache: "no-store" })
+    fetch(`/api/crm/notifications?type=${activeType}`, { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Could not load notifications.");
         return response.json() as Promise<{ notifications: CrmNotification[]; unreadCount: number }>;
@@ -152,15 +168,17 @@ export function CrmNotifications() {
         if (item.type !== "crm_lead" && item.type !== "crm_email") return;
         if (seenNotificationIds.current.has(item.id)) return;
         seenNotificationIds.current.add(item.id);
-        setNotifications((current) => current.some((notification) => notification.id === item.id)
-          ? current
-          : [item, ...current].slice(0, 10));
+        if (item.type === activeType) {
+          setNotifications((current) => current.some((notification) => notification.id === item.id)
+            ? current
+            : [item, ...current].slice(0, 10));
+        }
         if (!item.is_read) setUnreadCount((current) => current + 1);
         if (alertsEnabled.current) {
           setToast(item);
           playCrmNotificationSound(item.type);
           if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
-          toastTimer.current = window.setTimeout(() => setToast(null), 8000);
+          toastTimer.current = window.setTimeout(() => setToast(null), 5000);
         }
       })
       .subscribe();
@@ -170,25 +188,41 @@ export function CrmNotifications() {
       if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
       void getSupabaseBrowserClient().removeChannel(channel);
     };
-  }, [profile?.role, user]);
+  }, [activeType, profile?.role, user]);
 
   if (profile?.role !== "superadmin" && profile?.role !== "employee") return null;
 
-  async function openNotification(item: CrmNotification) {
-    if (!item.is_read) {
-      await fetch("/api/crm/notifications", {
+  async function markNotificationRead(item: CrmNotification) {
+    if (item.is_read) return true;
+    try {
+      const response = await fetch("/api/crm/notifications", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: item.id }),
-      }).catch(() => undefined);
-      setNotifications((current) => current.map((notification) => notification.id === item.id
-        ? { ...notification, is_read: true }
-        : notification));
-      setUnreadCount((current) => Math.max(0, current - 1));
+      });
+      const result = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(result?.error ?? "Could not mark this notification as viewed.");
+      window.dispatchEvent(new CustomEvent(CRM_NOTIFICATION_READ_EVENT, { detail: { id: item.id } }));
+      return true;
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not mark this notification as viewed.");
+      return false;
     }
+  }
+
+  async function openNotification(item: CrmNotification) {
+    if (!await markNotificationRead(item)) return;
     setOpen(false);
     setToast(null);
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     router.push(notificationHref(item));
+  }
+
+  const filteredNotifications = notifications.filter((item) => item.type === activeType);
+  const notificationGroups = new Map<string, CrmNotification[]>();
+  for (const item of filteredNotifications) {
+    const date = new Date(item.created_at).toLocaleDateString();
+    notificationGroups.set(date, [...(notificationGroups.get(date) ?? []), item]);
   }
 
   return (
@@ -211,37 +245,60 @@ export function CrmNotifications() {
               <h2 className="text-sm font-semibold text-foreground">Notifications</h2>
               <span className="text-xs text-muted">{unreadCount} unread</span>
             </div>
+            <div className="grid grid-cols-2 gap-1 border-b border-border bg-slate-50 p-2" role="tablist" aria-label="Notification type">
+              {([
+                { label: "Emails", value: "crm_email" },
+                { label: "Leads", value: "crm_lead" },
+              ] as const).map((tab) => (
+                <button
+                  key={tab.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeType === tab.value}
+                  onClick={() => setActiveType(tab.value)}
+                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${activeType === tab.value ? "bg-white text-primary shadow-sm ring-1 ring-border" : "text-muted hover:text-foreground"}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
             <div className="max-h-[min(65vh,480px)] overflow-y-auto">
               {loadError ? <p className="px-4 py-5 text-sm text-rose-700">{loadError}</p> : null}
-              {!loadError && notifications.length === 0 ? <p className="px-4 py-6 text-center text-sm text-muted">No lead or email notifications yet.</p> : null}
-              {(() => {
-                const groups = new Map<string, CrmNotification[]>();
-                for (const item of notifications) {
-                  const date = new Date(item.created_at);
-                  const key = date.toLocaleDateString();
-                  groups.set(key, [...(groups.get(key) ?? []), item]);
-                }
-                return Array.from(groups.entries()).map(([date, items]) => (
-                  <section key={date} aria-label={date}>
-                    <h3 className="sticky top-0 border-b border-border/70 bg-slate-50 px-4 py-2 text-[11px] font-bold uppercase text-muted">{date}</h3>
-                    {items.map((item) => (
+              {!loadError && filteredNotifications.length === 0 ? <p className="px-4 py-6 text-center text-sm text-muted">No {activeType === "crm_email" ? "email" : "lead"} notifications yet.</p> : null}
+              {Array.from(notificationGroups.entries()).map(([date, items]) => (
+                <section key={date} aria-label={date}>
+                  <h3 className="sticky top-0 border-b border-border/70 bg-slate-50 px-4 py-2 text-[11px] font-bold uppercase text-muted">{date}</h3>
+                  {items.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`flex items-center gap-1 border-b border-border/70 border-l-4 px-2 transition hover:bg-rose-50 ${item.is_read ? "border-l-transparent bg-white" : "border-l-primary bg-rose-50"}`}
+                    >
                       <button
-                        key={item.id}
                         type="button"
                         onClick={() => void openNotification(item)}
-                        className={`group flex w-full cursor-pointer items-center gap-3 border-b border-border/70 border-l-4 px-4 py-3 text-left transition hover:bg-rose-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary ${item.is_read ? "border-l-transparent bg-white" : "border-l-primary bg-rose-100"}`}
+                        className="group flex min-w-0 flex-1 items-center gap-2 px-2 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                       >
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-semibold leading-5 text-foreground"><NotificationLabel notification={item} /></span>
                           <span className="mt-1 block text-xs text-muted">{new Date(item.created_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>
                         </span>
-                        {!item.is_read ? <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-primary" aria-label="Unread" /> : null}
+                        {!item.is_read ? <span className="h-2 w-2 shrink-0 rounded-full bg-primary" aria-label="Unread" /> : null}
                         <IconArrowRight className="h-4 w-4 shrink-0 text-muted transition group-hover:translate-x-0.5 group-hover:text-primary" />
                       </button>
-                    ))}
-                  </section>
-                ));
-              })()}
+                      <button
+                        type="button"
+                        onClick={() => void markNotificationRead(item)}
+                        disabled={item.is_read}
+                        aria-label={item.is_read ? "Already viewed" : "Mark notification as viewed"}
+                        title={item.is_read ? "Already viewed" : "Mark as viewed"}
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white hover:text-primary disabled:cursor-default disabled:opacity-40"
+                      >
+                        <IconEye className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </section>
+              ))}
             </div>
             <Link href="/dashboard/crm/notifications" onClick={() => setOpen(false)} className="flex items-center justify-between border-t border-border bg-slate-50 px-4 py-3 text-sm font-semibold text-primary transition hover:bg-rose-50">
               <span>View all notifications</span>
@@ -252,15 +309,34 @@ export function CrmNotifications() {
       </div>
 
       {toast ? (
-        <button
-          type="button"
-          onClick={() => void openNotification(toast)}
-          className="fixed right-4 top-20 z-[65] w-[min(380px,calc(100vw-2rem))] rounded-xl border border-border border-l-4 border-l-primary bg-white p-4 text-left shadow-[0_16px_44px_rgba(15,23,42,0.18)]"
+        <aside
+          key={toast.id}
+          className="crm-notification-toast fixed right-4 top-20 z-[65] w-[min(380px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-rose-200 bg-white shadow-[0_16px_44px_rgba(15,23,42,0.2)]"
           role="status"
         >
-          <span className="block text-sm font-semibold leading-5 text-foreground"><NotificationLabel notification={toast} /></span>
-          <span className="mt-1 block text-xs text-muted">Click to open</span>
-        </button>
+          <div className="flex items-start gap-3 border-l-4 border-l-primary bg-gradient-to-r from-rose-50/80 to-white p-4">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-rose-100 text-primary"><IconBell className="h-5 w-5" /></span>
+            <button type="button" onClick={() => void openNotification(toast)} className="min-w-0 flex-1 text-left">
+              <span className="block text-[11px] font-bold uppercase tracking-wide text-primary">New notification</span>
+              <span className="mt-1 block text-sm font-semibold leading-5 text-foreground"><NotificationLabel notification={toast} /></span>
+              <span className="mt-1 block text-xs text-muted">Click to open</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss notification"
+              onClick={() => {
+                setToast(null);
+                if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+              }}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted transition hover:bg-rose-100 hover:text-foreground"
+            >
+              <IconClose className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="h-1 bg-rose-100" aria-hidden="true">
+            <div className="crm-notification-toast-progress h-full bg-primary" />
+          </div>
+        </aside>
       ) : null}
     </>
   );
