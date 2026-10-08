@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { sendHostingerEmail } from "@/lib/hostinger-mail";
 import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["draft", "scheduled", "running", "paused", "completed", "cancelled", "failed"];
@@ -135,11 +134,11 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
         return {
           id: mailbox.id,
           email_address: mailbox.email_address,
-          provider: mailbox.provider ?? "hostinger",
+          provider: "brevo",
           status: mailbox.status,
           has_brevo_key: hasBrevoKey,
           key_name: keyName,
-          debug_message: hasBrevoKey ? `BREVO key is configured for ${address}.` : `${keyName} is not present on the server.`,
+          debug_message: hasBrevoKey ? `Campaign delivery uses Brevo; ${keyName} is configured.` : `Campaign delivery requires Brevo, but ${keyName} is not present on the app server.`,
         };
       });
       return NextResponse.json({ ok: true, company: companyResult.data, mailboxes });
@@ -156,14 +155,8 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       if (mailboxError) throw mailboxError;
       if (mailbox.status !== "connected") return fail("Connect the selected mailbox before sending a test.", "Mailbox is not connected.", 400);
       const address = String(mailbox.email_address ?? "").trim().toLowerCase();
-      const provider = String(mailbox.provider ?? "").trim().toLowerCase();
-      const useBrevo = provider === "brevo" || provider === "sendinblue" || Boolean(getBrevoKeyForMailbox(address));
-      if (useBrevo) {
-        await sendBrevoEmail({ to, subject: `[TEST] ${subject}`, html, text: textBody, mailboxAddress: address, displayName: "CRM Diagnostics" });
-      } else {
-        await sendHostingerEmail({ to, subject: `[TEST] ${subject}`, html, text: textBody, mailboxAddress: address });
-      }
-      return NextResponse.json({ ok: true, message: `Diagnostic email sent to ${to} using ${useBrevo ? "Brevo" : "Hostinger"}.` });
+      await sendBrevoEmail({ to, subject: `[TEST] ${subject}`, html, text: textBody, mailboxAddress: address, displayName: "CRM Diagnostics" });
+      return NextResponse.json({ ok: true, message: `Diagnostic email sent to ${to} using Brevo.` });
     }
 
     if (action === "relaunch") {
@@ -199,8 +192,8 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       const { data: mailbox, error: mailboxError } = await client.from("crm_mailboxes").select("*").eq("id", mailboxId).single();
       if (mailboxError) throw mailboxError;
       if (mailbox.status !== "connected") return fail("Connect the selected mailbox before sending a test.", "Mailbox is not connected.", 400);
-      await sendHostingerEmail({ to, subject: `[TEST] ${subject}`, html, text: text(body.text_body, 100000) || subject, mailboxAddress: mailbox.email_address });
-      return NextResponse.json({ ok: true, message: "Campaign test email sent." });
+      await sendBrevoEmail({ to, subject: `[TEST] ${subject}`, html, text: text(body.text_body, 100000) || subject, mailboxAddress: mailbox.email_address, displayName: "CRM Campaign Test" });
+      return NextResponse.json({ ok: true, message: "Campaign test email sent using Brevo." });
     }
     const values = campaignValues(body);
     await validateCampaignRelations(client, values);

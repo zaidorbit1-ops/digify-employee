@@ -35,6 +35,23 @@ function safeLogMessage(value: string) {
   return value.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[email]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").slice(0, 500);
 }
 
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message || error.name;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const fields = ["message", "details", "hint", "code", "status", "statusCode", "name"];
+    const parts = fields.flatMap((field) => {
+      const value = record[field];
+      return typeof value === "string" || typeof value === "number"
+        ? [`${field === "message" ? "" : `${field}: `}${value}`]
+        : [];
+    });
+    if (parts.length) return parts.join(" | ");
+    return `Unknown object error (fields: ${Object.keys(record).join(", ") || "none"}).`;
+  }
+  return error === undefined || error === null ? "Unknown campaign delivery error." : String(error);
+}
+
 async function writeSystemLog(db: ReturnType<typeof createClient>, input: { level: "success" | "info" | "warning" | "error"; event: string; message: string; companyId?: number; requestId?: string; metadata?: Record<string, unknown> }) {
   try {
     const { error } = await db.rpc("insert_crm_system_log", {
@@ -49,7 +66,7 @@ async function writeSystemLog(db: ReturnType<typeof createClient>, input: { leve
     });
     if (error) console.error("CRM system log write failed:", error.message);
   } catch (error) {
-    console.error("CRM system log write failed:", error instanceof Error ? error.message : "Unknown error");
+    console.error("CRM system log write failed:", errorMessage(error));
   }
 }
 
@@ -134,13 +151,6 @@ function getBrevoApiKeyForMailbox(address: string) {
   return Deno.env.get(`BREVO_API_KEY_${suffix}`) || Deno.env.get("BREVO_API_KEY") || "";
 }
 
-function shouldUseBrevoForMailbox(mailbox: Record<string, any>, address: string) {
-  const provider = String(mailbox.provider ?? "").trim().toLowerCase();
-  if (provider === "brevo" || provider === "sendinblue") return true;
-  if (provider === "hostinger") return false;
-  return Boolean(getBrevoApiKeyForMailbox(address));
-}
-
 async function sendBrevo(input: { to: string; subject: string; html: string; text: string; displayName: string | null; mailbox: Record<string, any> }) {
   const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
   const apiKey = getBrevoApiKeyForMailbox(address);
@@ -174,70 +184,38 @@ async function sendBrevo(input: { to: string; subject: string; html: string; tex
     const detail = (await response.text()).slice(0, 1000);
     throw new Error(`Brevo email send failed (${response.status}): ${detail || response.statusText}`);
   }
-}
-
-async function sendHostinger(input: { to: string; subject: string; html: string; text: string; displayName: string | null; mailbox: Record<string, any> }) {
-  const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
-  const suffix = (address.split("@")[1]?.split(".")[0] ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
-  const token = Deno.env.get(`HOSTINGER_API_TOKEN_${suffix}`) || Deno.env.get("HOSTINGER_API_TOKEN");
-  const configuredAddress = (Deno.env.get(`HOSTINGER_MAILBOX_${suffix}`) || address).trim().toLowerCase();
-  const resourceId = String(input.mailbox.hostinger_resource_id ?? "");
-  if (!token || !address || !resourceId) throw new Error("Hostinger API configuration is incomplete for the selected mailbox.");
-  if (configuredAddress !== address) throw new Error(`HOSTINGER_MAILBOX_${suffix} must match ${address}.`);
-
-  const response = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${encodeURIComponent(resourceId)}/send`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      to: [input.to],
-      cc: [],
-      bcc: [],
-      displayName: input.displayName ?? "",
-      subject: input.subject,
-      html: input.html,
-      text: input.text,
-      attachments: [],
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) {
-    const detail = (await response.text()).slice(0, 1000);
-    throw new Error(`Hostinger email send failed (${response.status}): ${detail || response.statusText}`);
-  }
+  const result = await response.json().catch(() => null) as { messageId?: unknown } | null;
+  return typeof result?.messageId === "string" ? result.messageId : null;
 }
 
 async function sendCampaignMessage(db: ReturnType<typeof createClient>, message: Record<string, any>, campaign: Record<string, any>, contact: Record<string, any>, mailbox: Record<string, any>, html: string, text: string, subject: string) {
-  const mailboxAddress = String(mailbox.email_address ?? "").trim().toLowerCase();
-  const preferredProvider = shouldUseBrevoForMailbox(mailbox, mailboxAddress) ? "brevo" : "hostinger";
-  const providers = preferredProvider === "brevo" ? ["brevo", "hostinger"] : ["hostinger"];
-
-  let lastError: unknown = null;
-  for (const providerName of providers) {
-    try {
-      if (providerName === "brevo") {
-        await sendBrevo({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox });
-      } else {
-        await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox });
-      }
-      return { providerName, providerMessageId: `${providerName}:campaign:${message.id}` };
-    } catch (error) {
-      lastError = error;
-      const reason = error instanceof Error ? error.message : "Unknown send error.";
-      await writeSystemLog(db, {
-        level: providerName === "brevo" ? "warning" : "error",
-        event: providerName === "brevo" ? "campaign.email.brevo_fallback" : "campaign.email.provider_failed",
-        message: `${providerName.toUpperCase()} delivery failed for campaign message ${message.id}. ${reason}`,
-        companyId: campaign.company_id,
-        metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id, provider: providerName, error: reason },
-      });
-
-      if (providerName === "hostinger") {
-        throw error;
-      }
-    }
+  try {
+    const brevoMessageId = await sendBrevo({
+      to: contact.email,
+      subject,
+      html,
+      text,
+      displayName: campaign.from_name,
+      mailbox,
+    });
+    return { providerMessageId: brevoMessageId ?? `brevo:campaign:${message.id}` };
+  } catch (error) {
+    const reason = errorMessage(error);
+    await writeSystemLog(db, {
+      level: "error",
+      event: "campaign.email.provider_failed",
+      message: `BREVO delivery failed for campaign message ${message.id}. ${safeLogMessage(reason)}`,
+      companyId: campaign.company_id,
+      metadata: {
+        campaign_id: campaign.id,
+        campaign_message_id: message.id,
+        mailbox_id: campaign.mailbox_id,
+        provider: "brevo",
+        error: safeLogMessage(reason),
+      },
+    });
+    throw new Error(`Brevo campaign delivery failed: ${reason}`);
   }
-
-  throw lastError instanceof Error ? lastError : new Error("Campaign email delivery failed on all configured providers.");
 }
 
 async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>) {
@@ -248,7 +226,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
   const campaign = relation.crm_campaigns;
   const contact = relation.crm_contacts;
   const [mailboxResult, templateResult, companyResult] = await Promise.all([
-    db.from("crm_mailboxes").select("id, company_id, email_address, provider, status, hostinger_resource_id").eq("id", campaign.mailbox_id).single(),
+    db.from("crm_mailboxes").select("id, company_id, email_address, display_name, status").eq("id", campaign.mailbox_id).single(),
     db.from("crm_email_templates").select("subject, html_body, text_body").eq("id", campaign.template_id).single(),
     db.from("crm_companies").select("name").eq("id", campaign.company_id).single(),
   ]);
@@ -282,7 +260,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
   }
   const text = render(templateResult.data.text_body || subject, contact, companyName);
 
-  const { providerName, providerMessageId } = await sendCampaignMessage(db, message, campaign, contact, mailboxResult.data, html, text, subject);
+  const { providerMessageId } = await sendCampaignMessage(db, message, campaign, contact, mailboxResult.data, html, text, subject);
   const now = new Date().toISOString();
   try {
     const { data: thread, error: threadError } = await db.from("crm_email_threads").upsert({
@@ -316,7 +294,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     await writeSystemLog(db, {
       level: "warning",
       event: "campaign.email.sent_copy_failed",
-      message: "Hostinger accepted the campaign email, but the CRM Sent copy could not be stored.",
+      message: "Brevo accepted the campaign email, but the CRM Sent copy could not be stored.",
       companyId: campaign.company_id,
       metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id },
     });
@@ -342,7 +320,7 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
   const permanent = attempts >= maxAttempts;
   const now = new Date();
   const delaySeconds = Math.min(3600, 60 * (2 ** Math.max(0, attempts - 1)));
-  const reason = error instanceof Error ? error.message : "Campaign delivery failed.";
+  const reason = errorMessage(error);
   const [{ error: messageError }, { error: contactError }] = await Promise.all([
     db.from("crm_campaign_messages").update({ status: permanent ? "failed" : "queued", error_message: reason.slice(0, 2000), next_attempt_at: permanent ? null : new Date(now.getTime() + delaySeconds * 1000).toISOString(), updated_at: now.toISOString() }).eq("id", message.id),
     db.from("crm_campaign_contacts").update({ status: permanent ? "failed" : "queued" }).eq("id", message.campaign_contact_id),
@@ -365,7 +343,12 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
     const { error: eventError } = await db.from("crm_email_events").insert({ company_id: message.company_id, campaign_message_id: message.id, event_type: "failed", metadata: { error: reason.slice(0, 1000), attempts } });
     if (eventError) console.error("Failed to persist campaign failure event:", eventError.message);
   }
-  console.error(`Campaign message ${message.id} ${permanent ? "failed permanently" : "queued for retry"}: ${reason}`);
+  console.error(`Campaign message ${message.id} ${permanent ? "failed permanently" : "queued for retry"}: ${reason}`, {
+    attempt_count: attempts,
+    permanent,
+    campaign_message_id: message.id,
+    error,
+  });
 }
 
 async function deliverDueMessages(db: ReturnType<typeof createClient>) {
@@ -422,8 +405,9 @@ Deno.serve(async (request) => {
     });
     return json({ ok: true, ...delivery });
   } catch (error) {
-    console.error("CRM campaign Edge Function failed:", error);
-    await writeSystemLog(db, { level: "error", event: "campaign.worker.failed", message: error instanceof Error ? error.message : "Campaign processing failed." });
-    return json({ error: error instanceof Error ? error.message : "Campaign processing failed." }, 500);
+    const reason = errorMessage(error);
+    console.error("CRM campaign Edge Function failed:", reason, error);
+    await writeSystemLog(db, { level: "error", event: "campaign.worker.failed", message: reason });
+    return json({ error: reason }, 500);
   }
 });
