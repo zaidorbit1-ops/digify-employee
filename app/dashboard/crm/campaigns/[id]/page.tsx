@@ -52,11 +52,20 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadReport(id: string, company: string, quiet = false) {
+  async function loadReport(id: string, company: string, quiet = false, syncBounces = false) {
     if (quiet) setRefreshing(true);
     else setLoading(true);
     setError(null);
     try {
+      if (syncBounces) {
+        const syncResponse = await fetch("/api/crm/analytics", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ company_id: Number(company), campaign_id: Number(id) }),
+        });
+        const syncResult = await syncResponse.json();
+        if (!syncResponse.ok) throw new Error(syncResult.error ?? "Could not synchronize bounce notifications.");
+      }
       const [campaignResponse, reportResponse] = await Promise.all([
         fetch(`/api/crm/campaigns?company_id=${company}`, { cache: "no-store" }),
         fetch(`/api/crm/analytics?company_id=${company}&campaign_id=${id}`, { cache: "no-store" }),
@@ -91,7 +100,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
       }
       setCampaignId(id);
       setCompanyId(company);
-      void loadReport(id, company);
+      void loadReport(id, company, false, true);
     }).catch((cause) => {
       if (!cancelled) {
         setError(cause instanceof Error ? cause.message : "Could not load campaign report.");
@@ -132,7 +141,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
         description="Recipient-by-recipient delivery status, retry history, and failure details."
         actions={
           <div className="flex gap-2">
-            <Button variant="secondary" loading={refreshing} onClick={() => void loadReport(campaignId, companyId, true)} className="rounded-xl bg-white/90 shadow-sm">
+            <Button variant="secondary" loading={refreshing} onClick={() => void loadReport(campaignId, companyId, true, true)} className="rounded-xl bg-white/90 shadow-sm">
               <IconRefresh className="h-4 w-4" />
               Refresh
             </Button>

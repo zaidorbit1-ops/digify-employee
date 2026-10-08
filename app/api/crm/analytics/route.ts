@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { parseCampaignBounceNotice, recordCampaignBounce } from "@/lib/crm-campaign-bounces";
+import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
 async function allRows<T>(queryPage: (start: number, end: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>) {
   const rows: T[] = [];
@@ -25,7 +27,7 @@ export async function GET(request: Request) {
     const campaignId = Number(params.get("campaign_id"));
     if (!Number.isInteger(companyId) || companyId <= 0) return fail("A valid company is required.", "A valid company is required.", 400);
 
-    let campaignsQuery = client.from("crm_campaigns").select("id, name, status, company_id, created_at, updated_at").eq("company_id", companyId).order("updated_at", { ascending: false });
+    let campaignsQuery = client.from("crm_campaigns").select("id, name, status, company_id, mailbox_id, created_at, updated_at").eq("company_id", companyId).order("updated_at", { ascending: false });
     if (Number.isInteger(campaignId) && campaignId > 0) campaignsQuery = campaignsQuery.eq("id", campaignId);
     const { data: campaigns, error: campaignsError } = await campaignsQuery;
     if (campaignsError) throw campaignsError;
@@ -73,4 +75,58 @@ export async function GET(request: Request) {
     });
     return NextResponse.json({ campaigns: campaigns ?? [], summary, recipients });
   } catch (error) { return fail(error, "Could not load campaign analytics."); }
+}
+
+export async function POST(request: Request) {
+  try {
+    const { client, error: authError } = await getCrmAdminClient();
+    if (authError) return fail(authError, authError, 403);
+    const body = await request.json() as Record<string, unknown>;
+    const companyId = Number(body.company_id);
+    const campaignId = Number(body.campaign_id);
+    if (!Number.isInteger(companyId) || companyId <= 0 || !Number.isInteger(campaignId) || campaignId <= 0) {
+      return fail("A valid company and campaign are required.", "Campaign details are incomplete.", 400);
+    }
+
+    const { data: campaign, error: campaignError } = await client
+      .from("crm_campaigns")
+      .select("id, company_id, mailbox_id")
+      .eq("id", campaignId)
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (campaignError) throw campaignError;
+    if (!campaign) return fail("The source campaign does not belong to this company.", "Campaign is not available.", 404);
+
+    const syncClient = getSupabaseServiceRoleClient();
+    const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const bounceEmails = await allRows((start, end) => syncClient
+      .from("crm_email_messages")
+      .select("provider_message_id, sender, subject, text_body, html_body, received_at")
+      .eq("mailbox_id", campaign.mailbox_id)
+      .eq("direction", "inbound")
+      .gte("received_at", since)
+      .or("sender.ilike.%mailer-daemon%,sender.ilike.%postmaster%,sender.ilike.%mailchannels%,subject.ilike.%undeliver%,subject.ilike.%delivery status%,subject.ilike.%returned mail%,subject.ilike.%failure notice%,subject.ilike.%could not be delivered%")
+      .order("received_at", { ascending: false })
+      .range(start, end));
+
+    let detected = 0;
+    let linked = 0;
+    for (const email of bounceEmails) {
+      const notice = parseCampaignBounceNotice(email.sender ?? "", email.subject ?? "", email.text_body ?? "", email.html_body ?? "");
+      if (!notice) continue;
+      detected += 1;
+      if (!email.received_at || !email.provider_message_id) continue;
+      if (await recordCampaignBounce(syncClient, {
+        mailboxId: campaign.mailbox_id,
+        companyId,
+        receivedAt: email.received_at,
+        inboundProviderMessageId: email.provider_message_id,
+        notice,
+      })) linked += 1;
+    }
+
+    return NextResponse.json({ ok: true, detected, linked });
+  } catch (error) {
+    return fail(error, "Could not synchronize campaign bounce notifications.");
+  }
 }

@@ -4,6 +4,7 @@ import { constantTimeSecretMatches, findHostingerMessage, getHostingerMessage, i
 import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { parseCampaignBounceNotice, recordCampaignBounce } from "@/lib/crm-campaign-bounces";
 import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 import { writeCrmLog } from "@/lib/crm-logs";
 
@@ -278,6 +279,22 @@ export async function POST(request: Request) {
     const receivedAtDate = receivedAtValue ? new Date(receivedAtValue) : new Date();
     if (Number.isNaN(receivedAtDate.getTime())) throw new Error("Hostinger message received timestamp is invalid.");
     const receivedAt = receivedAtDate.toISOString();
+    const bounceNotice = parseCampaignBounceNotice(sender, subject, textBody, htmlBody);
+    if (bounceNotice) {
+      stage = "campaign.bounce_link";
+      const linked = await recordCampaignBounce(client, {
+        mailboxId: mailbox.id,
+        companyId: mailbox.company_id,
+        receivedAt,
+        inboundProviderMessageId: providerMessageId,
+        notice: bounceNotice,
+      });
+      if (linked) {
+        console.info("[hostinger] campaign bounce linked", { mailbox_id: mailbox.id, recipient: bounceNotice.recipient });
+      } else {
+        console.warn("[hostinger] campaign bounce could not be linked unambiguously", { mailbox_id: mailbox.id, recipient: bounceNotice.recipient, bounce_subject: subject });
+      }
+    }
     stage = "database.message_save";
     const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, hostinger_folder: folder, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeEmailHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
     if (messageError) throw messageError;

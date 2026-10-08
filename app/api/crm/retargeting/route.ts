@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 
-const metrics = ["opened", "clicked", "delivered", "delivered_not_opened", "opened_not_clicked", "replied"] as const;
+const metrics = ["opened", "clicked", "delivered", "delivered_not_opened", "opened_not_clicked", "replied", "failed"] as const;
 type RetargetMetric = (typeof metrics)[number];
 
 async function allRows<T>(queryPage: (start: number, end: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>) {
@@ -15,6 +15,7 @@ async function allRows<T>(queryPage: (start: number, end: number) => PromiseLike
 }
 
 function matchesMetric(metric: RetargetMetric, statuses: string[], eventTypes: Set<string>) {
+  if (metric === "failed") return statuses.includes("failed") || eventTypes.has("failed");
   const opened = eventTypes.has("opened") || statuses.some((status) => ["opened", "clicked", "replied"].includes(status));
   const clicked = eventTypes.has("clicked") || statuses.includes("clicked");
   const delivered = eventTypes.has("delivered") || statuses.some((status) => ["delivered", "opened", "clicked", "replied"].includes(status));

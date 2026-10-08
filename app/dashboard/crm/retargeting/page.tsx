@@ -16,7 +16,7 @@ type Event = { id: number; event_type: string; event_time: string };
 type Message = { id: number; status: string };
 type Contact = { id: number; full_name: string | null; email: string; status: string };
 type Recipient = { contact_id: number; status: string; crm_contacts: Contact | Contact[] | null; messages: Message[]; events: Event[] };
-type Outcome = "opened" | "clicked" | "delivered" | "delivered_not_opened" | "opened_not_clicked" | "replied";
+type Outcome = "opened" | "clicked" | "delivered" | "delivered_not_opened" | "opened_not_clicked" | "replied" | "failed";
 type SavedAudience = { id: number; name: string; recipient_count: number };
 
 const outcomes: { value: Outcome; label: string; description: string }[] = [
@@ -26,6 +26,7 @@ const outcomes: { value: Outcome; label: string; description: string }[] = [
   { value: "delivered_not_opened", label: "Sent, not opened", description: "Sent or delivered, with no recorded open." },
   { value: "opened_not_clicked", label: "Opened, not clicked", description: "Opened the email but did not click a tracked link." },
   { value: "replied", label: "Replied", description: "Recipients with a reply event." },
+  { value: "failed", label: "Failed", description: "Recipients whose campaign email failed after delivery retries." },
 ];
 
 function normalizeContact(recipient: Recipient) {
@@ -37,6 +38,7 @@ function matchesOutcome(recipient: Recipient, outcome: Outcome) {
   if (!contact || contact.status !== "active" || !contact.email) return false;
   const statuses = [recipient.status, ...(recipient.messages ?? []).map((message) => message.status)];
   const eventTypes = new Set((recipient.events ?? []).map((event) => event.event_type));
+  if (outcome === "failed") return statuses.includes("failed") || eventTypes.has("failed");
   if (statuses.some((status) => ["failed", "bounced", "unsubscribed"].includes(status)) || ["bounced", "complained", "unsubscribed"].some((type) => eventTypes.has(type))) return false;
   const opened = eventTypes.has("opened") || statuses.some((status) => ["opened", "clicked", "replied"].includes(status));
   const clicked = eventTypes.has("clicked") || statuses.includes("clicked");
