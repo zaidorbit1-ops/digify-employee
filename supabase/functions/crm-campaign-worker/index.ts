@@ -8,6 +8,12 @@ const maxMessagesPerRun = 20;
 const pageSize = 1000;
 const workerId = `supabase-edge:${crypto.randomUUID()}`;
 
+class AcceptedButUnrecordedError extends Error {
+  constructor() {
+    super("Hostinger accepted the campaign email but the database could not record the rolling send.");
+  }
+}
+
 function json(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -121,6 +127,19 @@ async function prepareDueCampaigns(db: ReturnType<typeof createClient>) {
   for (const campaign of campaigns) await prepareCampaign(db, campaign);
 }
 
+function responseMessageId(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  for (const key of ["messageId", "message_id", "providerMessageId", "provider_message_id", "id"]) {
+    if (typeof item[key] === "string" && item[key].trim()) return (item[key] as string).trim();
+  }
+  for (const key of ["id", "data", "message", "result"]) {
+    const nested = responseMessageId(item[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
 async function sendHostinger(input: { to: string; subject: string; html: string; text: string; displayName: string | null; mailbox: Record<string, any> }) {
   const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
   const suffix = (address.split("@")[1]?.split(".")[0] ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
@@ -149,9 +168,155 @@ async function sendHostinger(input: { to: string; subject: string; html: string;
     const detail = (await response.text()).slice(0, 1000);
     throw new Error(`Hostinger email send failed (${response.status}): ${detail || response.statusText}`);
   }
+  const responseBody = await response.text();
+  const rfcHeader = response.headers.get("message-id");
+  let providerMessageId = response.headers.get("x-message-id");
+  let responseId: string | null = null;
+  if (!providerMessageId && responseBody) {
+    try {
+      responseId = responseMessageId(JSON.parse(responseBody));
+    } catch {
+      responseId = null;
+    }
+  }
+  providerMessageId ??= responseId;
+  return {
+    providerMessageId: providerMessageId?.trim() || null,
+    rfcMessageId: rfcHeader?.trim() || (responseId?.includes("@") ? responseId : null),
+  };
 }
 
-async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>) {
+async function findHostingerRfcMessageId(input: {
+  mailbox: Record<string, any>;
+  recipient: string;
+  subject: string;
+  token: string;
+}) {
+  const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
+  const suffix = (address.split("@")[1]?.split(".")[0] ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const token = Deno.env.get(`HOSTINGER_API_TOKEN_${suffix}`) || Deno.env.get("HOSTINGER_API_TOKEN");
+  const resourceId = String(input.mailbox.hostinger_resource_id ?? "");
+  if (!token || !resourceId) return null;
+
+  const search = {
+    since: "",
+    before: "",
+    flags: [],
+    uid: "",
+    subject: input.subject,
+    from: "",
+    to: input.recipient,
+    cc: "",
+    body: input.token,
+    header: "",
+    larger: 0,
+    smaller: 0,
+    text: "",
+  };
+
+  for (const folder of ["Sent", "INBOX.Sent"]) {
+    const url = new URL(`https://api.mail.hostinger.com/api/v1/mailboxes/${encodeURIComponent(resourceId)}/folders/${encodeURIComponent(folder)}/messages/search`);
+    url.searchParams.set("page", "1");
+    url.searchParams.set("perPage", "10");
+    url.searchParams.set("sort", "-uid");
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(search),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!response.ok) continue;
+    const payload = await response.json() as Record<string, any>;
+    const rows = Array.isArray(payload.data?.data) ? payload.data.data : Array.isArray(payload.data) ? payload.data : [];
+    const matching = rows.filter((row: Record<string, any>) => {
+      const recipients = Array.isArray(row.to) ? row.to.map((item: any) => String(item.address ?? item)).map((item: string) => item.toLowerCase()) : [];
+      return typeof row.messageId === "string"
+        && recipients.includes(input.recipient.toLowerCase())
+        && String(row.subject ?? "").trim() === input.subject.trim();
+    });
+    if (matching.length === 1) return String(matching[0].messageId).trim();
+  }
+  return null;
+}
+
+async function prepareCampaignTracking(db: ReturnType<typeof createClient>, message: Record<string, any>, campaign: Record<string, any>, html: string, text: string, trackingBaseUrl: string) {
+  const links = new Map<string, string>();
+  const hrefPattern = /href=(["'])(https?:\/\/[^"']+)\1/gi;
+  for (const match of html.matchAll(hrefPattern)) {
+    const target = match[2].replace(/&amp;/gi, "&");
+    try {
+      const parsed = new URL(target);
+      if (["http:", "https:"].includes(parsed.protocol)) links.set(target, target);
+    } catch {
+      continue;
+    }
+  }
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"']+/gi)) {
+    const target = match[0].replace(/[),.!?;:]+$/, "").replace(/&amp;/gi, "&");
+    try {
+      const parsed = new URL(target);
+      if (["http:", "https:"].includes(parsed.protocol)) links.set(target, target);
+    } catch {
+      continue;
+    }
+  }
+
+  const { data: existing, error: existingError } = await db.from("crm_campaign_tracking_tokens")
+    .select("token, event_type, target_url")
+    .eq("campaign_message_id", message.id);
+  if (existingError) throw existingError;
+  const tokenByTarget = new Map<string, string>();
+  let openToken = (existing ?? []).find((row: Record<string, any>) => row.event_type === "opened")?.token as string | undefined;
+  for (const row of existing ?? []) {
+    if (row.event_type === "clicked") tokenByTarget.set(row.target_url, row.token);
+  }
+
+  const newTokens: Record<string, unknown>[] = [];
+  if (!openToken) {
+    openToken = crypto.randomUUID();
+    newTokens.push({
+      token: openToken,
+      campaign_id: campaign.id,
+      campaign_contact_id: message.campaign_contact_id,
+      campaign_message_id: message.id,
+      event_type: "opened",
+    });
+  }
+  for (const target of links.keys()) {
+    if (tokenByTarget.has(target)) continue;
+    const clickToken = crypto.randomUUID();
+    tokenByTarget.set(target, clickToken);
+    newTokens.push({
+      token: clickToken,
+      campaign_id: campaign.id,
+      campaign_contact_id: message.campaign_contact_id,
+      campaign_message_id: message.id,
+      event_type: "clicked",
+      target_url: target,
+    });
+  }
+  if (newTokens.length) {
+    const { error: insertError } = await db.from("crm_campaign_tracking_tokens").insert(newTokens);
+    if (insertError) throw insertError;
+  }
+
+  const clickUrl = (token: string, target: string) =>
+    `${trackingBaseUrl}/api/email/track/click/${token}?url=${encodeURIComponent(target)}`;
+  const trackedHtml = html.replace(hrefPattern, (_match, quote: string, rawTarget: string) => {
+    const target = rawTarget.replace(/&amp;/gi, "&");
+    const clickToken = tokenByTarget.get(target);
+    return clickToken ? `href=${quote}${clickUrl(clickToken, target)}${quote}` : _match;
+  });
+  const textUrls = new Map<string, string>();
+  for (const [target, token] of tokenByTarget) textUrls.set(target, clickUrl(token, target));
+  return {
+    html: `${trackedHtml}<img src="${trackingBaseUrl}/api/email/track/open/${openToken}" width="1" height="1" alt="" style="display:none" />`,
+    textUrls,
+    openToken,
+  };
+}
+
+async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>): Promise<boolean> {
   const { data: relation, error: relationError } = await db.from("crm_campaign_contacts")
     .select("campaign_id, contact_id, crm_campaigns(*), crm_contacts(*)")
     .eq("id", message.campaign_contact_id).single();
@@ -179,9 +344,19 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     trackingBaseUrl = "";
   }
   let html = render(templateResult.data.html_body, contact, companyName);
+  let text = render(templateResult.data.text_body || subject, contact, companyName);
+  let openToken: string | null = null;
+  let trackedTextUrls = new Map<string, string>();
   if (trackingBaseUrl) {
-    html = html.replace(/href=["'](https?:\/\/[^"']+)["']/gi, (_match, url: string) => `href="${trackingBaseUrl}/api/crm/tracking/click/${message.id}?url=${encodeURIComponent(url)}"`);
-    html += `<img src="${trackingBaseUrl}/api/crm/tracking/open/${message.id}" width="1" height="1" alt="" style="display:none" />`;
+    const tracked = await prepareCampaignTracking(db, message, campaign, html, text, trackingBaseUrl);
+    html = tracked.html;
+    openToken = tracked.openToken;
+    trackedTextUrls = tracked.textUrls;
+    text = text.replace(/https?:\/\/[^\s<>"']+/gi, (url: string) => {
+      const normalized = url.replace(/[),.!?;:]+$/, "").replace(/&amp;/gi, "&");
+      const trackedUrl = trackedTextUrls.get(normalized);
+      return trackedUrl ? `${trackedUrl}${url.slice(url.replace(/[),.!?;:]+$/, "").length)}` : url;
+    });
   } else {
     await writeSystemLog(db, {
       level: "warning",
@@ -191,11 +366,77 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
       metadata: { campaign_id: campaign.id, campaign_message_id: message.id },
     });
   }
-  const text = render(templateResult.data.text_body || subject, contact, companyName);
-  await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox: mailboxResult.data });
-
   const providerMessageId = `hostinger:campaign:${message.id}`;
+  const reservationId = crypto.randomUUID();
+  const { data: reservationData, error: reservationError } = await db.rpc("reserve_crm_campaign_send", {
+    p_reservation_id: reservationId,
+    p_campaign_message_id: message.id,
+  });
+  if (reservationError) throw reservationError;
+  const reservation = Array.isArray(reservationData) ? reservationData[0] : reservationData;
+  if (!reservation?.allowed) return false;
+
+  let sendResult: { providerMessageId: string | null; rfcMessageId: string | null };
+  try {
+    sendResult = await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox: mailboxResult.data });
+  } catch (error) {
+    const { error: releaseError } = await db.rpc("release_crm_campaign_send", { p_reservation_id: reservationId });
+    if (releaseError) console.error(`Campaign message ${message.id} failed and its quota reservation could not be released:`, releaseError.message);
+    throw error;
+  }
+  let rfcMessageId = sendResult.rfcMessageId;
+  if (!rfcMessageId && openToken) {
+    try {
+      rfcMessageId = await findHostingerRfcMessageId({
+        mailbox: mailboxResult.data,
+        recipient: contact.email,
+        subject,
+        token: openToken,
+      });
+    } catch (error) {
+      console.warn(`Campaign message ${message.id} was accepted but its Hostinger Message-ID could not be looked up:`, error instanceof Error ? error.message : "Unknown error");
+    }
+  }
+
+  const completionArgs = {
+    p_reservation_id: reservationId,
+    p_provider_message_id: providerMessageId,
+    p_subject: subject,
+    p_worker_id: workerId,
+  };
+  let { error: completionError } = await db.rpc("complete_crm_campaign_send", completionArgs);
+  if (completionError) ({ error: completionError } = await db.rpc("complete_crm_campaign_send", completionArgs));
+  if (completionError) {
+    console.error(`Campaign message ${message.id} was accepted by Hostinger but could not be recorded:`, completionError.message);
+    throw new AcceptedButUnrecordedError();
+  }
+
   const now = new Date().toISOString();
+  if (!rfcMessageId) {
+    await writeSystemLog(db, {
+      level: "warning",
+      event: "campaign.email.provider_id_unavailable",
+      message: "Hostinger accepted the campaign email, but its RFC Message-ID was not present in the send response or searchable Sent copy.",
+      companyId: campaign.company_id,
+      metadata: { campaign_id: campaign.id, campaign_message_id: message.id },
+    });
+  }
+  const { error: providerIdError } = await db.from("crm_campaign_messages")
+    .update({
+      rfc_message_id: rfcMessageId,
+      hostinger_message_id: sendResult.providerMessageId,
+      updated_at: now,
+    })
+    .eq("id", message.id);
+  if (providerIdError) {
+    await writeSystemLog(db, {
+      level: "warning",
+      event: "campaign.email.provider_id_unrecorded",
+      message: "Hostinger accepted the campaign email, but the provider Message-ID could not be recorded.",
+      companyId: campaign.company_id,
+      metadata: { campaign_id: campaign.id, campaign_message_id: message.id },
+    });
+  }
   try {
     const { data: thread, error: threadError } = await db.from("crm_email_threads").upsert({
       company_id: campaign.company_id,
@@ -214,6 +455,8 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
       contact_id: contact.id,
       direction: "outbound",
       provider_message_id: providerMessageId,
+      campaign_message_id: message.id,
+      message_id: rfcMessageId,
       sender: mailboxResult.data.email_address,
       recipients: [contact.email],
       subject,
@@ -233,13 +476,6 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
       metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id },
     });
   }
-  const [{ error: messageUpdateError }, { error: contactUpdateError }, { error: eventError }, { error: timelineError }] = await Promise.all([
-    db.from("crm_campaign_messages").update({ status: "sent", sent_at: now, provider_message_id: providerMessageId, error_message: null, updated_at: now }).eq("id", message.id),
-    db.from("crm_campaign_contacts").update({ status: "sent" }).eq("id", message.campaign_contact_id),
-    db.from("crm_email_events").upsert({ company_id: campaign.company_id, campaign_message_id: message.id, event_type: "sent", provider_event_id: providerMessageId, metadata: { worker_id: workerId } }, { onConflict: "provider_event_id" }),
-    db.from("crm_contact_timeline").insert({ company_id: campaign.company_id, contact_id: contact.id, event_type: "campaign_email_sent", event_data: { campaign_id: campaign.id, campaign_message_id: message.id, provider_message_id: providerMessageId, subject } }),
-  ]);
-  for (const error of [messageUpdateError, contactUpdateError, eventError, timelineError]) if (error) throw error;
   await writeSystemLog(db, {
     level: "success",
     event: "campaign.email.sent",
@@ -247,6 +483,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     companyId: campaign.company_id,
     metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id, email_subject: subject },
   });
+  return true;
 }
 
 async function failClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>, error: unknown) {
@@ -256,7 +493,7 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
   const delaySeconds = Math.min(3600, 60 * (2 ** Math.max(0, attempts - 1)));
   const reason = error instanceof Error ? error.message : "Campaign delivery failed.";
   const [{ error: messageError }, { error: contactError }] = await Promise.all([
-    db.from("crm_campaign_messages").update({ status: permanent ? "failed" : "queued", error_message: reason.slice(0, 2000), next_attempt_at: permanent ? null : new Date(now.getTime() + delaySeconds * 1000).toISOString(), updated_at: now.toISOString() }).eq("id", message.id),
+    db.from("crm_campaign_messages").update({ status: permanent ? "failed" : "queued", failed_at: permanent ? now.toISOString() : null, error_message: reason.slice(0, 2000), next_attempt_at: permanent ? null : new Date(now.getTime() + delaySeconds * 1000).toISOString(), updated_at: now.toISOString() }).eq("id", message.id),
     db.from("crm_campaign_contacts").update({ status: permanent ? "failed" : "queued" }).eq("id", message.campaign_contact_id),
   ]);
   if (messageError) throw messageError;
@@ -274,7 +511,16 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
     metadata: { campaign_id: campaignContext?.campaign_id, campaign_name: campaign?.name, campaign_message_id: message.id, mailbox_id: campaign?.mailbox_id, email_subject: campaign?.subject, attempt_count: attempts, permanent },
   });
   if (permanent) {
-    const { error: eventError } = await db.from("crm_email_events").insert({ company_id: message.company_id, campaign_message_id: message.id, event_type: "failed", metadata: { error: reason.slice(0, 1000), attempts } });
+    const { error: eventError } = await db.from("crm_email_events").upsert({
+      company_id: message.company_id,
+      campaign_id: campaignContext?.campaign_id,
+      campaign_contact_id: message.campaign_contact_id,
+      campaign_message_id: message.id,
+      event_type: "failed",
+      provider_event_id: `campaign:failed:${message.id}:${attempts}`,
+      event_time: now.toISOString(),
+      metadata: { error: reason.slice(0, 1000), attempts },
+    }, { onConflict: "provider_event_id", ignoreDuplicates: true });
     if (eventError) console.error("Failed to persist campaign failure event:", eventError.message);
   }
   console.error(`Campaign message ${message.id} ${permanent ? "failed permanently" : "queued for retry"}: ${reason}`);
@@ -289,10 +535,21 @@ async function deliverDueMessages(db: ReturnType<typeof createClient>) {
     const message = Array.isArray(data) ? data[0] : data;
     if (!message) break;
     try {
-      await sendClaimed(db, message);
+      const sent = await sendClaimed(db, message);
+      if (!sent) break;
     } catch (error) {
       failed += 1;
-      await failClaimed(db, message, error);
+      if (error instanceof AcceptedButUnrecordedError) {
+        await writeSystemLog(db, {
+          level: "error",
+          event: "campaign.email.quota_recording_failed",
+          message: error.message,
+          companyId: message.company_id,
+          metadata: { campaign_message_id: message.id },
+        });
+      } else {
+        await failClaimed(db, message, error);
+      }
     }
     processed += 1;
   }
@@ -300,7 +557,7 @@ async function deliverDueMessages(db: ReturnType<typeof createClient>) {
 }
 
 async function finishCampaigns(db: ReturnType<typeof createClient>) {
-  const campaigns = await allRows(() => db.from("crm_campaigns").select("id").eq("status", "running").order("id"));
+  const campaigns = await allRows(() => db.from("crm_campaigns").select("id").in("status", ["running", "rate_limit_pause"]).order("id"));
   for (const campaign of campaigns) {
     const { count, error } = await db.from("crm_campaign_messages")
       .select("id, crm_campaign_contacts!inner(campaign_id)", { count: "exact", head: true })
@@ -308,7 +565,7 @@ async function finishCampaigns(db: ReturnType<typeof createClient>) {
       .in("status", ["queued", "processing"]);
     if (error) throw error;
     if (count === 0) {
-      const { error: updateError } = await db.from("crm_campaigns").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", campaign.id).eq("status", "running");
+      const { error: updateError } = await db.from("crm_campaigns").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", campaign.id).in("status", ["running", "rate_limit_pause"]);
       if (updateError) throw updateError;
     }
   }
@@ -322,6 +579,8 @@ Deno.serve(async (request) => {
 
   const db = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
   try {
+    const { error: rollingStatusError } = await db.rpc("crm_campaign_rolling_send_status", { p_company_id: null });
+    if (rollingStatusError) throw rollingStatusError;
     await prepareDueCampaigns(db);
     const delivery = await deliverDueMessages(db);
     await finishCampaigns(db);

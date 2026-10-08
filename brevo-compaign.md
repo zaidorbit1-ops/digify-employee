@@ -1276,6 +1276,14 @@ The worker verifies the secret before processing.
 
 ---
 
+# 36a. Global Campaign Rolling Limit
+
+Apply the `20261008210000_crm_campaign_rolling_24h_limit.sql` migration and deploy the updated `crm-campaign-worker` Edge Function. Campaign emails across all campaigns share one atomic allocation of 80 successful messages in any rolling 24-hour window. Ordinary Webmail and CRM test sends do not consume campaign allocation. Failed campaign sends release their reservation and do not count as successful sends.
+
+Successful campaign sends are timestamped in the database. The recurring worker must continue running at least once per minute to detect newly available capacity and resume only campaigns marked `rate_limit_pause`. Campaigns marked `manual_pause` never resume automatically; users must choose Resume Campaign.
+
+---
+
 # 37. Worker Invocation
 
 The architecture should be:

@@ -7,6 +7,9 @@ import { useRouter } from "next/navigation";
 import { html } from "@codemirror/lang-html";
 import { openSearchPanel } from "@codemirror/search";
 import type { EditorView } from "@uiw/react-codemirror";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import TextAlign from "@tiptap/extension-text-align";
 import { IconArrowRight, IconCopy, IconExpand, IconMail, IconSearch } from "@/components/icons";
 import { Alert } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
@@ -48,6 +51,10 @@ function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }
 
+function plainTextToHtml(value: string) {
+  return value.split(/\r?\n\r?\n/).map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\r?\n/g, "<br>") || "<br>"}</p>`).join("");
+}
+
 function makePreviewDocument(html: string) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>*,*:before,*:after{box-sizing:border-box}body{margin:0;padding:24px;background:#f2f5f3;color:#253943;font-family:Arial,Helvetica,sans-serif;line-height:1.6}.email{width:100%;max-width:600px;min-height:240px;margin:0 auto;padding:32px;background:#fff;border:1px solid #e0e7e3}img{max-width:100%;height:auto}a{color:#bd423c}</style></head><body><main class="email">${replaceVariables(html)}</main></body></html>`;
 }
@@ -59,16 +66,15 @@ function extractVariables(value: string) {
 export function TemplateEditor({ templateId }: Props) {
   const router = useRouter();
   const subjectRef = useRef<HTMLInputElement>(null);
-  const bodyRef = useRef<HTMLTextAreaElement>(null);
   const htmlEditorRef = useRef<EditorView | null>(null);
   const expandedHtmlEditorRef = useRef<EditorView | null>(null);
   const htmlSelectionRef = useRef({ anchor: 0, head: 0 });
+  const [insertTarget, setInsertTarget] = useState<"subject" | "body">("body");
   const [companies, setCompanies] = useState<Company[]>([]);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [form, setForm] = useState<TemplateForm>({ company_id: "", name: "", subject: "", html_body: defaultHtml, text_body: defaultText, content_mode: "html", status: "draft" });
   const [previewSize, setPreviewSize] = useState<"desktop" | "mobile">("desktop");
   const [previewTab, setPreviewTab] = useState<"rendered" | "source">("rendered");
-  const [insertTarget, setInsertTarget] = useState<"subject" | "body">("body");
   const [loading, setLoading] = useState(Boolean(templateId));
   const [saving, setSaving] = useState(false);
   const [loadedTemplate, setLoadedTemplate] = useState<Template | null>(null);
@@ -77,6 +83,35 @@ export function TemplateEditor({ templateId }: Props) {
   const [htmlExpanded, setHtmlExpanded] = useState(false);
   const [testTo, setTestTo] = useState("");
   const [testMailboxId, setTestMailboxId] = useState("");
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const contentModeRef = useRef(form.content_mode);
+  contentModeRef.current = form.content_mode;
+  const plainEditorLoadedRef = useRef(false);
+  const initializedTemplateIdRef = useRef<number | null>(null);
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: { levels: [1, 2, 3] },
+        link: { openOnClick: false, defaultProtocol: "https" },
+      }),
+      TextAlign.configure({ types: ["heading", "paragraph"] }),
+    ],
+    content: defaultHtml,
+    immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        class: "min-h-[420px] px-5 py-4 outline-none",
+        "aria-label": "Email content",
+      },
+    },
+    onUpdate: ({ editor: updatedEditor }) => {
+      if (contentModeRef.current !== "plain") return;
+      const htmlBody = updatedEditor.getHTML();
+      const textBody = updatedEditor.getText({ blockSeparator: "\n\n" });
+      setForm((current) => ({ ...current, html_body: htmlBody, text_body: textBody }));
+    },
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -129,25 +164,36 @@ export function TemplateEditor({ templateId }: Props) {
     void loadMailboxes(Number(form.company_id)).catch((cause) => setMessage({ text: cause instanceof Error ? cause.message : "Could not load connected mailboxes.", tone: "danger" }));
   }, [form.company_id, templateId]);
 
+  useEffect(() => {
+    if (!editor || !loadedTemplate || initializedTemplateIdRef.current === loadedTemplate.id) return;
+    const savedHtmlIsPlainFallback = /<div\b[^>]*white-space:\s*pre-wrap/i.test(loadedTemplate.html_body);
+    editor.commands.setContent(
+      loadedTemplate.content_mode === "plain" && savedHtmlIsPlainFallback
+        ? plainTextToHtml(loadedTemplate.text_body ?? "")
+        : loadedTemplate.html_body,
+      { emitUpdate: false },
+    );
+    initializedTemplateIdRef.current = loadedTemplate.id;
+    plainEditorLoadedRef.current = true;
+  }, [editor, loadedTemplate]);
+
   const renderedVariables = useMemo(() => extractVariables(`${form.subject}\n${form.content_mode === "html" ? form.html_body : form.text_body}`), [form]);
-  const bodyValue = form.content_mode === "html" ? form.html_body : form.text_body;
   const renderedSubject = replaceVariables(form.subject || "Your email subject");
-  const renderedPlain = replaceVariables(form.text_body);
-  const previewDocument = useMemo(() => makePreviewDocument(form.content_mode === "html" ? form.html_body : `<div style="white-space:pre-wrap">${escapeHtml(form.text_body)}</div>`), [form.content_mode, form.html_body, form.text_body]);
+  const previewDocument = useMemo(() => makePreviewDocument(form.html_body), [form.html_body]);
 
   function activeHtmlEditor() {
     return htmlExpanded ? expandedHtmlEditorRef.current : htmlEditorRef.current;
   }
 
-  function handleHtmlEditorCreated(editor: EditorView, expanded: boolean) {
-    const documentLength = editor.state.doc.length;
+  function handleHtmlEditorCreated(codeEditor: EditorView, expanded: boolean) {
+    const documentLength = codeEditor.state.doc.length;
     const selection = htmlSelectionRef.current;
-    editor.dispatch({ selection: {
+    codeEditor.dispatch({ selection: {
       anchor: Math.min(selection.anchor, documentLength),
       head: Math.min(selection.head, documentLength),
     } });
-    if (expanded) expandedHtmlEditorRef.current = editor;
-    else htmlEditorRef.current = editor;
+    if (expanded) expandedHtmlEditorRef.current = codeEditor;
+    else htmlEditorRef.current = codeEditor;
   }
 
   function handleHtmlEditorUpdate(update: { state: EditorView["state"]; view: EditorView; focusChanged: boolean }) {
@@ -156,11 +202,16 @@ export function TemplateEditor({ templateId }: Props) {
     if (update.focusChanged && update.view.hasFocus) setInsertTarget("body");
   }
 
+  function handleHtmlSourceChange(value: string) {
+    plainEditorLoadedRef.current = false;
+    setForm((current) => ({ ...current, html_body: value }));
+  }
+
   function findInHtml() {
-    const editor = activeHtmlEditor();
-    if (!editor) return;
-    editor.focus();
-    openSearchPanel(editor);
+    const codeEditor = activeHtmlEditor();
+    if (!codeEditor) return;
+    codeEditor.focus();
+    openSearchPanel(codeEditor);
   }
 
   function insertToken(key: string) {
@@ -174,68 +225,78 @@ export function TemplateEditor({ templateId }: Props) {
       requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(start + token.length, start + token.length); });
       return;
     }
-    const htmlEditor = form.content_mode === "html" ? activeHtmlEditor() : null;
-    if (htmlEditor) {
-      const editor = htmlEditor;
-      const { from, to } = editor.state.selection.main;
-      editor.dispatch({
-        changes: { from, to, insert: token },
-        selection: { anchor: from + token.length },
-      });
-      editor.focus();
-      return;
+    const codeEditor = form.content_mode === "html" ? activeHtmlEditor() : null;
+    if (codeEditor) {
+      const { from, to } = codeEditor.state.selection.main;
+      codeEditor.dispatch({ changes: { from, to, insert: token }, selection: { anchor: from + token.length } });
+      codeEditor.focus();
+    } else {
+      editor?.chain().focus().insertContent(token).run();
     }
-    const textarea = bodyRef.current;
-    const currentText = form.content_mode === "html" ? form.html_body : form.text_body;
-    const start = textarea?.selectionStart ?? currentText.length;
-    const end = textarea?.selectionEnd ?? start;
-    const next = `${currentText.slice(0, start)}${token}${currentText.slice(end)}`;
-    setForm((current) => current.content_mode === "html" ? { ...current, html_body: next } : { ...current, text_body: next });
-    requestAnimationFrame(() => { textarea?.focus(); textarea?.setSelectionRange(start + token.length, start + token.length); });
   }
 
   function insertBlock(html: string) {
-    const htmlEditor = activeHtmlEditor();
-    if (htmlEditor) {
-      const editor = htmlEditor;
-      const { from, to } = editor.state.selection.main;
-      const before = editor.state.doc.sliceString(0, from);
-      const after = editor.state.doc.sliceString(to);
-      const prefix = before && !before.endsWith("\n") ? "\n\n" : "";
-      const suffix = after && !after.startsWith("\n") ? "\n\n" : "";
-      const insertion = `${prefix}${html}${suffix}`;
-      editor.dispatch({
-        changes: { from, to, insert: insertion },
-        selection: { anchor: from + insertion.length },
-      });
-      editor.focus();
-      return;
-    }
-    const textarea = bodyRef.current;
-    const current = form.html_body;
-    const start = textarea?.selectionStart ?? current.length;
-    const end = textarea?.selectionEnd ?? start;
-    const before = current.slice(0, start).trimEnd();
-    const after = current.slice(end).trimStart();
-    const next = `${before}${before ? "\n\n" : ""}${html}${after ? `\n\n${after}` : ""}`;
-    setForm((value) => ({ ...value, html_body: next }));
-    requestAnimationFrame(() => { textarea?.focus(); textarea?.setSelectionRange(start + html.length + (before ? 2 : 0), start + html.length + (before ? 2 : 0)); });
+    const codeEditor = activeHtmlEditor();
+    if (!codeEditor) return;
+    const { from, to } = codeEditor.state.selection.main;
+    const before = codeEditor.state.doc.sliceString(0, from);
+    const after = codeEditor.state.doc.sliceString(to);
+    const prefix = before && !before.endsWith("\n") ? "\n\n" : "";
+    const suffix = after && !after.startsWith("\n") ? "\n\n" : "";
+    const insertion = `${prefix}${html}${suffix}`;
+    codeEditor.dispatch({ changes: { from, to, insert: insertion }, selection: { anchor: from + insertion.length } });
+    codeEditor.focus();
   }
 
   function changeContentMode(contentMode: "html" | "plain") {
     setPreviewTab("rendered");
-    if (contentMode !== "html") htmlEditorRef.current = null;
+    if (contentMode === "plain" && !plainEditorLoadedRef.current) {
+      editor?.commands.setContent(form.html_body, { emitUpdate: false });
+      plainEditorLoadedRef.current = true;
+    }
     setForm((current) => ({ ...current, content_mode: contentMode }));
+  }
+
+  function insertPlainBlock(html: string) {
+    editor?.chain().focus().insertContent(html).run();
+  }
+
+  function openLinkEditor() {
+    setLinkUrl(editor?.getAttributes("link").href ?? "");
+    setLinkOpen(true);
+  }
+
+  function saveLink() {
+    const enteredUrl = linkUrl.trim();
+    const candidate = /^(https?:|mailto:|tel:)/i.test(enteredUrl) ? enteredUrl : `https://${enteredUrl}`;
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      setMessage({ text: "Enter a valid website or email link.", tone: "danger" });
+      return;
+    }
+    if (!["http:", "https:", "mailto:", "tel:"].includes(url.protocol)) {
+      setMessage({ text: "Links must use http, https, mailto, or tel.", tone: "danger" });
+      return;
+    }
+    editor?.chain().focus().extendMarkRange("link").setLink({ href: url.toString() }).run();
+    setLinkOpen(false);
   }
 
   async function saveTemplate() {
     setSaving(true); setMessage(null);
     try {
-      const variables = extractVariables(`${form.subject}\n${form.content_mode === "html" ? form.html_body : form.text_body}`);
+      const currentForm = {
+        ...form,
+        html_body: form.content_mode === "plain" ? editor?.getHTML() ?? form.html_body : form.html_body,
+        text_body: form.content_mode === "plain" ? editor?.getText({ blockSeparator: "\n\n" }) ?? form.text_body : form.text_body,
+      };
+      const variables = extractVariables(`${currentForm.subject}\n${currentForm.content_mode === "html" ? currentForm.html_body : currentForm.text_body}`);
       const response = await fetch("/api/crm/templates", {
         method: templateId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, id: templateId ? Number(templateId) : undefined, company_id: Number(form.company_id), variables }),
+        body: JSON.stringify({ ...currentForm, id: templateId ? Number(templateId) : undefined, company_id: Number(currentForm.company_id), variables }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not save email template.");
@@ -259,6 +320,19 @@ export function TemplateEditor({ templateId }: Props) {
     } catch (cause) {
       setMessage({ text: cause instanceof Error ? cause.message : "Could not send test email.", tone: "danger" });
     } finally { setSaving(false); }
+  }
+
+  function toolbarButton(label: string, title: string, active: boolean, onClick: () => void, disabled = false) {
+    return <button
+      type="button"
+      title={title}
+      aria-label={title}
+      aria-pressed={active}
+      disabled={disabled}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className={`min-w-8 rounded-md px-2 py-1.5 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-40 ${active ? "bg-primary-soft text-primary" : "text-stone-600 hover:bg-stone-100 hover:text-stone-900"}`}
+    >{label}</button>;
   }
 
   return <>
@@ -286,37 +360,52 @@ export function TemplateEditor({ templateId }: Props) {
 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.95fr)]">
         <section className="min-w-0">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold">Email content</h2><p className="mt-1 text-xs text-muted">Changes appear in the preview as you type.</p></div><div className="flex flex-wrap items-center gap-2"><div role="tablist" aria-label="Email content format" className="flex rounded-lg border border-border bg-white p-1"><button type="button" role="tab" aria-selected={form.content_mode === "html"} onClick={() => changeContentMode("html")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "html" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>HTML</button><button type="button" role="tab" aria-selected={form.content_mode === "plain"} onClick={() => changeContentMode("plain")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "plain" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>Plain text</button></div>{form.content_mode === "html" ? <><Button variant="secondary" className="px-3 py-2" onClick={findInHtml} title="Find in HTML (Ctrl+F)"><IconSearch className="h-4 w-4" /><span className="hidden sm:inline">Find</span></Button><Button variant="secondary" className="px-3 py-2" onClick={() => setHtmlExpanded(true)} title="Open full-screen HTML editor"><IconExpand className="h-4 w-4" /><span className="hidden sm:inline">Expand</span></Button></> : null}</div></div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold">Email content</h2><p className="mt-1 text-xs text-muted">{form.content_mode === "plain" ? "Paste formatted content directly; headings, links, paragraphs, and lists are preserved." : "Edit the email HTML source directly."}</p></div><div className="flex flex-wrap items-center gap-2"><div role="tablist" aria-label="Email content format" className="flex rounded-lg border border-border bg-white p-1"><button type="button" role="tab" aria-selected={form.content_mode === "html"} onClick={() => changeContentMode("html")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "html" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>HTML</button><button type="button" role="tab" aria-selected={form.content_mode === "plain"} onClick={() => changeContentMode("plain")} className={`rounded-md px-4 py-2 text-sm font-semibold ${form.content_mode === "plain" ? "bg-primary text-white" : "text-muted hover:text-foreground"}`}>Plain text</button></div>{form.content_mode === "html" ? <><Button variant="secondary" className="px-3 py-2" onClick={findInHtml} title="Find in HTML (Ctrl+F)"><IconSearch className="h-4 w-4" /><span className="hidden sm:inline">Find</span></Button><Button variant="secondary" className="px-3 py-2" onClick={() => setHtmlExpanded(true)} title="Open full-screen HTML editor"><IconExpand className="h-4 w-4" /><span className="hidden sm:inline">Expand</span></Button></> : null}</div></div>
           {form.content_mode === "html" ? <div className="mb-3 flex flex-wrap items-center gap-2"><span className="mr-1 text-xs font-semibold text-muted">Insert block</span>{starterBlocks.map((block) => <Button type="button" key={block.label} variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => insertBlock(block.html)}>{block.label}</Button>)}</div> : null}
           {form.content_mode === "html" ? htmlExpanded ? (
             <div className="grid min-h-[440px] place-items-center rounded-xl border border-dashed border-border bg-stone-50 text-sm text-muted">HTML editor is open in the expanded workspace.</div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-border bg-white shadow-sm transition focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10">
-              <CodeMirror
-                id="template-content"
-                value={form.html_body}
-                height="520px"
-                theme="light"
-                extensions={[html({ autoCloseTags: true })]}
-                basicSetup
-                onCreateEditor={(editor) => handleHtmlEditorCreated(editor, false)}
-                onChange={(value) => setForm((current) => ({ ...current, html_body: value }))}
-                onUpdate={handleHtmlEditorUpdate}
-                aria-label="HTML email source"
-                className="text-[13px]"
-              />
+              <CodeMirror id="template-content" value={form.html_body} height="520px" theme="light" extensions={[html({ autoCloseTags: true })]} basicSetup onCreateEditor={(codeEditor) => handleHtmlEditorCreated(codeEditor, false)} onChange={handleHtmlSourceChange} onUpdate={handleHtmlEditorUpdate} aria-label="HTML email source" className="text-[13px]" />
             </div>
           ) : (
-            <textarea id="template-content" ref={bodyRef} value={bodyValue} onFocus={() => setInsertTarget("body")} onChange={(event) => setForm((current) => ({ ...current, text_body: event.target.value }))} spellCheck className="min-h-[440px] w-full resize-y rounded-lg border border-border bg-[#fbfcfa] p-4 font-sans text-sm leading-6 text-foreground outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" placeholder="Write a clear plain-text email…" />
+            <div className="email-template-editor overflow-hidden rounded-xl border border-border bg-white shadow-sm transition focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10">
+              <div role="toolbar" aria-label="Email formatting" className="flex flex-wrap items-center gap-1 rounded-t-xl border-b border-border bg-stone-50 p-2">
+                {toolbarButton("↶", "Undo", false, () => editor?.chain().focus().undo().run(), !editor?.can().undo())}
+                {toolbarButton("↷", "Redo", false, () => editor?.chain().focus().redo().run(), !editor?.can().redo())}
+                <span className="mx-1 h-5 border-l border-stone-200" />
+                {toolbarButton("B", "Bold", Boolean(editor?.isActive("bold")), () => editor?.chain().focus().toggleBold().run())}
+                {toolbarButton("I", "Italic", Boolean(editor?.isActive("italic")), () => editor?.chain().focus().toggleItalic().run())}
+                {toolbarButton("U", "Underline", Boolean(editor?.isActive("underline")), () => editor?.chain().focus().toggleUnderline().run())}
+                <select aria-label="Heading style" value={editor?.isActive("heading", { level: 1 }) ? "h1" : editor?.isActive("heading", { level: 2 }) ? "h2" : editor?.isActive("heading", { level: 3 }) ? "h3" : "paragraph"} onChange={(event) => {
+                  if (event.target.value === "paragraph") editor?.chain().focus().setParagraph().run();
+                  else editor?.chain().focus().setHeading({ level: Number(event.target.value.slice(1)) as 1 | 2 | 3 }).run();
+                }} className="rounded-md border-0 bg-transparent px-2 py-1.5 text-xs font-semibold text-stone-700 outline-none hover:bg-stone-100">
+                  <option value="paragraph">Paragraph</option><option value="h1">Heading 1</option><option value="h2">Heading 2</option><option value="h3">Heading 3</option>
+                </select>
+                <span className="mx-1 h-5 border-l border-stone-200" />
+                {toolbarButton("• List", "Bulleted list", Boolean(editor?.isActive("bulletList")), () => editor?.chain().focus().toggleBulletList().run())}
+                {toolbarButton("1. List", "Numbered list", Boolean(editor?.isActive("orderedList")), () => editor?.chain().focus().toggleOrderedList().run())}
+                {toolbarButton("❝", "Blockquote", Boolean(editor?.isActive("blockquote")), () => editor?.chain().focus().toggleBlockquote().run())}
+                <select aria-label="Text alignment" value={editor?.getAttributes("paragraph").textAlign ?? editor?.getAttributes("heading").textAlign ?? "left"} onChange={(event) => editor?.chain().focus().setTextAlign(event.target.value).run()} className="rounded-md border-0 bg-transparent px-2 py-1.5 text-xs font-semibold text-stone-700 outline-none hover:bg-stone-100">
+                  <option value="left">Align left</option><option value="center">Align center</option><option value="right">Align right</option><option value="justify">Justify</option>
+                </select>
+                {toolbarButton("Link", editor?.isActive("link") ? "Edit link" : "Insert link", Boolean(editor?.isActive("link")), openLinkEditor)}
+                {editor?.isActive("link") ? toolbarButton("Unlink", "Remove link", false, () => editor.chain().focus().unsetLink().run()) : null}
+                {toolbarButton("↵", "Insert line break", false, () => editor?.chain().focus().setHardBreak().run())}
+                {toolbarButton("Clear", "Clear formatting", false, () => editor?.chain().focus().unsetAllMarks().clearNodes().run())}
+              </div>
+              <EditorContent id="template-content-rich" editor={editor} onFocus={() => setInsertTarget("body")} />
+            </div>
           )}
-          <p className="mt-2 text-xs text-muted">{form.content_mode === "html" ? "Paste email-compatible HTML. Inline styles are recommended for consistent inbox rendering." : "Plain text works in every email client and is sent as both text and a simple HTML fallback."}</p>
+          {form.content_mode === "html" ? <p className="mt-2 text-xs text-muted">Paste email-compatible HTML. Inline styles are recommended for consistent inbox rendering.</p> : <p className="mt-2 text-xs text-muted">Rich content is saved as email HTML and remains editable here; plain text is generated for the email text alternative.</p>}
         </section>
 
         <section className="min-w-0 xl:sticky xl:top-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-base font-bold">Live preview</h2><p className="mt-1 text-xs text-muted">Sample values are substituted for personalization fields.</p></div>{form.content_mode === "html" && previewTab === "rendered" ? <div className="flex items-center gap-1 rounded-lg border border-border bg-white p-1"><button type="button" onClick={() => setPreviewSize("desktop")} aria-pressed={previewSize === "desktop"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "desktop" ? "bg-primary-soft text-primary" : "text-muted"}`}>Desktop</button><button type="button" onClick={() => setPreviewSize("mobile")} aria-pressed={previewSize === "mobile"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "mobile" ? "bg-primary-soft text-primary" : "text-muted"}`}>Mobile</button></div> : null}</div>
           {previewTab === "rendered" ? <>
             <div className="mb-3 rounded-lg border border-border bg-white px-3 py-2"><p className="text-[10px] font-bold uppercase text-muted">Subject</p><p className="mt-1 truncate text-sm">{renderedSubject}</p></div>
-            {form.content_mode === "plain" ? <div className="min-h-[440px] overflow-auto rounded-lg border border-border bg-white p-5"><div className="mx-auto min-h-[380px] border border-[#e3e8e4] bg-white p-5" style={{ maxWidth: previewSize === "mobile" ? 360 : 600 }}><pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-foreground">{renderedPlain}</pre></div></div> : <div className="min-h-[440px] overflow-hidden rounded-lg border border-border bg-[#f2f5f3] p-3"><div className="mx-auto overflow-hidden rounded-md border border-[#dce3df] bg-white shadow-sm transition-[width]" style={{ width: previewSize === "mobile" ? "min(100%, 375px)" : "100%" }}><div className="flex h-8 items-center gap-1.5 border-b border-border px-3"><span className="h-2 w-2 rounded-full bg-rose-300"/><span className="h-2 w-2 rounded-full bg-amber-300"/><span className="h-2 w-2 rounded-full bg-emerald-300"/><span className="ml-2 text-[10px] text-muted">Email preview</span></div><iframe title="Rendered HTML email preview" sandbox="" srcDoc={previewDocument} className="h-[400px] w-full border-0 bg-white" /></div></div>}
+            <div className="min-h-[440px] overflow-hidden rounded-lg border border-border bg-[#f2f5f3] p-3"><div className="mx-auto overflow-hidden rounded-md border border-[#dce3df] bg-white shadow-sm transition-[width]" style={{ width: previewSize === "mobile" ? "min(100%, 375px)" : "100%" }}><div className="flex h-8 items-center gap-1.5 border-b border-border px-3"><span className="h-2 w-2 rounded-full bg-rose-300"/><span className="h-2 w-2 rounded-full bg-amber-300"/><span className="h-2 w-2 rounded-full bg-emerald-300"/><span className="ml-2 text-[10px] text-muted">Email preview</span></div><iframe title="Rendered HTML email preview" sandbox="allow-popups" srcDoc={previewDocument} className="h-[400px] w-full border-0 bg-white" /></div></div>
           </> : <pre className="min-h-[440px] max-h-[600px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-[#fbfcfa] p-4 font-mono text-xs leading-5">{previewDocument}</pre>}
           {form.content_mode === "html" ? <button type="button" onClick={() => setPreviewTab((current) => current === "rendered" ? "source" : "rendered")} className="mt-3 inline-flex items-center gap-2 text-xs font-semibold text-primary hover:underline"><IconCopy className="h-3.5 w-3.5" />{previewTab === "rendered" ? "View generated preview HTML" : "Return to rendered preview"}</button> : null}
         </section>
@@ -335,19 +424,7 @@ export function TemplateEditor({ templateId }: Props) {
           <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-stone-200 bg-white">
             <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50 px-3 py-2"><span className="text-xs font-bold uppercase tracking-wider text-stone-600">HTML source</span><span className="text-xs text-stone-500">Ctrl/Cmd + F to search</span></div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              <CodeMirror
-                id="template-content-expanded"
-                value={form.html_body}
-                height="100%"
-                theme="light"
-                extensions={[html({ autoCloseTags: true })]}
-                basicSetup
-                onCreateEditor={(editor) => handleHtmlEditorCreated(editor, true)}
-                onChange={(value) => setForm((current) => ({ ...current, html_body: value }))}
-                onUpdate={handleHtmlEditorUpdate}
-                aria-label="Expanded HTML email source"
-                className="h-full text-[13px]"
-              />
+              <CodeMirror id="template-content-expanded" value={form.html_body} height="100%" theme="light" extensions={[html({ autoCloseTags: true })]} basicSetup onCreateEditor={(codeEditor) => handleHtmlEditorCreated(codeEditor, true)} onChange={handleHtmlSourceChange} onUpdate={handleHtmlEditorUpdate} aria-label="Expanded HTML email source" className="h-full text-[13px]" />
             </div>
           </section>
           <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-stone-200 bg-stone-100">
@@ -355,12 +432,19 @@ export function TemplateEditor({ templateId }: Props) {
               <div><p className="text-xs font-bold uppercase tracking-wider text-stone-700">Live preview</p><p className="mt-0.5 max-w-[50vw] truncate text-xs text-stone-500">{renderedSubject}</p></div>
               <div className="flex rounded-lg border border-stone-200 p-1"><button type="button" onClick={() => setPreviewSize("desktop")} aria-pressed={previewSize === "desktop"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "desktop" ? "bg-rose-100 text-rose-700" : "text-stone-500"}`}>Desktop</button><button type="button" onClick={() => setPreviewSize("mobile")} aria-pressed={previewSize === "mobile"} className={`rounded-md px-3 py-1.5 text-xs font-semibold ${previewSize === "mobile" ? "bg-rose-100 text-rose-700" : "text-stone-500"}`}>Mobile</button></div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
-              <iframe title="Expanded rendered HTML email preview" sandbox="" srcDoc={previewDocument} className="mx-auto h-full min-h-[420px] border-0 bg-white shadow-sm" style={{ width: previewSize === "mobile" ? "min(100%, 390px)" : "100%" }} />
-            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-3"><iframe title="Expanded rendered HTML email preview" sandbox="allow-popups" srcDoc={previewDocument} className="mx-auto h-full min-h-[420px] border-0 bg-white shadow-sm" style={{ width: previewSize === "mobile" ? "min(100%, 390px)" : "100%" }} /></div>
           </section>
         </div>
         <div className="flex justify-end border-t border-stone-200 pt-3"><Button variant="secondary" onClick={() => setHtmlExpanded(false)}>Done</Button></div>
+      </div>
+    </Modal>
+    <Modal open={linkOpen} onClose={() => setLinkOpen(false)} title={editor?.isActive("link") ? "Edit link" : "Insert link"} description="Use a website, email, or telephone link.">
+      <div className="space-y-4">
+        <Field label="Link URL"><TextInput type="url" value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveLink(); }} placeholder="https://example.com" /></Field>
+        <div className="flex justify-end gap-2 border-t border-border pt-4">
+          <Button variant="secondary" onClick={() => setLinkOpen(false)}>Cancel</Button>
+          <Button onClick={saveLink}>Save link</Button>
+        </div>
       </div>
     </Modal>
 

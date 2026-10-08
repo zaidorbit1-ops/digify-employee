@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
 import { sendHostingerEmail } from "@/lib/hostinger-mail";
 import { withCrmApiLogging } from "@/lib/crm-logs";
+import { getCrmCampaignRollingStatus } from "@/lib/crm-hostinger-quota";
+import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
 
-const statuses = ["draft", "scheduled", "running", "paused", "completed", "cancelled", "failed"];
+const statuses = ["draft", "scheduled", "running", "manual_pause", "rate_limit_pause", "completed", "cancelled", "failed"];
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string; code?: string };
@@ -59,11 +61,26 @@ export async function GET(request: Request) {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return fail(authError, authError, 403);
     const companyId = Number(new URL(request.url).searchParams.get("company_id"));
-    let query = client.from("crm_campaigns").select("*, crm_email_templates(name, subject), crm_mailboxes(email_address), crm_contact_lists(name)").order("updated_at", { ascending: false });
+    let query = client.from("crm_campaigns").select("*, crm_email_templates(name, subject), crm_mailboxes(id, email_address), crm_contact_lists(name)").order("updated_at", { ascending: false });
     if (companyId) query = query.eq("company_id", companyId);
     const { data, error } = await query;
     if (error) throw error;
-    return NextResponse.json({ campaigns: data ?? [] });
+    let mailboxQuery = client.from("crm_mailboxes").select("id").eq("status", "connected");
+    if (companyId) mailboxQuery = mailboxQuery.eq("company_id", companyId);
+    const { data: visibleMailboxes, error: mailboxError } = await mailboxQuery;
+    if (mailboxError) throw mailboxError;
+    const visibleMailboxIds = new Set((visibleMailboxes ?? []).map((mailbox) => mailbox.id));
+    const quotaRows = await getCrmCampaignRollingStatus(companyId || null);
+    const rollingQuotas = quotaRows.filter((quota) => visibleMailboxIds.has(quota.mailbox_id));
+    const campaigns = await Promise.all((data ?? []).map(async (campaign) => {
+      const { count, error: countError } = await client.from("crm_campaign_contacts")
+        .select("id", { count: "exact", head: true })
+        .eq("campaign_id", campaign.id)
+        .in("status", ["queued", "processing"]);
+      if (countError) throw countError;
+      return { ...campaign, remaining_contacts: count ?? 0 };
+    }));
+    return NextResponse.json({ campaigns, rollingQuotas });
   } catch (error) { return fail(error, "Could not load campaigns."); }
 }
 
@@ -85,6 +102,7 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       return NextResponse.json({ ok: true, message: "Campaign test email sent." });
     }
     const values = campaignValues(body);
+    if (!["draft", "scheduled"].includes(values.status)) throw new Error("New campaigns must be saved as a draft or scheduled.");
     await validateCampaignRelations(client, values);
     const { data, error } = await client.from("crm_campaigns").insert(values).select().single();
     if (error) throw error;
@@ -94,14 +112,35 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
 
 export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
-    const { client, error: authError } = await getCrmAdminClient();
+    const auth = await getCrmAdminClient();
+    const { client, error: authError } = auth;
     if (authError) return fail(authError, authError, 403);
+    const profile = "profile" in auth ? auth.profile : undefined;
+    const permissions = "permissions" in auth ? auth.permissions : undefined;
     const body = await request.json() as Record<string, unknown>;
     const id = Number(body.id);
     if (!Number.isInteger(id) || id <= 0) return fail("A valid campaign is required.", "A valid campaign is required.", 400);
+    if (text(body.action) === "pause" || text(body.action) === "resume") {
+      if (profile?.role === "employee" && !permissions?.some((permission) => permission.module === "crm_campaigns" && permission.can_edit)) {
+        return fail("Campaign edit permission is required.", "Campaign edit permission is required.", 403);
+      }
+      const { data: visibleCampaign, error: visibilityError } = await client.from("crm_campaigns").select("id").eq("id", id).maybeSingle();
+      if (visibilityError) throw visibilityError;
+      if (!visibleCampaign) return fail("Campaign is not available.", "Campaign is not available.", 404);
+      const { data, error } = await getSupabaseServiceRoleClient().rpc("set_crm_campaign_manual_pause", {
+        p_campaign_id: id,
+        p_action: text(body.action),
+      });
+      if (error) throw error;
+      const campaign = Array.isArray(data) ? data[0] : data;
+      if (!campaign) throw new Error("Could not update campaign pause status.");
+      return NextResponse.json({ campaign });
+    }
     const values = campaignValues(body);
+    if (!statuses.includes(values.status)) throw new Error("Choose a valid campaign status.");
     await validateCampaignRelations(client, values);
-    const { data, error } = await client.from("crm_campaigns").update({ ...values, updated_at: new Date().toISOString() }).eq("id", id).select().single();
+    const editableValues = Object.fromEntries(Object.entries(values).filter(([key]) => key !== "status"));
+    const { data, error } = await client.from("crm_campaigns").update({ ...editableValues, updated_at: new Date().toISOString() }).eq("id", id).select().single();
     if (error) throw error;
     return NextResponse.json({ campaign: data });
   } catch (error) { return fail(error, "Could not update campaign.", 400); }

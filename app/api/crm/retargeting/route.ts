@@ -87,6 +87,7 @@ export async function POST(request: Request) {
       const contactMessages = messagesByContact.get(campaignContact.id) ?? [];
       const statuses = [campaignContact.status, ...contactMessages.map((message) => message.status)];
       const eventTypes = new Set(contactMessages.flatMap((message) => (eventsByMessage.get(message.id) ?? []).map((event) => event.event_type)));
+      if (metric === "failed") return matchesMetric(metric, statuses, eventTypes);
       if (statuses.some((status) => ["failed", "bounced", "unsubscribed"].includes(status)) || ["bounced", "complained", "unsubscribed"].some((eventType) => eventTypes.has(eventType))) return false;
       return matchesMetric(metric, statuses, eventTypes);
     });

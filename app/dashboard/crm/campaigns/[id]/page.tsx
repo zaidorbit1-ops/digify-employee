@@ -9,12 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 
-type Campaign = { id: number; company_id: number; name: string; status: string; subject: string | null; schedule_at: string | null; batch_size: number; interval_seconds: number; crm_email_templates?: { name?: string; subject?: string } | null; crm_mailboxes?: { email_address?: string } | null; crm_contact_lists?: { name?: string } | null };
-type Message = { id: number; status: string; error_message: string | null; sent_at: string | null; scheduled_at: string; next_attempt_at: string | null; attempt_count: number; provider_message_id: string | null; updated_at: string };
-type Event = { id: number; event_type: string; event_time: string; metadata: Record<string, unknown> };
-type Recipient = { id: number; contact_id: number; status: string; crm_contacts?: { full_name: string | null; email: string } | null; messages: Message[]; events: Event[] };
+type Campaign = { id: number; company_id: number; mailbox_id: number | null; name: string; status: string; subject: string | null; schedule_at: string | null; batch_size: number; interval_seconds: number; remaining_contacts: number; crm_email_templates?: { name?: string; subject?: string } | null; crm_mailboxes?: { id: number; email_address?: string } | null; crm_contact_lists?: { name?: string } | null };
+type RollingQuota = { mailbox_id: number; company_id: number; email_address: string; rolling_limit: number; sent_last_24_hours: number; reserved_sends: number; available_capacity: number };
+type Message = { id: number; status: string; error_message: string | null; sent_at: string | null; sending_at: string | null; failed_at: string | null; delivered_at: string | null; bounced_at: string | null; opened_at: string | null; clicked_at: string | null; replied_at: string | null; rfc_message_id: string | null; scheduled_at: string; next_attempt_at: string | null; attempt_count: number; provider_message_id: string | null; updated_at: string };
+type Event = { id: number; event_type: string; event_time: string; is_qualified: boolean; user_agent: string | null; ip_address: string | null; metadata: Record<string, unknown> };
+type Recipient = { id: number; contact_id: number; status: string; display_status: string; crm_contacts?: { full_name: string | null; email: string } | null; messages: Message[]; events: Event[] };
 type Summary = { recipients: number; sent: number; pending: number; queued: number; processing: number; failed: number; delivered: number; bounced: number; opened: number; clicked: number; replied: number; unsubscribed: number };
-type Report = { campaigns: { id: number; name: string; status: string; company_id: number }[]; summary: Summary; recipients: Recipient[] };
+type Report = { campaigns: { id: number; name: string; status: string; company_id: number }[]; summary: Summary; recipients: Recipient[]; delivery_tracking?: { provider_delivery_events_supported: boolean; note: string } };
 
 const emptySummary: Summary = { recipients: 0, sent: 0, pending: 0, queued: 0, processing: 0, failed: 0, delivered: 0, bounced: 0, opened: 0, clicked: 0, replied: 0, unsubscribed: 0 };
 
@@ -27,26 +28,78 @@ function date(value?: string | null) {
 function tone(status: string): "success" | "warning" | "danger" | "neutral" | "primary" {
   if (["sent", "delivered", "completed", "opened", "clicked"].includes(status)) return "success";
   if (["failed", "bounced", "complained"].includes(status)) return "danger";
-  if (["queued", "processing", "running", "scheduled"].includes(status)) return "warning";
+  if (["queued", "processing", "running", "scheduled", "rate_limit_pause"].includes(status)) return "warning";
   return "neutral";
+}
+
+function statusLabel(status: string) {
+  if (status === "manual_pause") return "Manually paused";
+  if (status === "rate_limit_pause") return "Waiting for sending capacity";
+  if (status === "running") return "Running";
+  return status;
 }
 
 function recipientMatchesMetric(recipient: Recipient, metric: keyof Summary) {
   if (metric === "recipients") return true;
-  const statuses = (recipient.messages ?? []).map((message) => message.status);
-  const eventTypes = new Set((recipient.events ?? []).map((event) => event.event_type));
-  if (metric === "queued" || metric === "processing" || metric === "sent" || metric === "failed") {
-    return recipient.status === metric || statuses.includes(metric);
+  const messages = recipient.messages ?? [];
+  const events = recipient.events ?? [];
+  if (metric === "sent") {
+    return messages.some((message) => Boolean(message.sent_at) || ["sent", "delivered", "bounced", "opened", "clicked", "replied"].includes(message.status))
+      || events.some((event) => event.event_type === "sent");
   }
-  return eventTypes.has(metric) || statuses.includes(metric);
+  if (metric === "failed") {
+    return messages.some((message) => message.status === "failed" || Boolean(message.failed_at))
+      || events.some((event) => event.event_type === "failed");
+  }
+  if (metric === "queued" || metric === "processing") return messages.some((message) => message.status === metric);
+  return events.some((event) => event.event_type === metric && (metric !== "opened" && metric !== "clicked" || event.is_qualified));
+}
+
+function recipientMetric(recipient: Recipient, metric: "sent" | "delivered" | "opened" | "clicked" | "replied" | "bounced" | "failed") {
+  const events = recipient.events ?? [];
+  const messages = recipient.messages ?? [];
+  const matchingEvents = events.filter((event) =>
+    event.event_type === metric && (metric !== "opened" && metric !== "clicked" || event.is_qualified),
+  );
+  const eventTime = matchingEvents.reduce<string | null>((latest, event) =>
+    !latest || new Date(event.event_time).getTime() < new Date(latest).getTime() ? event.event_time : latest,
+  null);
+
+  if (metric === "sent") {
+    const sentMessage = messages.find((message) => message.sent_at);
+    const accepted = Boolean(sentMessage) || matchingEvents.length > 0;
+    return { accepted, time: sentMessage?.sent_at ?? eventTime };
+  }
+  if (metric === "failed") {
+    const failedMessage = messages.find((message) => message.failed_at || message.status === "failed");
+    return { accepted: Boolean(failedMessage) || matchingEvents.length > 0, time: failedMessage?.failed_at ?? eventTime };
+  }
+  if (metric === "delivered" && recipientMetric(recipient, "bounced").accepted) {
+    return { accepted: false, time: null };
+  }
+  const message = messages.find((item) => {
+    if (metric === "delivered") return Boolean(item.delivered_at);
+    if (metric === "bounced") return Boolean(item.bounced_at);
+    if (metric === "opened") return Boolean(item.opened_at);
+    if (metric === "clicked") return Boolean(item.clicked_at);
+    return Boolean(item.replied_at);
+  });
+  const timestamp = metric === "delivered" ? message?.delivered_at
+    : metric === "bounced" ? message?.bounced_at
+      : metric === "opened" ? message?.opened_at
+        : metric === "clicked" ? message?.clicked_at
+          : message?.replied_at;
+  return { accepted: Boolean(timestamp) || matchingEvents.length > 0, time: timestamp ?? eventTime };
 }
 
 export default function CampaignDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ company_id?: string }> }) {
   const [campaignId, setCampaignId] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [rollingQuota, setRollingQuota] = useState<RollingQuota | null>(null);
   const [summary, setSummary] = useState<Summary>(emptySummary);
   const [recipients, setRecipients] = useState<Recipient[]>([]);
+  const [deliveryNote, setDeliveryNote] = useState("");
   const [selectedMetric, setSelectedMetric] = useState<keyof Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -77,8 +130,11 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
       const found = (campaignResult.campaigns ?? []).find((item: Campaign) => String(item.id) === id);
       if (!found) throw new Error("Campaign was not found in this company.");
       setCampaign(found);
+      const mailboxId = found.mailbox_id ?? found.crm_mailboxes?.id;
+      setRollingQuota((campaignResult.rollingQuotas ?? []).find((quota: RollingQuota) => quota.mailbox_id === mailboxId) ?? null);
       setSummary({ ...emptySummary, ...(reportResult.summary ?? {}) });
       setRecipients(reportResult.recipients ?? []);
+      setDeliveryNote(reportResult.delivery_tracking?.note ?? "");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not load campaign report.");
     } finally {
@@ -111,7 +167,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
   }, [params, searchParams]);
 
   useEffect(() => {
-    if (campaign?.status !== "running" || !campaignId || !companyId) return;
+    if (!["running", "rate_limit_pause"].includes(campaign?.status ?? "") || !campaignId || !companyId) return;
     const timer = window.setInterval(() => { void loadReport(campaignId, companyId, true); }, 15000);
     return () => window.clearInterval(timer);
   }, [campaign?.status, campaignId, companyId]);
@@ -120,17 +176,30 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
 
   const visibleRecipients = selectedMetric ? recipients.filter((recipient) => recipientMatchesMetric(recipient, selectedMetric)) : recipients;
 
+  async function setCampaignPause(action: "pause" | "resume") {
+    try {
+      const response = await fetch("/api/crm/campaigns", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: Number(campaignId), action }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `Could not ${action} campaign.`);
+      await loadReport(campaignId, companyId, true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Could not ${action} campaign.`);
+    }
+  }
+
   const cards: { key: keyof Summary; label: string; icon: typeof IconEmployees; style: string; stripe: string; iconStyle: string }[] = [
     { key: "recipients", label: "Recipients", icon: IconEmployees, style: "border-sky-200 from-white to-sky-50/70", stripe: "bg-sky-500", iconStyle: "bg-sky-100 text-sky-700 ring-sky-200/80" },
-    { key: "queued", label: "Queued", icon: IconClock, style: "border-amber-200 from-white to-amber-50/70", stripe: "bg-amber-500", iconStyle: "bg-amber-100 text-amber-700 ring-amber-200/80" },
-    { key: "processing", label: "Processing", icon: IconRefresh, style: "border-cyan-200 from-white to-cyan-50/70", stripe: "bg-cyan-500", iconStyle: "bg-cyan-100 text-cyan-700 ring-cyan-200/80" },
     { key: "sent", label: "Sent", icon: IconMail, style: "border-emerald-200 from-white to-emerald-50/70", stripe: "bg-emerald-500", iconStyle: "bg-emerald-100 text-emerald-700 ring-emerald-200/80" },
-    { key: "failed", label: "Failed", icon: IconClose, style: "border-rose-200 from-white to-rose-50/70", stripe: "bg-rose-500", iconStyle: "bg-rose-100 text-rose-700 ring-rose-200/80" },
     { key: "delivered", label: "Delivered", icon: IconCheckCircle, style: "border-teal-200 from-white to-teal-50/70", stripe: "bg-teal-500", iconStyle: "bg-teal-100 text-teal-700 ring-teal-200/80" },
-    { key: "bounced", label: "Bounced", icon: IconGlobe, style: "border-orange-200 from-white to-orange-50/70", stripe: "bg-orange-500", iconStyle: "bg-orange-100 text-orange-700 ring-orange-200/80" },
     { key: "opened", label: "Opened", icon: IconSearch, style: "border-indigo-200 from-white to-indigo-50/70", stripe: "bg-indigo-500", iconStyle: "bg-indigo-100 text-indigo-700 ring-indigo-200/80" },
     { key: "clicked", label: "Clicked", icon: IconArrowRight, style: "border-lime-200 from-white to-lime-50/70", stripe: "bg-lime-500", iconStyle: "bg-lime-100 text-lime-700 ring-lime-200/80" },
     { key: "replied", label: "Replied", icon: IconBell, style: "border-pink-200 from-white to-pink-50/70", stripe: "bg-pink-500", iconStyle: "bg-pink-100 text-pink-700 ring-pink-200/80" },
+    { key: "bounced", label: "Bounced", icon: IconGlobe, style: "border-orange-200 from-white to-orange-50/70", stripe: "bg-orange-500", iconStyle: "bg-orange-100 text-orange-700 ring-orange-200/80" },
+    { key: "failed", label: "Failed", icon: IconClose, style: "border-rose-200 from-white to-rose-50/70", stripe: "bg-rose-500", iconStyle: "bg-rose-100 text-rose-700 ring-rose-200/80" },
   ];
 
   return <>
@@ -166,7 +235,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
               </span>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-3">
-                  <Badge tone={tone(campaign.status)} className="!bg-white !px-3 !py-1.5 !text-emerald-700">{campaign.status}</Badge>
+                  <Badge tone={tone(campaign.status)} className="!bg-white !px-3 !py-1.5 !text-emerald-700">{statusLabel(campaign.status)}</Badge>
                   <span className="text-sm font-medium text-white/85">{campaign.crm_email_templates?.name ?? "Template"}</span>
                 </div>
                 <p className="mt-3 text-xl font-bold text-white">{campaign.subject || campaign.crm_email_templates?.subject || "No subject"}</p>
@@ -182,8 +251,18 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                 <p className="mt-1 text-sm font-semibold text-white">{campaign.batch_size} every {campaign.interval_seconds}s</p>
               </div>
             </div>
+            {["running", "scheduled", "rate_limit_pause"].includes(campaign.status) ? <Button variant="secondary" onClick={() => void setCampaignPause("pause")}>Pause Campaign</Button> : null}
+            {campaign.status === "manual_pause" ? <Button variant="secondary" onClick={() => void setCampaignPause("resume")}>Resume Campaign</Button> : null}
           </div>
         </Card>
+
+        {rollingQuota ? <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <Card className="border-stone-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-stone-500">Sending mailbox</p><p className="mt-2 truncate text-lg font-bold text-stone-900">{rollingQuota.email_address}</p></Card>
+          <Card className="border-stone-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-stone-500">Rolling 24-hour limit</p><p className="mt-2 text-2xl font-bold text-stone-900">{rollingQuota.rolling_limit}</p></Card>
+          <Card className="border-stone-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-stone-500">Mailbox sends / limit in last 24 hours</p><p className="mt-2 text-2xl font-bold text-stone-900">{rollingQuota.sent_last_24_hours} / {rollingQuota.rolling_limit}</p></Card>
+          <Card className="border-stone-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-stone-500">Mailbox available capacity</p><p className="mt-2 text-2xl font-bold text-stone-900">{rollingQuota.available_capacity}</p>{rollingQuota.reserved_sends > 0 ? <p className="mt-1 text-xs text-stone-500">{rollingQuota.reserved_sends} send(s) reserved</p> : null}</Card>
+          <Card className="border-stone-200 bg-white p-4"><p className="text-xs font-semibold uppercase tracking-wide text-stone-500">Contacts remaining</p><p className="mt-2 text-2xl font-bold text-stone-900">{summary.pending}</p></Card>
+        </div> : null}
 
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {cards.map(({ key, label, icon: MetricIcon, style, stripe, iconStyle }) => (
@@ -210,13 +289,14 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
             </button>
           ))}
         </div>
+        {deliveryNote ? <p className="text-xs text-stone-500">{deliveryNote} Open and click counts filter known automated requests, but mail privacy proxies mean they cannot prove human activity.</p> : null}
 
         <div id="recipient-delivery" className="scroll-mt-6">
         <Card className="overflow-hidden border-stone-200 bg-white/90 p-0 shadow-[0_14px_40px_rgba(17,24,39,0.04)]">
           <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/70 px-5 py-4">
             <div>
               <h2 className="text-lg font-semibold text-stone-900">{selectedMetric ? `${cards.find((card) => card.key === selectedMetric)?.label} recipients` : "Recipient delivery"}</h2>
-              <p className="mt-1 text-xs text-stone-500">Refreshes every 15 seconds while the campaign is running.</p>
+              <p className="mt-1 text-xs text-stone-500">Refreshes every 15 seconds while the campaign is active or waiting for rolling sending capacity.</p>
             </div>
             <div className="flex items-center gap-2">
               <span className="rounded-full border border-stone-200 bg-white px-2.5 py-1 text-xs font-medium text-stone-600">{visibleRecipients.length} of {recipients.length}</span>
@@ -246,6 +326,21 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                 <tbody>
                   {visibleRecipients.map((recipient) => {
                     const latest = [...(recipient.messages ?? [])].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())[0];
+                    const lifecycleMetrics = [
+                      { key: "sent", label: "Sent" },
+                      { key: "delivered", label: "Delivered" },
+                      { key: "opened", label: "Opened" },
+                      { key: "clicked", label: "Clicked" },
+                      { key: "replied", label: "Replied" },
+                      { key: "bounced", label: "Bounced" },
+                      { key: "failed", label: "Failed" },
+                    ] as const;
+                    const qualifiedEvents = (recipient.events ?? [])
+                      .filter((event) => !["opened", "clicked"].includes(event.event_type) || event.is_qualified)
+                      .sort((left, right) => new Date(left.event_time).getTime() - new Date(right.event_time).getTime());
+                    const filteredEvents = (recipient.events ?? [])
+                      .filter((event) => ["opened", "clicked"].includes(event.event_type) && !event.is_qualified)
+                      .sort((left, right) => new Date(left.event_time).getTime() - new Date(right.event_time).getTime());
                     return (
                       <tr key={recipient.id} className="border-t border-stone-200 align-top transition hover:bg-stone-50/60">
                         <td className="px-5 py-4">
@@ -254,7 +349,7 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                         </td>
 
                         <td className="px-5 py-4">
-                          <Badge tone={tone(recipient.status)}>{recipient.status}</Badge>
+                          <Badge tone={tone(recipient.display_status)}>{recipient.display_status}</Badge>
                           {latest ? <p className="mt-2 text-xs text-stone-500">Message: {latest.status}</p> : null}
                         </td>
 
@@ -268,22 +363,64 @@ export default function CampaignDetailPage({ params, searchParams }: { params: P
                         <td className="max-w-[320px] px-5 py-4 text-xs text-rose-700">{latest?.error_message || "No delivery error recorded"}</td>
 
                         <td className="px-5 py-4">
-                          <details className="max-w-[360px]">
-                            <summary className="cursor-pointer text-xs font-semibold text-primary">{recipient.messages?.length ?? 0} message(s) · {recipient.events?.length ?? 0} event(s)</summary>
-                            <div className="mt-3 space-y-3">
+                          <details className="max-w-[420px]">
+                            <summary className="cursor-pointer rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-semibold text-primary shadow-sm transition hover:border-primary/30 hover:bg-stone-50">
+                              <span className="flex items-center justify-between gap-3">
+                                <span>View verified recipient stats</span>
+                                <span className="text-stone-400">{qualifiedEvents.length} activity events</span>
+                              </span>
+                            </summary>
+                            <div className="mt-3 space-y-4 rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+                              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                {lifecycleMetrics.map(({ key, label }) => {
+                                  const metric = recipientMetric(recipient, key);
+                                  return (
+                                    <div key={key} className={`min-w-0 rounded-lg border p-2.5 ${metric.accepted ? "border-emerald-200 bg-white" : "border-stone-200/80 bg-white/60"}`}>
+                                      <p className="text-[10px] font-bold uppercase tracking-wide text-stone-500">{label}</p>
+                                      <p className={`mt-1 text-sm font-bold ${metric.accepted ? "text-emerald-700" : "text-stone-400"}`}>{metric.accepted ? "Yes" : "No"}</p>
+                                      {metric.accepted && metric.time ? <p className="mt-1 text-[10px] leading-4 text-stone-500">{date(metric.time)}</p> : null}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <div>
+                                <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.14em] text-stone-500">Verified activity</p>
+                                {qualifiedEvents.length ? (
+                                  <ol className="space-y-2 border-l border-stone-200 pl-3">
+                                    {qualifiedEvents.map((event) => (
+                                      <li key={event.id} className="relative text-xs text-stone-700 before:absolute before:-left-[17px] before:top-1.5 before:h-2 before:w-2 before:rounded-full before:bg-emerald-500">
+                                        <span className="font-semibold capitalize">{event.event_type}</span>
+                                        <span className="text-stone-500"> · {date(event.event_time)}</span>
+                                        {event.event_type === "clicked" && typeof event.metadata.target === "string" ? <p className="mt-1 break-all text-[11px] text-stone-500">{event.metadata.target}</p> : null}
+                                      </li>
+                                    ))}
+                                  </ol>
+                                ) : <p className="text-xs text-stone-500">No verified delivery or engagement events yet.</p>}
+                              </div>
+                              {filteredEvents.length ? (
+                                <details className="border-t border-stone-200 pt-3">
+                                  <summary className="cursor-pointer text-xs font-semibold text-stone-600">Automated requests excluded from stats ({filteredEvents.length})</summary>
+                                  <ul className="mt-2 space-y-2 pl-1">
+                                    {filteredEvents.map((event) => (
+                                      <li key={event.id} className="text-[11px] leading-4 text-stone-500">
+                                        {event.event_type} · {date(event.event_time)}
+                                        {event.metadata.filter_reason ? ` · ${String(event.metadata.filter_reason)}` : ""}
+                                        {event.user_agent ? ` · ${event.user_agent}` : ""}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              ) : null}
                               {(recipient.messages ?? []).map((message) => (
-                                <div key={message.id} className="rounded-xl border border-stone-200 bg-stone-50 p-3 text-xs">
+                                <div key={message.id} className="border-t border-stone-200 pt-3 text-xs text-stone-500">
                                   <div className="flex justify-between gap-2">
-                                    <Badge tone={tone(message.status)}>{message.status}</Badge>
-                                    <span className="text-stone-500">{message.attempt_count} attempt{message.attempt_count === 1 ? "" : "s"}</span>
+                                    <span className="font-semibold text-stone-700">Send attempt</span>
+                                    <span>{message.attempt_count} attempt{message.attempt_count === 1 ? "" : "s"}</span>
                                   </div>
-                                  <p className="mt-2 text-stone-500">Scheduled: {date(message.scheduled_at)}</p>
-                                  <p className="mt-1 text-stone-500">Updated: {date(message.updated_at)}</p>
+                                  <p className="mt-1">Scheduled: {date(message.scheduled_at)}</p>
+                                  {message.rfc_message_id ? <p className="mt-1 break-all">Message-ID: {message.rfc_message_id}</p> : null}
                                   {message.error_message ? <p className="mt-2 break-words text-rose-700">{message.error_message}</p> : null}
                                 </div>
-                              ))}
-                              {(recipient.events ?? []).map((event) => (
-                                <p key={event.id} className="text-xs text-stone-500">{event.event_type} · {date(event.event_time)}</p>
                               ))}
                             </div>
                           </details>

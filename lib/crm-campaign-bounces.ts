@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 export type CampaignBounceNotice = {
   recipient: string;
   diagnostic: string;
+  bounceType: string;
   originalMessageId: string | null;
   originalSubject: string | null;
 };
@@ -39,10 +40,19 @@ export function parseCampaignBounceNotice(sender: string, subject: string, text:
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1000);
+  const bounceType = /(?:5\.1\.1|user unknown|no such user|invalid recipient|mailbox (?:does not exist|unavailable|not available)|address not found)/i.test(diagnostic)
+    ? "hard"
+    : /(?:4\.\d\.\d|temporar|try again|mailbox full|quota exceeded|rate limit)/i.test(diagnostic)
+      ? "soft"
+      : /(?:blocked|blacklist|policy|spam|reputation)/i.test(diagnostic)
+        ? "blocked"
+        : /(?:rejected|relay denied|access denied)/i.test(diagnostic)
+          ? "rejected"
+          : "other";
   const originalMessageId = body.match(/(?:Original-Message-ID|Message-ID)\s*:\s*<?([^>\s]+)>?/i)?.[1] ?? null;
   const originalSubject = body.match(/(?:Original-)?Subject\s*:\s*(.+)/i)?.[1]?.trim() ?? null;
 
-  return { recipient, diagnostic, originalMessageId, originalSubject };
+  return { recipient, diagnostic, bounceType, originalMessageId, originalSubject };
 }
 
 export async function recordCampaignBounce(
@@ -52,6 +62,7 @@ export async function recordCampaignBounce(
     companyId: number;
     receivedAt: string;
     inboundProviderMessageId: string;
+    inboundEmailMessageId?: number | null;
     notice: CampaignBounceNotice;
   },
 ) {
@@ -70,11 +81,11 @@ export async function recordCampaignBounce(
   const earliestMatch = new Date(receivedAt.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString();
   const { data: sentCopies, error: sentCopiesError } = await client
     .from("crm_email_messages")
-    .select("provider_message_id, message_id, subject, sent_at")
+    .select("campaign_message_id, message_id, subject, sent_at")
     .eq("mailbox_id", input.mailboxId)
     .eq("contact_id", contact.id)
     .eq("direction", "outbound")
-    .like("provider_message_id", "hostinger:campaign:%")
+    .not("campaign_message_id", "is", null)
     .gte("sent_at", earliestMatch)
     .lte("sent_at", receivedAt.toISOString())
     .order("sent_at", { ascending: false })
@@ -82,60 +93,35 @@ export async function recordCampaignBounce(
   if (sentCopiesError) throw sentCopiesError;
 
   const candidates = sentCopies ?? [];
-  let matchingCopies = input.notice.originalMessageId
-    ? candidates.filter((copy) => copy.message_id && normalizedMessageId(copy.message_id) === normalizedMessageId(input.notice.originalMessageId!))
-    : [];
-  if (matchingCopies.length !== 1 && input.notice.originalSubject) {
+  let matchingCopies: typeof candidates = [];
+  if (input.notice.originalMessageId) {
+    matchingCopies = candidates.filter((copy) => copy.message_id && normalizedMessageId(copy.message_id) === normalizedMessageId(input.notice.originalMessageId!));
+  } else if (input.notice.originalSubject) {
     const targetSubject = normalizedSubject(input.notice.originalSubject);
     matchingCopies = candidates.filter((copy) => normalizedSubject(copy.subject ?? "") === targetSubject);
+  } else if (candidates.length === 1) {
+    matchingCopies = candidates;
   }
-  if (matchingCopies.length !== 1) matchingCopies = candidates.length === 1 ? candidates : [];
   if (matchingCopies.length !== 1) return false;
 
-  const campaignMessageId = matchingCopies[0].provider_message_id.match(/^hostinger:campaign:(\d+)$/)?.[1];
+  const campaignMessageId = matchingCopies[0].campaign_message_id;
   if (!campaignMessageId) return false;
-  const { data: campaignMessage, error: campaignMessageError } = await client
-    .from("crm_campaign_messages")
-    .select("id, campaign_contact_id, status")
-    .eq("id", campaignMessageId)
-    .maybeSingle();
-  if (campaignMessageError) throw campaignMessageError;
-  if (!campaignMessage || !["sent", "delivered", "bounced"].includes(campaignMessage.status)) return false;
-
-  const now = new Date().toISOString();
-  if (campaignMessage.status !== "bounced") {
-    const { error: messageUpdateError } = await client
-      .from("crm_campaign_messages")
-      .update({
-        status: "bounced",
-        error_message: `Bounce-back received: ${input.notice.diagnostic}`,
-        updated_at: now,
-      })
-      .eq("id", campaignMessage.id)
-      .in("status", ["sent", "delivered"]);
-    if (messageUpdateError) throw messageUpdateError;
-
-  }
-
-  const { error: contactUpdateError } = await client
-    .from("crm_campaign_contacts")
-    .update({ status: "bounced" })
-    .eq("id", campaignMessage.campaign_contact_id);
-  if (contactUpdateError) throw contactUpdateError;
-
-  const { error: eventError } = await client.from("crm_email_events").upsert({
-    company_id: input.companyId,
-    campaign_message_id: campaignMessage.id,
-    event_type: "bounced",
-    provider_event_id: `hostinger:bounce:${input.mailboxId}:${input.inboundProviderMessageId}`,
-    event_time: receivedAt.toISOString(),
-    metadata: {
+  const { data: recorded, error: recordError } = await client.rpc("record_crm_campaign_bounce", {
+    p_campaign_message_id: campaignMessageId,
+    p_provider_event_id: `hostinger:bounce:${input.mailboxId}:${input.inboundProviderMessageId}`,
+    p_email_message_id: input.inboundEmailMessageId ?? null,
+    p_received_at: receivedAt.toISOString(),
+    p_bounce_type: input.notice.bounceType,
+    p_bounce_reason: input.notice.diagnostic,
+    p_metadata: {
       source: "hostinger_bounce_email",
       recipient: input.notice.recipient,
       diagnostic: input.notice.diagnostic,
+      bounce_type: input.notice.bounceType,
+      original_message_id: input.notice.originalMessageId,
       bounce_subject: input.notice.originalSubject,
     },
-  }, { onConflict: "provider_event_id" });
-  if (eventError) throw eventError;
-  return true;
+  });
+  if (recordError) throw recordError;
+  return Boolean(recorded);
 }

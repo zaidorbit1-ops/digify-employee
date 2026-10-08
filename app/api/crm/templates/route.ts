@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { sendHostingerEmail } from "@/lib/hostinger-mail";
+import { sanitizeEmailHtml, sendHostingerEmail } from "@/lib/hostinger-mail";
 import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["draft", "active", "archived"] as const;
@@ -46,7 +46,7 @@ function parseTemplate(body: TemplatePayload) {
   if (contentMode === "plain" ? !textBody : !htmlBody) throw new Error(contentMode === "plain" ? "Plain-text email content is required." : "HTML email content is required.");
   if (!statuses.includes(status as (typeof statuses)[number])) throw new Error("Choose a valid template status.");
   const compatibleHtml = contentMode === "plain"
-    ? `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.6">${escapeHtml(textBody ?? "")}</div>`
+    ? sanitizeEmailHtml(htmlBody || `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.6">${escapeHtml(textBody ?? "")}</div>`)
     : htmlBody;
   return { company_id: companyId, name, subject, html_body: compatibleHtml, text_body: textBody, content_mode: contentMode, variables, status };
 }
@@ -103,9 +103,7 @@ export const POST = withCrmApiLogging(async function POST(request: Request) {
       if (templateError) throw templateError;
       if (mailboxError) throw mailboxError;
       const values = { first_name: "Test", last_name: "Recipient", email: recipient, company_name: "Your company" };
-      const htmlBody = template.content_mode === "plain"
-        ? `<div style="white-space:pre-wrap;font-family:Arial,sans-serif;line-height:1.6">${escapeHtml(renderVariables(template.text_body ?? "", values))}</div>`
-        : renderVariables(template.html_body, values);
+      const htmlBody = renderVariables(template.html_body, values);
       await sendHostingerEmail({ to: recipient, subject: `[TEST] ${renderVariables(template.subject, values)}`, html: htmlBody, text: renderVariables(template.text_body || template.subject, values), mailboxAddress: mailbox.email_address });
       return NextResponse.json({ ok: true, message: "Test email sent successfully." });
     }
