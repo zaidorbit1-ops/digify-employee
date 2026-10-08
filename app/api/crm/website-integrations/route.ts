@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function errorResponse(error: unknown, fallback: string) {
   const databaseError = error as { code?: string; message?: string; details?: string; hint?: string };
@@ -9,7 +10,7 @@ function errorResponse(error: unknown, fallback: string) {
   return NextResponse.json({ error: message, details: databaseError.details, hint: databaseError.hint }, { status });
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -29,9 +30,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not create website integration.");
   }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const { client, error: authError } = await getCrmAdminClient();
     if (authError) return NextResponse.json({ error: authError }, { status: 403 });
@@ -43,4 +44,4 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not delete website integration.");
   }
-}
+});

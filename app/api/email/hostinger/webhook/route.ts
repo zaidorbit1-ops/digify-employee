@@ -1,10 +1,12 @@
-import sanitizeHtml from "sanitize-html";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
-import { constantTimeSecretMatches, getHostingerMessage } from "@/lib/hostinger-mail";
+import { constantTimeSecretMatches, findHostingerMessage, getHostingerMessage, isIncompleteEmailBody, sanitizeEmailHtml } from "@/lib/hostinger-mail";
 import { getHostingerWebhookSecret } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { parseCampaignBounceNotice, recordCampaignBounce } from "@/lib/crm-campaign-bounces";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
+import { writeCrmLog } from "@/lib/crm-logs";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +48,55 @@ function headerList(value: unknown): string[] {
   return result ? [result] : [];
 }
 
+function crmFolderFromProviderFolder(folder: string) {
+  const segments = folder.toLowerCase().split(/[./\\]+/).filter(Boolean);
+  if (segments.some((segment) => /spam|junk|bulk/.test(segment))) return "spam";
+  if (segments.some((segment) => /trash|deleted/.test(segment))) return "trash";
+  if (segments.some((segment) => /draft/.test(segment))) return "drafts";
+  if (segments.some((segment) => /archive|all mail/.test(segment))) return "archive";
+  if (segments.some((segment) => /sent/.test(segment))) return "sent";
+  return "inbox";
+}
+
+function extractBodyParts(value: unknown, depth = 0): { text: string; html: string } {
+  if (depth > 6 || value == null) return { text: "", html: "" };
+  if (typeof value === "string") {
+    const content = value.trim();
+    if (!content) return { text: "", html: "" };
+    return /<(?:!doctype|html|body|div|p|table|br|span|h[1-6])\b/i.test(content)
+      ? { text: "", html: content }
+      : { text: content, html: "" };
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((result, item) => {
+      const part = extractBodyParts(item, depth + 1);
+      return { text: result.text || part.text, html: result.html || part.html };
+    }, { text: "", html: "" });
+  }
+
+  const item = record(value);
+  const mimeType = firstString(item.contentType, item.content_type, item.mimeType, item.mime_type).toLowerCase();
+  let text = firstString(item.text, item.textBody, item.text_body, item.plainText, item.plain_text, item.plain);
+  let html = firstString(item.html, item.htmlBody, item.html_body);
+  const content = firstString(item.content, item.value);
+  if (content && mimeType.includes("text/plain")) text ||= content;
+  else if (content && mimeType.includes("text/html")) html ||= content;
+  else if (content && !text && !html) {
+    const extracted = extractBodyParts(content, depth + 1);
+    text ||= extracted.text;
+    html ||= extracted.html;
+  }
+
+  for (const key of ["body", "parts", "content", "payload", "data"]) {
+    const nested = item[key];
+    if (nested == null || nested === value) continue;
+    const extracted = extractBodyParts(nested, depth + 1);
+    text ||= extracted.text;
+    html ||= extracted.html;
+  }
+  return { text, html };
+}
+
 function fail(message: string, status: number, requestId?: string, code?: string) {
   return NextResponse.json({ error: message, code, request_id: requestId }, { status });
 }
@@ -54,6 +105,12 @@ export async function POST(request: Request) {
   const requestId = randomUUID();
   let stage = "payload.parse";
   let mailboxId: number | null = null;
+  let diagnosticSubject: string | null = null;
+  let diagnosticUid: number | null = null;
+  let diagnosticHasMessageId = false;
+  let diagnosticBodySource = "hostinger_webhook_payload";
+  let diagnosticTextLength = 0;
+  let diagnosticHtmlLength = 0;
   let payload: RecordValue;
   try {
     payload = record(await request.json());
@@ -111,36 +168,79 @@ export async function POST(request: Request) {
       console.warn("[hostinger] invalid webhook request", { mailbox_id: mailbox.id });
       return fail("Unauthorized", 401, requestId, "WEBHOOK_SECRET_INVALID");
     }
+    const { data: mailboxCompany, error: companyError } = await client
+      .from("crm_companies")
+      .select("name")
+      .eq("id", mailbox.company_id)
+      .maybeSingle();
+    if (companyError) throw companyError;
+    const companyName = mailboxCompany?.name ?? "CRM company";
     if (event && event !== "message.received") return NextResponse.json({ ok: true, ignored: true });
 
     stage = "payload.normalize";
-    let uid = Number(message.uid ?? message.messageUid ?? message.resourceId ?? data.uid ?? data.messageUid ?? payload.uid);
+    let uid = Number(message.uid ?? message.messageUid ?? data.uid ?? data.messageUid ?? payload.uid);
     if ((!Number.isInteger(uid) || uid <= 0) && /^\d+$/.test(stringValue(message.id))) uid = Number(message.id);
+    diagnosticUid = Number.isInteger(uid) && uid > 0 ? uid : null;
     let folder = firstString(message.folder, message.path, data.folder, payload.folder) || "INBOX";
+    let crmFolder = crmFolderFromProviderFolder(folder);
     let sender = address(message.from ?? message.sender);
     let recipients = addressList(message.to ?? message.recipients);
     let cc = addressList(message.cc);
     let subject = firstString(message.subject) || "(no subject)";
-    let textBody = firstString(message.text, message.textBody, record(message.body).text);
-    let htmlBody = firstString(message.html, message.htmlBody, record(message.body).html);
+    diagnosticSubject = subject;
+    const payloadBodies = extractBodyParts(message);
+    let textBody = firstString(message.text, message.textBody, record(message.body).text, payloadBodies.text);
+    let htmlBody = firstString(message.html, message.htmlBody, record(message.body).html, payloadBodies.html);
+    diagnosticTextLength = textBody.length;
+    diagnosticHtmlLength = htmlBody.length;
     let messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
+    diagnosticHasMessageId = Boolean(messageId);
     let inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
     let references = headerList(message.references ?? message.referencesHeaders);
-    if ((!sender || !messageId || (!textBody && !htmlBody)) && Number.isInteger(uid) && uid > 0) {
-      stage = "hostinger.message.fetch";
-      const fetched = await getHostingerMessage(resolvedMailboxAddress, folder, uid);
-      message = { ...fetched.message, ...message };
-      sender = address(message.from ?? message.sender);
-      recipients = addressList(message.to ?? message.recipients);
-      cc = addressList(message.cc);
-      subject = firstString(message.subject) || subject;
-      textBody = firstString(message.text, message.textBody, fetched.body.text, record(message.body).text);
-      htmlBody = firstString(message.html, message.htmlBody, fetched.body.html, record(message.body).html);
-      messageId = firstString(message.messageId, message.message_id, message.rfc822MessageId);
-      inReplyTo = firstString(message.inReplyTo, message.in_reply_to);
-      references = headerList(message.references ?? message.referencesHeaders);
-      folder = firstString(message.path, message.folder, folder) || "INBOX";
+    let attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    stage = "hostinger.message.lookup";
+    const providerMessage = Number.isInteger(uid) && uid > 0
+      ? { uid, path: folder }
+      : await findHostingerMessage(resolvedMailboxAddress, folder, messageId, { subject, sender, receivedAt: firstString(message.receivedAt, message.received_at, message.date) });
+    if (providerMessage?.uid) {
+        uid = providerMessage.uid;
+        diagnosticUid = uid;
+        folder = providerMessage.path || folder;
+        crmFolder = crmFolderFromProviderFolder(folder);
+        stage = "hostinger.message.fetch";
+        diagnosticBodySource = "hostinger_message_api";
+        const fetched = await getHostingerMessage(resolvedMailboxAddress, folder, uid, { markSeen: false });
+        const fetchedMessage = record(fetched.message);
+        const fetchedBodies = extractBodyParts(fetchedMessage);
+        const fetchedText = firstString(fetched.body.text, fetchedMessage.text, fetchedMessage.textBody, record(fetchedMessage.body).text, fetchedBodies.text);
+        const fetchedHtml = firstString(fetched.body.html, fetchedMessage.html, fetchedMessage.htmlBody, record(fetchedMessage.body).html, fetchedBodies.html);
+        if (fetchedMessage.from) sender = address(fetchedMessage.from) || sender;
+        if (!recipients.length) recipients = addressList(fetchedMessage.to ?? fetchedMessage.recipients);
+        if (!cc.length) cc = addressList(fetchedMessage.cc);
+        subject = firstString(fetchedMessage.subject, message.subject) || subject;
+        diagnosticSubject = subject;
+        messageId = firstString(fetchedMessage.messageId, fetchedMessage.message_id, fetchedMessage.rfc822MessageId, messageId);
+        diagnosticHasMessageId = Boolean(messageId);
+        inReplyTo = firstString(fetchedMessage.inReplyTo, fetchedMessage.in_reply_to, inReplyTo);
+        references = headerList(fetchedMessage.references ?? fetchedMessage.referencesHeaders ?? references);
+        if (!isIncompleteEmailBody(fetchedText, fetchedHtml)) {
+          textBody = fetchedText;
+          htmlBody = fetchedHtml;
+        } else if (isIncompleteEmailBody(textBody, htmlBody)) {
+          textBody = "";
+          htmlBody = "";
+        }
+        diagnosticTextLength = textBody.length;
+        diagnosticHtmlLength = htmlBody.length;
+        if (!attachments.length && Array.isArray(fetchedMessage.attachments)) attachments = fetchedMessage.attachments;
+        message = { ...message, ...fetchedMessage };
     }
+    if (isIncompleteEmailBody(textBody, htmlBody) && !attachments.length) {
+      stage = "hostinger.message.recovery";
+      throw new Error(`Full email body could not be recovered from Hostinger for Message-ID ${messageId || "(missing)"}.`);
+    }
+    diagnosticTextLength = textBody.length;
+    diagnosticHtmlLength = htmlBody.length;
     const providerMessageId = firstString(message.messageId, message.message_id, message.id) || (Number.isInteger(uid) && uid > 0 ? `hostinger:uid:${uid}` : "");
     if (!providerMessageId || !sender) {
       console.error("[hostinger] webhook rejected", { request_id: requestId, mailbox_id: mailbox.id, stage: "payload.validate", has_uid: Number.isInteger(uid) && uid > 0, has_message_id: Boolean(providerMessageId), has_sender: Boolean(sender) });
@@ -161,7 +261,7 @@ export async function POST(request: Request) {
     const { data: matchedMessageById } = headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("message_id", headerCandidates).limit(1).maybeSingle() : { data: null };
     const { data: matchedMessageByReply } = !matchedMessageById && headerCandidates.length ? await client.from("crm_email_messages").select("thread_id, contact_id").eq("mailbox_id", mailbox.id).in("in_reply_to", headerCandidates).limit(1).maybeSingle() : { data: null };
     const matchedMessage = matchedMessageById ?? matchedMessageByReply;
-    const subjectKey = subject.replace(/^(re|fw|fwd):\s*/i, "").trim();
+    const subjectKey = subject.replace(/^(?:(?:re|fw|fwd):\s*)+/i, "").trim();
     const { data: subjectThread } = !matchedMessage ? await client.from("crm_email_threads").select("id, contact_id").eq("mailbox_id", mailbox.id).ilike("subject", subjectKey).order("updated_at", { ascending: false }).limit(1).maybeSingle() : { data: null };
     let contactId = matchedMessage?.contact_id ?? subjectThread?.contact_id ?? null;
     if (!contactId) {
@@ -172,29 +272,58 @@ export async function POST(request: Request) {
     const threadKey = inReplyTo || references[0] || messageId || providerMessageId;
     stage = "database.thread_save";
     const threadResult = threadId
-      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
-      : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: "inbox", updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
+      ? await client.from("crm_email_threads").update({ contact_id: contactId, subject, folder: crmFolder, updated_at: new Date().toISOString() }).eq("id", threadId).select("id").single()
+      : await client.from("crm_email_threads").upsert({ company_id: mailbox.company_id, mailbox_id: mailbox.id, contact_id: contactId, subject, provider_thread_id: threadKey, folder: crmFolder, updated_at: new Date().toISOString() }, { onConflict: "mailbox_id,provider_thread_id" }).select("id").single();
     if (threadResult.error) throw threadResult.error;
-    const receivedAt = firstString(message.receivedAt, message.received_at, message.date) || new Date().toISOString();
+    const receivedAtValue = firstString(message.receivedAt, message.received_at, message.date);
+    const receivedAtDate = receivedAtValue ? new Date(receivedAtValue) : new Date();
+    if (Number.isNaN(receivedAtDate.getTime())) throw new Error("Hostinger message received timestamp is invalid.");
+    const receivedAt = receivedAtDate.toISOString();
+    const bounceNotice = parseCampaignBounceNotice(sender, subject, textBody, htmlBody);
+    if (bounceNotice) {
+      stage = "campaign.bounce_link";
+      const linked = await recordCampaignBounce(client, {
+        mailboxId: mailbox.id,
+        companyId: mailbox.company_id,
+        receivedAt,
+        inboundProviderMessageId: providerMessageId,
+        notice: bounceNotice,
+      });
+      if (linked) {
+        console.info("[hostinger] campaign bounce linked", { mailbox_id: mailbox.id, recipient: bounceNotice.recipient });
+      } else {
+        console.warn("[hostinger] campaign bounce could not be linked unambiguously", { mailbox_id: mailbox.id, recipient: bounceNotice.recipient, bounce_subject: subject });
+      }
+    }
     stage = "database.message_save";
-    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
+    const { data: stored, error: messageError } = await client.from("crm_email_messages").insert({ company_id: mailbox.company_id, thread_id: threadResult.data.id, mailbox_id: mailbox.id, contact_id: contactId, direction: "inbound", provider_message_id: providerMessageId, hostinger_uid: Number.isInteger(uid) && uid > 0 ? uid : null, hostinger_folder: folder, message_id: messageId || null, in_reply_to: inReplyTo || null, references_headers: references, sender, recipients, cc, subject, text_body: textBody || null, html_body: htmlBody ? sanitizeEmailHtml(htmlBody) : null, is_read: false, received_at: receivedAt }).select("id").single();
     if (messageError) throw messageError;
 
     stage = "database.attachment_save";
-    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     if (stored && attachments.length) {
-      const rows = attachments.map((item) => { const attachment = record(item); return { company_id: mailbox.company_id, message_id: stored.id, file_name: firstString(attachment.filename, attachment.fileName) || "attachment", content_type: firstString(attachment.contentType, attachment.content_type) || "application/octet-stream", storage_path: firstString(attachment.downloadUrl, attachment.url, attachment.id ? `hostinger:attachment:${attachment.id}` : "hostinger:attachment"), file_size: Number(attachment.size) || 0 }; });
+      const rows = attachments.map((item) => { const attachment = record(item); return { company_id: mailbox.company_id, message_id: stored.id, file_name: firstString(attachment.filename, attachment.fileName) || "attachment", content_type: firstString(attachment.contentType, attachment.content_type) || "application/octet-stream", content_id: firstString(attachment.contentId, attachment.content_id) || null, storage_path: attachment.id ? `hostinger:attachment:${attachment.id}` : firstString(attachment.downloadUrl, attachment.url, "hostinger:attachment"), file_size: Number(attachment.sizeBytes ?? attachment.size) || 0 }; });
       const { error } = await client.from("crm_email_attachments").insert(rows);
       if (error) console.error("[hostinger] incoming attachment metadata failed", error.message);
     }
     stage = "database.status_update";
     await client.from("crm_mailboxes").update({ status: "connected", last_webhook_at: new Date().toISOString(), last_error: null }).eq("id", mailbox.id);
     if (contactId) await client.from("crm_contact_timeline").insert({ company_id: mailbox.company_id, contact_id: contactId, event_type: threadId ? "email_replied" : "email_received", event_data: { message_id: stored.id, provider_message_id: providerMessageId, subject, sender } });
+    await createCrmActivityNotifications({
+      body: `on ${companyName}`,
+      notificationType: "crm_email",
+      relatedRecordId: stored.id,
+      relatedUrl: `/dashboard/crm/webmail/${mailbox.id}?thread_id=${threadResult.data.id}`,
+      companyId: mailbox.company_id,
+    });
     console.info("[hostinger] incoming email processed", { mailbox_id: mailbox.id, provider_message_id: providerMessageId });
+    await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webmail.email.received", message: "Incoming email received and stored.", route: "/api/email/hostinger/webhook", requestId, companyId: mailbox.company_id, metadata: { mailbox_id: mailbox.id, message_id: stored.id, email_subject: subject, body_source: diagnosticBodySource, text_length: diagnosticTextLength, html_length: diagnosticHtmlLength, has_hostinger_uid: Boolean(uid), has_message_id: Boolean(messageId) } });
     return NextResponse.json({ ok: true, message_id: stored.id });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "unknown error";
-    console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, reason });
+    const errorRecord = record(error);
+    const reason = error instanceof Error ? error.message : firstString(errorRecord.message, errorRecord.details, "Unknown webhook processing error.");
+    const errorCode = stringValue(errorRecord.code) || null;
+    console.error("[hostinger] webhook processing failed", { request_id: requestId, mailbox_id: mailboxId, stage, error_code: errorCode, reason });
+    await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webmail.email.receive_failed", message: `${stage}${errorCode ? ` [${errorCode}]` : ""}: ${reason}`, route: "/api/email/hostinger/webhook", requestId, metadata: { mailbox_id: mailboxId, stage, error_code: errorCode, email_subject: diagnosticSubject, body_source: diagnosticBodySource, text_length: diagnosticTextLength, html_length: diagnosticHtmlLength, hostinger_uid: diagnosticUid, has_message_id: diagnosticHasMessageId } });
     return fail(`Webhook processing failed at ${stage}.`, 500, requestId, "WEBHOOK_PROCESSING_FAILED");
   }
 }

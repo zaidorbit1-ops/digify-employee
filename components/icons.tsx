@@ -190,6 +190,20 @@ export function IconRefresh({ className }: IconProps) {
   );
 }
 
+export function IconArrowLeft({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M19 12H5M11 6l-6 6 6 6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function IconArrowRight({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
@@ -232,6 +246,34 @@ export function IconSearch({ className }: IconProps) {
         stroke="currentColor"
         strokeWidth="1.7"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function IconEye({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.7" />
+    </svg>
+  );
+}
+
+export function IconExpand({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M8 4H4v4m0-4 6 6m6-6h4v4m0-4-6 6M4 16v4h4m-4 0 6-6m10 2v4h-4m4 0-6-6"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -542,6 +584,20 @@ export function IconCopy({ className }: IconProps) {
   );
 }
 
+export function IconPin({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="m15 4 5 5-3 1-3 3v4l-2 2-2-6-5-2 2-2h4l3-3 1-2ZM5 19l5-5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function IconUpload({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
@@ -590,6 +646,66 @@ export function IconClock({ className }: IconProps) {
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
       <path
         d="M12 7v5l3.5 2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function IconHistory({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2L3.5 8.5M3.5 4.5v4h4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 7.5V12l3 1.8"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function IconAlert({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="m10.3 4.7-7 12.1A1.8 1.8 0 0 0 4.9 19.5h14.2a1.8 1.8 0 0 0 1.6-2.7l-7-12.1a1.9 1.9 0 0 0-3.4 0Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 9v4.5m0 2.5h.01"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function IconComment({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden>
+      <path
+        d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H7l-3.5 2v-5.1A7.5 7.5 0 1 1 20 11.5Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 11.5h8m-8 3h5"
         stroke="currentColor"
         strokeWidth="1.7"
         strokeLinecap="round"

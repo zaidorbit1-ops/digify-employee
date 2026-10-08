@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminContext } from "@/lib/crm-admin";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const statuses = ["new", "contacted", "qualified", "converted", "lost"];
 
@@ -44,7 +46,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -65,7 +67,7 @@ export async function POST(request: Request) {
     const { data: website, error: websiteError } = await client.from("crm_websites").select("id, company_id").eq("id", websiteId).maybeSingle();
     if (websiteError) throw websiteError;
     if (!website || website.company_id !== companyId) return fail("Website does not belong to the selected company.", "Website does not belong to the selected company.", 400);
-    const { data: company, error: companyError } = await client.from("crm_companies").select("id").eq("id", companyId).maybeSingle();
+    const { data: company, error: companyError } = await client.from("crm_companies").select("id, name").eq("id", companyId).maybeSingle();
     if (companyError) throw companyError;
     if (!company) return fail("CRM company not found.", "CRM company not found.", 404);
     const { data: duplicate } = await client.from("crm_leads").select("id").eq("company_id", companyId).eq("normalized_email", email).is("deleted_at", null).limit(1).maybeSingle();
@@ -86,8 +88,15 @@ export async function POST(request: Request) {
       updated_by: user.id,
     }).select("*, crm_websites(name, website_url)").single();
     if (error) throw error;
+    await createCrmActivityNotifications({
+      body: `on ${company.name}`,
+      notificationType: "crm_lead",
+      relatedRecordId: data.id,
+      relatedUrl: `/dashboard/crm/leads/${data.id}`,
+      companyId,
+    });
     return NextResponse.json({ lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 });
   } catch (error) {
     return fail(error, "Could not create CRM lead.");
   }
-}
+});

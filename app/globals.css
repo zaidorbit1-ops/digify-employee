@@ -31,6 +31,30 @@ body {
   font-family: var(--font-plus-jakarta), sans-serif;
 }
 
+.crm-responsive {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 639px) {
+  .crm-responsive :where(input, select, textarea, iframe, img) {
+    max-width: 100%;
+  }
+
+  .crm-responsive :where(.overflow-x-auto) {
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .crm-responsive :where(pre, code) {
+    overflow-wrap: anywhere;
+  }
+
+  .crm-responsive :where(p, span, a, dd, dt) {
+    overflow-wrap: anywhere;
+  }
+}
+
 .employee-dashboard-enter {
   animation: employee-dashboard-enter 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -219,6 +243,27 @@ body {
   .login-ambient::before,
   .login-ambient::after {
     animation: none;
+  }
+}
+
+.crm-notification-toast-progress {
+  animation: crm-notification-toast-progress 5s linear forwards;
+  transform-origin: left;
+}
+
+@keyframes crm-notification-toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-notification-toast-progress {
+    animation: none;
+    transform: scaleX(0);
   }
 }
 
@@ -632,4 +677,3 @@ select {
 .glow-subtle {
   box-shadow: 0 0 30px -5px rgba(228, 90, 90, 0.15);
 }
-

@@ -1,0 +1,4 @@
+project_id = "kppukubzlfdrmibmdbzy"
+
+[functions.crm-campaign-worker]
+verify_jwt = false

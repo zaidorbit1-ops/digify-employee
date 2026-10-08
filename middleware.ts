@@ -1,7 +1,33 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+function trackingHost(value: string | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.hostname.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(request: NextRequest) {
+  const configuredTrackingHosts = [
+    "track.classtakerspro.com",
+    "track.digifyitsolution.com",
+    trackingHost(process.env.EMAIL_TRACKING_BASE_URL_CLASSTAKERSPRO),
+    trackingHost(process.env.EMAIL_TRACKING_BASE_URL_DIGIFYITSOLUTION),
+  ].filter((host): host is string => Boolean(host));
+  if (configuredTrackingHosts.includes(request.nextUrl.hostname.toLowerCase())) {
+    const path = request.nextUrl.pathname;
+    const webmailTracker = /^\/api\/crm\/webmail\/tracking\/(?:open|click)\/[\da-f-]{36}$/i.test(path);
+    const campaignTracker = /^\/api\/crm\/tracking\/(?:open|click)\/\d+$/.test(path);
+    if (request.method !== "GET" || (!webmailTracker && !campaignTracker)) {
+      return new Response("Not Found", { status: 404, headers: { "Cache-Control": "no-store" } });
+    }
+    return NextResponse.next();
+  }
+
   let response = NextResponse.next({ request });
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -43,9 +69,9 @@ export async function middleware(request: NextRequest) {
   );
   const isCrmLeadIngest =
     request.nextUrl.pathname === "/api/crm/integrations/leads";
-  const isCrmTracking = request.nextUrl.pathname.startsWith(
-    "/api/crm/tracking/",
-  );
+  const isCrmTracking =
+    request.nextUrl.pathname.startsWith("/api/crm/tracking/") ||
+    request.nextUrl.pathname.startsWith("/api/crm/webmail/tracking/");
   const isHostingerWebhook =
     request.nextUrl.pathname === "/api/email/hostinger/webhook";
 
@@ -122,11 +148,13 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith("/dashboard/my-attendance") ||
         request.nextUrl.pathname.startsWith("/dashboard/my-salary") ||
         request.nextUrl.pathname.startsWith("/dashboard/apply-leave") ||
+        request.nextUrl.pathname.startsWith("/dashboard/tasks") ||
         request.nextUrl.pathname.startsWith("/dashboard/notes") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee/holidays") ||
         request.nextUrl.pathname.startsWith("/dashboard/employee") ||
         request.nextUrl.pathname.startsWith("/dashboard/internal-chat") ||
         request.nextUrl.pathname.startsWith("/api/me") ||
+        request.nextUrl.pathname.startsWith("/api/tasks") ||
         request.nextUrl.pathname.startsWith("/api/notes") ||
         request.nextUrl.pathname.startsWith("/api/chat") ||
         /^\/api\/salaries\/[^/]+\/receipt$/.test(request.nextUrl.pathname);
@@ -171,6 +199,8 @@ export async function middleware(request: NextRequest) {
         request.nextUrl.pathname.startsWith(`${route}/`),
       );
       const isCrmCompanyLookup = request.nextUrl.pathname === "/api/crm/companies";
+      const isCrmNotificationsRoute = request.nextUrl.pathname === "/dashboard/crm/notifications"
+        || request.nextUrl.pathname === "/api/crm/notifications";
       const module = permissionModule(request.nextUrl.pathname);
       const permission =
         module && profile.employee_id
@@ -209,9 +239,20 @@ export async function middleware(request: NextRequest) {
             ].includes(row.module) &&
             (row.can_read || row.can_add || row.can_edit || row.can_delete),
         );
+      const hasCrmNotificationAccess =
+        !!profile.employee_id &&
+        (await supabase
+          .from("permissions")
+          .select("module")
+          .eq("employee_id", profile.employee_id)
+          .in("module", ["crm_leads", "crm_webmail"])
+          .eq("can_read", true)
+          .limit(1)
+          .maybeSingle()).data !== null;
       const allowed =
         employeeDefaultRoute ||
         permission.data?.[requiredPermission] === true ||
+        (isCrmNotificationsRoute && hasCrmNotificationAccess) ||
         (isCrmRoute && hasAnyCrmAccess && requiredPermission === "can_read") ||
         (isCrmCompanyLookup && requiredPermission === "can_read") ||
         (request.nextUrl.pathname === "/dashboard" && !hasEmployeeManagementAccess && hasAnyCrmAccess);
@@ -269,6 +310,8 @@ function permissionModule(pathname: string) {
     attendance: "attendance",
     leaves: "leave",
     leave: "leave",
+    tasks: "tasks",
+    "task-projects": "tasks",
     salary: "salary",
     salaries: "salary",
     "company-accounts": "company_accounts",

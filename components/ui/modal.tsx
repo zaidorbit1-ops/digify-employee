@@ -16,7 +16,7 @@ export function Modal({
   description?: string;
   children: ReactNode;
   onClose: () => void;
-  size?: "sm" | "default" | "wide" | "xl";
+  size?: "sm" | "default" | "wide" | "xl" | "full";
   chrome?: boolean;
   icon?: ReactNode;
 }) {
@@ -27,7 +27,9 @@ export function Modal({
     default: "max-w-2xl",
     wide: "max-w-4xl",
     xl: "max-w-6xl",
+    full: "max-w-[calc(100vw-3rem)]",
   }[size] || "max-w-2xl";
+  const fullSize = size === "full";
 
   return (
     <div
@@ -43,7 +45,7 @@ export function Modal({
         onClick={onClose}
       />
       <div
-        className={`modal-content-animate relative flex max-h-[92vh] w-full flex-col overflow-hidden rounded-3xl border border-white/60 bg-white/95 shadow-[0_25px_70px_-12px_rgba(30,10,10,0.28),0_0_0_1px_rgba(255,255,255,0.8)_inset,0_0_40px_rgba(228,90,90,0.08)] backdrop-blur-xl transition-all duration-300 ${sizeClasses}`}
+        className={`modal-content-animate relative flex w-full flex-col overflow-hidden border border-white/60 bg-white/95 shadow-[0_25px_70px_-12px_rgba(30,10,10,0.28),0_0_0_1px_rgba(255,255,255,0.8)_inset,0_0_40px_rgba(228,90,90,0.08)] backdrop-blur-xl transition-all duration-300 ${fullSize ? "h-[calc(100dvh-3rem)] max-h-[calc(100dvh-3rem)] rounded-2xl" : "max-h-[92vh] rounded-3xl"} ${sizeClasses}`}
       >
         {/* Aesthetic top accent glowing gradient */}
         <div className="h-1.5 w-full bg-gradient-to-r from-primary via-rose-400 to-amber-300" />
@@ -90,8 +92,8 @@ export function Modal({
           </button>
         )}
         <div
-          className={`min-h-0 flex-1 overflow-y-auto ${
-            chrome ? "p-6 sm:p-7" : ""
+          className={`min-h-0 flex-1 ${fullSize ? "overflow-hidden" : "overflow-y-auto"} ${
+            chrome ? fullSize ? "p-3 sm:p-4" : "p-6 sm:p-7" : ""
           }`}
         >
           {children}

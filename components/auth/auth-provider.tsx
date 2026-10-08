@@ -4,12 +4,14 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { useRouter } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { setAuthenticatedApiCacheUser } from "@/lib/client-api-cache";
 
 export type UserRole = "superadmin" | "employee";
 export type AuthProfile = {
@@ -37,55 +39,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [profileError, setProfileError] = useState<string | null>(null);
   const supabase = getSupabaseBrowserClient();
+  const activeUserId = useRef<string | null>(null);
+
+  useEffect(() => {
+    setAuthenticatedApiCacheUser(user?.id ?? null);
+  }, [user?.id]);
 
   useEffect(() => {
     let mounted = true;
 
-    async function loadProfile(
-      currentUser: { id: string; email?: string } | null,
-    ) {
-      if (!currentUser) {
-        if (mounted) {
-          setProfile(null);
-          setProfileError(null);
-        }
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("user_id, role, employee_id, full_name, is_active")
-        .eq("user_id", currentUser.id)
-        .maybeSingle();
-
-      if (!mounted) return;
-      setProfile(data as AuthProfile | null);
-      setProfileError(
-        error?.message ??
-          (!data ? "Your account is not linked to a profile yet." : null),
-      );
-    }
-
-    async function loadUser() {
-      const { data } = await supabase.auth.getUser();
-      if (!mounted) return;
-      const currentUser = data.user
-        ? { id: data.user.id, email: data.user.email }
-        : null;
-      setUser(currentUser);
-      await loadProfile(currentUser);
-      if (mounted) setLoading(false);
-    }
-
-    loadUser();
     const { data: listener } = supabase.auth.onAuthStateChange(
       (_event: AuthChangeEvent, session: Session | null) => {
         const currentUser = session?.user
           ? { id: session.user.id, email: session.user.email }
           : null;
         setUser(currentUser);
-        loadProfile(currentUser);
-        setLoading(false);
+        if (!currentUser) {
+          activeUserId.current = null;
+          setProfile(null);
+          setProfileError(null);
+          setLoading(false);
+        } else if (activeUserId.current !== currentUser.id) {
+          activeUserId.current = currentUser.id;
+          setProfile(null);
+          setProfileError(null);
+          setLoading(true);
+        }
       },
     );
 
@@ -94,6 +73,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       listener.subscription.unsubscribe();
     };
   }, [supabase]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const currentUserId = user.id;
+    let mounted = true;
+
+    async function loadProfile() {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("user_id, role, employee_id, full_name, is_active")
+        .eq("user_id", currentUserId)
+        .maybeSingle();
+      if (!mounted) return;
+      setProfile(data as AuthProfile | null);
+      setProfileError(
+        error?.message ??
+          (!data ? "Your account is not linked to a profile yet." : null),
+      );
+      setLoading(false);
+    }
+
+    void loadProfile();
+
+    return () => {
+      mounted = false;
+    };
+  }, [supabase, user?.id]);
 
   async function signOut() {
     await supabase.auth.signOut({ scope: "global" });

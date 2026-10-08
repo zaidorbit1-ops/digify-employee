@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { IconSearch, IconPlus, IconBell, IconMenu, IconArrowRight, IconUpload } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
@@ -28,8 +28,14 @@ type Message = {
   time: string;
   senderName?: string;
   seen?: boolean;
+  editedAt?: string | null;
+  deletedAt?: string | null;
+  isDeleted?: boolean;
+  editableForMs?: number;
+  editableUntil?: number;
   pending?: boolean;
   failed?: boolean;
+  attachments?: Attachment[];
   attachment?: Attachment | null;
 };
 
@@ -40,6 +46,8 @@ type Attachment = {
   type: string;
   size: number;
 };
+
+type PendingAttachment = { id: string; file: File; preview: string | null };
 
 type ChatParticipant = {
   id: string;
@@ -65,15 +73,39 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
 }
 
 function formatTime(value: string | null | undefined) {
-  if (!value) return "Now";
+  if (!value || value === "Now") return "Now";
   try {
-    return new Date(value).toLocaleTimeString([], {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
   } catch {
     return "Now";
   }
+}
+
+function renderMessageText(text: string): ReactNode[] {
+  return text.split(/(https?:\/\/[^\s<>"']+)/gi).map((part, index) => /^https?:\/\//i.test(part)
+    ? <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="break-all underline decoration-current/40 underline-offset-2 hover:decoration-current">{part}</a>
+    : <span key={index}>{part}</span>);
+}
+
+function normalizeServerMessages(messages: Message[]): Message[] {
+  const receivedAt = Date.now();
+  return messages.map((message) => {
+    const remainingMs = Math.max(0, Math.min(60_000, Number(message.editableForMs) || 0));
+    return { ...message, editableUntil: receivedAt + remainingMs };
+  });
+}
+
+function pendingAttachment(file: File): PendingAttachment {
+  return {
+    id: crypto.randomUUID(),
+    file,
+    preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+  };
 }
 
 let notificationAudioContext: AudioContext | null = null;
@@ -161,6 +193,10 @@ export function InternalChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [isMobileChatOpen, setIsMobileChatOpen] = useState(false);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+  const [messageWindowNow, setMessageWindowNow] = useState(Date.now());
   const [query, setQuery] = useState("");
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
   const [messageQuery, setMessageQuery] = useState("");
@@ -179,9 +215,8 @@ export function InternalChatPage() {
   const [uploading, setUploading] = useState(false);
   const [isOtherOnline, setIsOtherOnline] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [pastedImage, setPastedImage] = useState<string | null>(null);
-  const [attachmentViewer, setAttachmentViewer] = useState<{ attachment: Attachment; url: string } | null>(null);
+  const [selectedAttachments, setSelectedAttachments] = useState<PendingAttachment[]>([]);
+  const [attachmentViewer, setAttachmentViewer] = useState<{ attachment: Attachment; url: string; downloadUrl: string } | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [sendingMessageId, setSendingMessageId] = useState<string | null>(null);
@@ -189,6 +224,17 @@ export function InternalChatPage() {
   const threadRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<number | null>(null);
   const typingChannelRef = useRef<{ send: (payload: { type: "broadcast"; event: string; payload: unknown }) => Promise<unknown> } | null>(null);
+
+  useEffect(() => {
+    const nextExpiry = messages.reduce((soonest, message) => {
+      if (message.sender !== "me" || message.deletedAt || message.pending || message.failed || message.editableUntil === undefined) return soonest;
+      const expiresAt = message.editableUntil;
+      return expiresAt > messageWindowNow ? Math.min(soonest, expiresAt) : soonest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = window.setTimeout(() => setMessageWindowNow(Date.now()), Math.max(0, nextExpiry - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [messageWindowNow, messages]);
 
   useEffect(() => {
     let mounted = true;
@@ -205,6 +251,7 @@ export function InternalChatPage() {
         setConversations(nextConversations);
         const requestedConversationId = new URLSearchParams(window.location.search).get("conversation_id");
         setActiveConversationId((current) => current ?? requestedConversationId ?? nextConversations[0]?.id ?? null);
+        setIsMobileChatOpen(Boolean(requestedConversationId));
       } catch (loadError) {
         if (!mounted) return;
         setError(loadError instanceof DOMException && loadError.name === "AbortError"
@@ -233,7 +280,7 @@ export function InternalChatPage() {
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "Could not load messages.");
-        if (mounted) setMessages(Array.isArray(result.messages) ? result.messages : []);
+        if (mounted) setMessages(Array.isArray(result.messages) ? normalizeServerMessages(result.messages) : []);
       } catch (loadError) {
         if (!mounted) return;
         setMessages([]);
@@ -260,10 +307,24 @@ export function InternalChatPage() {
           id: String(nextMessage.id),
           sender: "them",
           text: nextMessage.body,
-          time: formatTime(nextMessage.created_at),
+          time: nextMessage.created_at,
         }));
         setConversations((current) => current.map((conversation) => conversation.id === conversationId
-          ? { ...conversation, preview: nextMessage.body, time: formatTime(nextMessage.created_at) }
+          ? { ...conversation, preview: nextMessage.body, time: nextMessage.created_at }
+          : conversation));
+        const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
+        const result = await response.json();
+        if (mounted && response.ok && Array.isArray(result.messages)) setMessages(normalizeServerMessages(result.messages));
+      })
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "chat_messages",
+        filter: `conversation_id=eq.${conversationId}`,
+      }, async (payload: { new: { id: string; body: string; created_at: string; updated_at?: string } }) => {
+        const updatedMessage = payload.new;
+        setConversations((current) => current.map((conversation) => conversation.id === conversationId
+          ? { ...conversation, preview: updatedMessage.body, time: updatedMessage.updated_at ?? updatedMessage.created_at }
           : conversation));
         const response = await fetchWithTimeout(`/api/chat?conversation_id=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
         const result = await response.json();
@@ -344,8 +405,7 @@ export function InternalChatPage() {
         ?.getAsFile();
       if (!image || !activeConversationId) return;
       event.preventDefault();
-      setSelectedFile(image);
-      setPastedImage(URL.createObjectURL(image));
+      setSelectedAttachments((current) => current.length < 10 ? [...current, pendingAttachment(image)] : current);
     }
 
     window.addEventListener("paste", handlePaste);
@@ -359,8 +419,8 @@ export function InternalChatPage() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeConversationId, messages.length, typingUsers.length]);
 
-  async function sendMessage(body: string, file: File | null = null) {
-    if ((!body && !file) || !activeConversationId || sending || uploading) return;
+  async function sendMessage(body: string, files: PendingAttachment[] = []) {
+    if ((!body && !files.length) || !activeConversationId || sending || uploading) return;
 
     const pendingId = `pending-${Date.now()}`;
     const conversationId = activeConversationId;
@@ -368,40 +428,46 @@ export function InternalChatPage() {
     setSendingMessageId(pendingId);
     setError(null);
     try {
-      let attachment: Attachment | null = null;
-      if (file) {
+      const attachments: Attachment[] = [];
+      if (files.length) {
         setUploading(true);
-        if (file.size > 10 * 1024 * 1024) throw new Error("Attachments must be smaller than 10 MB.");
+        if (files.length > 10) throw new Error("You can attach up to 10 files per message.");
+        if (files.some(({ file }) => file.size > 10 * 1024 * 1024)) throw new Error("Each attachment must be smaller than 10 MB.");
         const supabase = getSupabaseBrowserClient();
-        const path = `${activeConversationId}/${user?.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        const upload = await supabase.storage.from("chat-attachments").upload(path, file, { contentType: file.type, upsert: false });
-        if (upload.error) throw upload.error;
-        attachment = { name: file.name, path, type: file.type, size: file.size };
+        for (const { file } of files) {
+          const path = `${activeConversationId}/${user?.id}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+          const upload = await supabase.storage.from("chat-attachments").upload(path, file, { contentType: file.type, upsert: false });
+          if (upload.error) throw upload.error;
+          attachments.push({ name: file.name, path, type: file.type || "application/octet-stream", size: file.size });
+        }
       }
 
+      const preview = body || (attachments.length === 1 ? `Attachment: ${attachments[0].name}` : `${attachments.length} attachments`);
       setMessages((current) => [...current, {
         id: pendingId,
         sender: "me",
-        text: body || "Attachment",
+        text: preview,
         time: "Now",
         pending: true,
-        attachment,
+        attachments,
+        attachment: attachments[0] ?? null,
       }]);
 
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: activeConversationId, body, attachment }),
+        body: JSON.stringify({ conversation_id: activeConversationId, body, attachments }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not send message.");
 
-      setMessages((current) => current.map((message) => message.id === pendingId ? result.message as Message : message));
+      const sentMessage = normalizeServerMessages([result.message as Message])[0];
+      setMessages((current) => current.map((message) => message.id === pendingId ? sentMessage : message));
       setDraft("");
-      setSelectedFile(null);
-      setPastedImage(null);
+      for (const item of files) if (item.preview) URL.revokeObjectURL(item.preview);
+      setSelectedAttachments([]);
       setConversations((current) => current.map((conversation) => conversation.id === conversationId
-        ? { ...conversation, preview: attachment ? `Attachment: ${attachment.name}` : body, time: result.message.time }
+        ? { ...conversation, preview, time: result.message.time }
         : conversation));
     } catch (sendError) {
       setMessages((current) => current.map((message) => message.id === pendingId ? { ...message, pending: false, failed: true } : message));
@@ -409,6 +475,77 @@ export function InternalChatPage() {
     } finally {
       setSending(false);
       setUploading(false);
+      setSendingMessageId(null);
+    }
+  }
+
+  function canModifyMessage(message: Message) {
+    return message.sender === "me"
+      && !message.deletedAt
+      && !message.isDeleted
+      && !message.pending
+      && !message.failed
+      && message.editableUntil !== undefined
+      && messageWindowNow <= message.editableUntil;
+  }
+
+  async function saveMessageEdit(messageId: string) {
+    const body = editingDraft.trim();
+    if (!body) return;
+    setSendingMessageId(messageId);
+    setError(null);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "edit_message", message_id: messageId, body }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not edit message.");
+      setMessages((current) => current.map((message) => message.id === messageId
+        ? { ...message, text: result.message.text, editedAt: result.message.editedAt }
+        : message));
+      if (messages.at(-1)?.id === messageId && activeConversationId) {
+        setConversations((current) => current.map((conversation) => conversation.id === activeConversationId
+          ? { ...conversation, preview: result.message.text }
+          : conversation));
+      }
+      setEditingMessageId(null);
+      setEditingDraft("");
+    } catch (editError) {
+      setError(editError instanceof Error ? editError.message : "Could not edit message.");
+    } finally {
+      setSendingMessageId(null);
+    }
+  }
+
+  async function deleteSentMessage(message: Message) {
+    if (!window.confirm("Delete this message for everyone?")) return;
+    setSendingMessageId(message.id);
+    setError(null);
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_message", message_id: message.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not delete message.");
+      setMessages((current) => current.map((item) => item.id === message.id
+        ? { ...item, text: result.message.text, deletedAt: result.message.deletedAt, isDeleted: true, attachments: [], attachment: null }
+        : item));
+      if (messages.at(-1)?.id === message.id && activeConversationId) {
+        setConversations((current) => current.map((conversation) => conversation.id === activeConversationId
+          ? { ...conversation, preview: result.message.text }
+          : conversation));
+      }
+      if (editingMessageId === message.id) {
+        setEditingMessageId(null);
+        setEditingDraft("");
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Could not delete message.");
+    } finally {
       setSendingMessageId(null);
     }
   }
@@ -425,17 +562,20 @@ export function InternalChatPage() {
 
   async function handleSendMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await sendMessage(draft.trim(), selectedFile);
+    await sendMessage(draft.trim(), selectedAttachments);
   }
 
   async function openAttachment(attachment: Attachment) {
-    const { data, error: signedUrlError } = await getSupabaseBrowserClient()
-      .storage.from("chat-attachments").createSignedUrl(attachment.path, 300);
-    if (signedUrlError || !data?.signedUrl) {
+    const storage = getSupabaseBrowserClient().storage.from("chat-attachments");
+    const [{ data, error: signedUrlError }, { data: downloadData, error: downloadError }] = await Promise.all([
+      storage.createSignedUrl(attachment.path, 300),
+      storage.createSignedUrl(attachment.path, 300, { download: attachment.name }),
+    ]);
+    if (signedUrlError || downloadError || !data?.signedUrl || !downloadData?.signedUrl) {
       setError("Could not open this attachment.");
       return;
     }
-    setAttachmentViewer({ attachment, url: data.signedUrl });
+    setAttachmentViewer({ attachment, url: data.signedUrl, downloadUrl: downloadData.signedUrl });
   }
 
   async function enableChatNotifications() {
@@ -497,6 +637,7 @@ export function InternalChatPage() {
       if (!conversationResponse.ok) throw new Error(conversationResult.error ?? "Could not refresh chats.");
       setConversations(Array.isArray(conversationResult.conversations) ? conversationResult.conversations : []);
       setActiveConversationId(result.conversation?.id ?? null);
+      setIsMobileChatOpen(true);
       setNewGroupOpen(false);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not create group.");
@@ -520,6 +661,7 @@ export function InternalChatPage() {
       if (operation === "delete_group") {
         setManageGroupOpen(false);
         setActiveConversationId(null);
+        setIsMobileChatOpen(false);
       } else {
         const refresh = await fetch("/api/chat", { cache: "no-store" });
         const refreshed = await refresh.json();
@@ -568,6 +710,7 @@ export function InternalChatPage() {
       const nextConversations = Array.isArray(conversationResult.conversations) ? conversationResult.conversations : [];
       setConversations(nextConversations);
       setActiveConversationId(result.conversation?.id ?? null);
+      setIsMobileChatOpen(true);
       setNewChatOpen(false);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Could not start chat.");
@@ -587,29 +730,14 @@ export function InternalChatPage() {
 
   return (
     <div className="flex min-h-0 flex-col gap-5">
-      <header className="flex flex-col gap-3 rounded-[1.5rem] border border-border bg-white p-4 shadow-[0_16px_40px_rgba(28,20,18,0.05)] sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-stone-400">Office communication</p>
-          <h1 className="mt-1 text-2xl font-bold text-foreground">Internal Chat</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button type="button" className="grid h-10 w-10 place-items-center rounded-xl border border-border text-stone-500 transition hover:border-primary/30 hover:text-primary" aria-label="Search messages">
-            <IconSearch className="h-4 w-4" />
-          </button>
-          <button type="button" onClick={enableChatNotifications} className="grid h-10 w-10 place-items-center rounded-xl border border-border text-stone-500 transition hover:border-primary/30 hover:text-primary" aria-label="Enable chat notifications and sound" title="Enable notifications and sound">
-            <IconBell className="h-4 w-4" />
-          </button>
-        </div>
-      </header>
-
       {error ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{error}</div>
       ) : null}
 
-      <div className="h-[calc(100dvh-10.5rem)] min-h-[520px] overflow-hidden rounded-[1.5rem] border border-border bg-white shadow-[0_18px_50px_rgba(28,20,18,0.06)]">
+      <div className="h-[calc(100dvh-8rem)] min-h-[320px] overflow-hidden border-y border-border bg-white shadow-[0_12px_36px_rgba(28,20,18,0.06)] sm:min-h-[520px] sm:rounded-[1.5rem] sm:border">
         <div className="grid h-full min-h-0 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="flex min-h-0 flex-col border-b border-border bg-stone-50/60 lg:border-b-0 lg:border-r">
-            <div className="border-b border-border p-4">
+          <aside className={cn("min-h-0 flex-col border-b border-border bg-[#f7f8fa] lg:flex lg:border-b-0 lg:border-r", isMobileChatOpen ? "hidden" : "flex")}>
+            <div className="border-b border-border p-3 sm:p-4">
               <label className="relative block">
                 <span className="sr-only">Search conversations</span>
                 <IconSearch className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
@@ -622,7 +750,7 @@ export function InternalChatPage() {
               </label>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 overflow-y-auto p-2.5 sm:p-3">
               {!filteredConversations.length ? (
                 <div className="rounded-xl border border-dashed border-stone-300 bg-white p-4 text-sm text-stone-500">
                   No conversations found.
@@ -636,7 +764,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -655,7 +783,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -674,7 +802,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -690,7 +818,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -709,7 +837,7 @@ export function InternalChatPage() {
                     <button
                       key={conversation.id}
                       type="button"
-                      onClick={() => setActiveConversationId(conversation.id)}
+                      onClick={() => { setActiveConversationId(conversation.id); setIsMobileChatOpen(true); }}
                       className={cn(
                         "flex w-full items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition",
                         conversation.id === activeConversation?.id
@@ -725,7 +853,7 @@ export function InternalChatPage() {
                         <span className="mt-1 block truncate text-xs text-stone-500">{conversation.preview}</span>
                       </span>
                       <span className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-stone-400">{conversation.time}</span>
+                        <span className="text-[10px] text-stone-400">{formatTime(conversation.time)}</span>
                         {conversation.unread > 0 ? (
                           <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold text-white">
                             {conversation.unread > 9 ? "9+" : conversation.unread}
@@ -754,17 +882,20 @@ export function InternalChatPage() {
             </div>
           </aside>
 
-          <section className="flex min-h-0 min-w-0 flex-col bg-white">
+          <section className={cn("min-h-0 min-w-0 flex-col bg-white", isMobileChatOpen ? "flex" : "hidden lg:flex")}>
             {activeConversation ? (
               <>
-                <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
-                  <div className="flex items-center gap-3">
-                    <span className={cn("grid h-11 w-11 place-items-center rounded-full text-sm font-bold", "bg-rose-100 text-rose-600")}>
+                <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-white px-3 py-2.5 sm:gap-3 sm:px-5 sm:py-4">
+                  <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                    <button type="button" onClick={() => setIsMobileChatOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-600 lg:hidden" aria-label="Back to conversations">
+                      <IconArrowRight className="h-4 w-4 rotate-180" />
+                    </button>
+                    <span className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-full text-sm font-bold sm:h-11 sm:w-11", "bg-rose-100 text-rose-600")}>
                       {activeConversation.name.slice(0, 1)}
                     </span>
-                    <div>
-                      <h2 className="text-lg font-bold text-foreground">{activeConversation.name}</h2>
-                      <p className="flex items-center gap-1.5 text-xs text-stone-500">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-sm font-bold text-foreground sm:text-lg">{activeConversation.name}</h2>
+                      <p className="flex items-center gap-1.5 truncate text-[11px] text-stone-500 sm:text-xs">
                         {activeConversation.type === "dm" ? <span className={cn("h-1.5 w-1.5 rounded-full", isOtherOnline ? "bg-emerald-500" : "bg-stone-300")} /> : null}
                         {activeConversation.type === "dm" ? (isOtherOnline ? "Online" : "Offline") : activeConversation.type === "group" ? `${activeConversation.members?.length ?? 0} members` : "Project workspace"}
                       </p>
@@ -778,10 +909,13 @@ export function InternalChatPage() {
                         value={messageQuery}
                         onChange={(event) => setMessageQuery(event.target.value)}
                         placeholder="Search messages"
-                        className="w-44 rounded-lg border border-border bg-stone-50 px-3 py-2 text-xs text-foreground outline-none focus:border-primary/40"
+                        className="w-28 rounded-lg border border-border bg-stone-50 px-2.5 py-2 text-xs text-foreground outline-none focus:border-primary/40 sm:w-44 sm:px-3"
                         aria-label="Search messages in conversation"
                       />
                     ) : null}
+                    <button type="button" onClick={enableChatNotifications} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-stone-500 hover:bg-stone-100 hover:text-primary" aria-label="Enable chat notifications and sound" title="Enable notifications and sound">
+                      <IconBell className="h-4 w-4" />
+                    </button>
                     <button type="button" onClick={() => { setMessageSearchOpen((open) => !open); if (messageSearchOpen) setMessageQuery(""); }} className={cn("grid h-9 w-9 place-items-center rounded-lg text-stone-500 hover:bg-stone-100 hover:text-primary", messageSearchOpen && "bg-primary-soft text-primary")} aria-label="Search in conversation" title="Search messages">
                       <IconSearch className="h-4 w-4" />
                     </button>
@@ -792,17 +926,40 @@ export function InternalChatPage() {
                 </header>
 
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div ref={threadRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain bg-[radial-gradient(circle_at_top,_rgba(255,86,86,0.04),_transparent_35%)] p-5">
+                  <div ref={threadRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain bg-[#f6f3ef] p-3 sm:space-y-4 sm:p-5">
                     {visibleMessages.length ? (
                       visibleMessages.map((message) => (
                         <div key={message.id} className={cn("flex chat-message-in", message.sender === "me" ? "justify-end" : "justify-start")}>
-                          <div className={cn("max-w-[75%] rounded-2xl px-4 py-3 shadow-sm transition", message.sender === "me" ? "bg-primary text-white" : "border border-border bg-stone-50 text-foreground", message.pending && "opacity-70", message.failed && "ring-2 ring-red-300")}>
-                            {activeConversation.type === "group" ? <p className={cn("mb-1 text-[11px] font-bold", message.sender === "me" ? "text-white/80" : "text-primary")}>{message.sender === "me" ? "You" : message.senderName || "Group member"}</p> : null}
-                            {message.attachment ? <AttachmentThumbnail attachment={message.attachment} dark={message.sender === "me"} onOpen={() => openAttachment(message.attachment as Attachment)} /> : null}
-                            <p className="text-sm leading-relaxed">{message.text}</p>
-                            <p className={cn("mt-1 flex items-center text-[10px] font-medium", message.sender === "me" ? "text-white/80" : "text-stone-400")}>
-                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : message.time}{message.sender === "me" && !message.pending && !message.failed ? (
-                                <span className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5", message.seen ? "bg-white/20 text-white" : "bg-black/10 text-white/75")}>
+                          <div className={cn("max-w-[88%] break-words rounded-2xl px-3 py-2.5 shadow-sm transition sm:max-w-[75%] sm:px-4 sm:py-3", message.sender === "me" ? "rounded-br-md bg-[#d9fdd3] text-slate-900" : "rounded-bl-md border border-slate-100 bg-white text-foreground", message.pending && "opacity-70", message.failed && "ring-2 ring-red-300")}>
+                            {activeConversation.type === "group" ? <p className={cn("mb-1 text-[11px] font-bold", message.sender === "me" ? "text-emerald-900/70" : "text-primary")}>{message.sender === "me" ? "You" : message.senderName || "Group member"}</p> : null}
+                            {message.deletedAt || message.isDeleted ? (
+                              <p className="whitespace-pre-wrap break-words text-sm italic leading-relaxed text-slate-500">This message has been deleted</p>
+                            ) : editingMessageId === message.id ? (
+                              <form onSubmit={(event) => { event.preventDefault(); void saveMessageEdit(message.id); }} className="min-w-[min(260px,70vw)] space-y-2">
+                                <textarea autoFocus rows={3} maxLength={4000} value={editingDraft} onChange={(event) => setEditingDraft(event.target.value)} className="w-full resize-y rounded-lg border border-emerald-900/15 bg-white/90 px-2.5 py-2 text-sm text-slate-900 outline-none focus:border-emerald-700/40" aria-label="Edit message" />
+                                <div className="flex justify-end gap-3 text-xs font-semibold">
+                                  <button type="button" onClick={() => { setEditingMessageId(null); setEditingDraft(""); }} className="text-slate-500 hover:text-slate-800">Cancel</button>
+                                  <button type="submit" disabled={!editingDraft.trim() || sendingMessageId === message.id} className="text-emerald-800 hover:text-emerald-950 disabled:opacity-50">{sendingMessageId === message.id ? "Saving..." : "Save"}</button>
+                                </div>
+                              </form>
+                            ) : (
+                              <>
+                                {(message.attachments ?? (message.attachment ? [message.attachment] : [])).map((attachment, index) => <AttachmentThumbnail key={attachment.id ?? `${attachment.path}-${index}`} attachment={attachment} dark={false} onOpen={() => openAttachment(attachment)} />)}
+                                <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{renderMessageText(message.text)}</p>
+                                {message.sender === "me" && !message.pending && !message.failed ? (
+                                  <div className="mt-1 flex items-center justify-end gap-3 text-[11px] font-semibold">
+                                    {message.deletedAt || message.isDeleted ? null : <>
+                                      <button type="button" onClick={() => { setEditingMessageId(message.id); setEditingDraft(message.text); }} disabled={!canModifyMessage(message) || sendingMessageId === message.id} title={canModifyMessage(message) ? "Edit this message" : "Edit is available for one minute after sending"} className="text-emerald-900/70 underline-offset-2 hover:text-emerald-950 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">Edit</button>
+                                      <button type="button" onClick={() => void deleteSentMessage(message)} disabled={!canModifyMessage(message) || sendingMessageId === message.id} title={canModifyMessage(message) ? "Delete this message" : "Delete is available for one minute after sending"} className="text-rose-700/80 underline-offset-2 hover:text-rose-800 hover:underline disabled:cursor-not-allowed disabled:text-slate-400 disabled:no-underline">Delete</button>
+                                      {!canModifyMessage(message) ? <span className="text-[10px] font-normal text-slate-400">1 min expired</span> : null}
+                                    </>}
+                                  </div>
+                                ) : null}
+                              </>
+                            )}
+                            <p className={cn("mt-1 flex flex-wrap items-center text-[10px] font-medium", message.sender === "me" ? "text-emerald-900/65" : "text-stone-400")}>
+                              {message.pending ? <><span className="mr-1.5 h-2.5 w-2.5 animate-spin rounded-full border border-white/40 border-t-white" />Sending...</> : message.failed ? "Failed to send" : <>{formatTime(message.time)}{message.editedAt && !message.deletedAt ? <span className="ml-1 italic">· edited</span> : null}</>}{message.sender === "me" && !message.pending && !message.failed && !message.deletedAt ? (
+                                <span className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5", message.seen ? "bg-white/70 text-emerald-900" : "bg-black/5 text-emerald-900/70")}>
                                   <span aria-hidden>{message.seen ? "✓✓" : "✓"}</span>
                                   {message.seen ? "Seen" : "Sent"}
                                 </span>
@@ -818,31 +975,33 @@ export function InternalChatPage() {
                     )}
                   </div>
 
-                  <form onSubmit={handleSendMessage} className="border-t border-border bg-white p-4">
+                  <form onSubmit={handleSendMessage} className="border-t border-border bg-white p-2.5 sm:p-4">
                     {typingUsers.length ? <p className="mb-2 px-1 text-xs font-medium text-primary animate-pulse">{typingUsers.join(" and ")} {typingUsers.length === 1 ? "is" : "are"} typing...</p> : null}
-                    {selectedFile ? (
-                      <div className="mb-2 flex items-center gap-3 rounded-xl border border-primary/20 bg-primary-soft px-3 py-2 text-xs text-foreground">
-                        {pastedImage ? <img src={pastedImage} alt="Pasted screenshot preview" className="h-12 w-12 rounded-lg object-cover" /> : <IconUpload className="h-4 w-4 text-primary" />}
-                        <span className="min-w-0 flex-1 truncate font-semibold">{selectedFile.name}</span>
-                        <button type="button" onClick={() => { setSelectedFile(null); setPastedImage(null); }} className="font-bold text-stone-400 hover:text-primary" aria-label="Remove attachment">×</button>
+                    {selectedAttachments.length ? (
+                      <div className="mb-3 flex flex-wrap gap-2">
+                        {selectedAttachments.map((item) => <div key={item.id} className="flex max-w-full items-center gap-2 rounded-xl border border-primary/20 bg-primary-soft px-2 py-1.5 text-xs text-foreground">
+                          {item.preview ? <img src={item.preview} alt="Attachment preview" className="h-9 w-9 rounded-lg object-cover" /> : <IconUpload className="ml-1 h-4 w-4 shrink-0 text-primary" />}
+                          <span className="max-w-52 truncate font-semibold">{item.file.name}</span>
+                          <button type="button" onClick={() => { if (item.preview) URL.revokeObjectURL(item.preview); setSelectedAttachments((current) => current.filter((attachment) => attachment.id !== item.id)); }} className="px-1 font-bold text-stone-400 hover:text-primary" aria-label={`Remove ${item.file.name}`}>×</button>
+                        </div>)}
                       </div>
                     ) : null}
-                    <div className="flex items-center gap-3 rounded-2xl border border-border bg-stone-50 px-3 py-2.5 shadow-inner">
-                      <input ref={fileInputRef} type="file" className="hidden" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip" onChange={(event) => { const file = event.target.files?.[0] ?? null; setSelectedFile(file); setPastedImage(file?.type.startsWith("image/") ? URL.createObjectURL(file) : null); event.currentTarget.value = ""; }} />
-                      <button type="button" onClick={() => fileInputRef.current?.click()} className="grid h-9 w-9 place-items-center rounded-lg bg-white text-stone-500 hover:text-primary" aria-label="Attach file">
+                    <div className="flex items-center gap-2 rounded-full border border-border bg-stone-50 px-2 py-2 shadow-inner sm:gap-3 sm:px-3 sm:py-2.5">
+                      <input ref={fileInputRef} type="file" multiple className="hidden" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); const remainingSlots = Math.max(0, 10 - selectedAttachments.length); const validFiles = files.filter((file) => file.size <= 10 * 1024 * 1024); if (validFiles.length < files.length) setError("Each attachment must be smaller than 10 MB."); if (validFiles.length > remainingSlots) setError("You can attach up to 10 files per message."); setSelectedAttachments((current) => [...current, ...validFiles.slice(0, remainingSlots).map(pendingAttachment)]); event.currentTarget.value = ""; }} />
+                      <button type="button" onClick={() => fileInputRef.current?.click()} className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-stone-500 hover:text-primary" aria-label="Attach file">
                         <IconUpload className="h-4 w-4" />
                       </button>
                       <input
                         type="text"
                         value={draft}
                         onChange={(event) => handleDraftChange(event.target.value)}
-                        placeholder={selectedFile ? "Add a caption..." : "Type a message or paste an image..."}
+                        placeholder={selectedAttachments.length ? "Add a caption..." : "Message"}
                         className="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-stone-400 outline-none"
                       />
                       <button
                         type="submit"
-                        disabled={(!draft.trim() && !selectedFile) || sending || uploading}
-                        className="grid h-9 w-9 place-items-center rounded-lg bg-primary text-white shadow-[0_10px_24px_rgba(228,90,90,0.22)] transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={(!draft.trim() && !selectedAttachments.length) || sending || uploading}
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-emerald-600 text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                         aria-label="Send message"
                       >
                         {sendingMessageId ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" /> : <IconArrowRight className="h-4 w-4" />}
@@ -866,7 +1025,7 @@ export function InternalChatPage() {
             <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
               <span className="min-w-0 truncate text-sm font-semibold text-foreground">{attachmentViewer.attachment.name}</span>
               <div className="flex items-center gap-2">
-                <a href={attachmentViewer.url} download={attachmentViewer.attachment.name} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white transition hover:bg-primary/90">Download</a>
+                <a href={attachmentViewer.downloadUrl} download={attachmentViewer.attachment.name} className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white transition hover:bg-primary/90">Download</a>
                 <button type="button" onClick={() => setAttachmentViewer(null)} className="rounded-lg px-3 py-2 text-xs font-semibold text-stone-500 hover:bg-stone-100" aria-label="Close attachment preview">Close</button>
               </div>
             </div>
@@ -999,7 +1158,7 @@ type ChatToast = {
   time: string;
 };
 
-export function InternalChatNotifications({ currentPath }: { currentPath?: string }) {
+export function InternalChatNotifications() {
   const { user } = useAuth();
   const [toast, setToast] = useState<ChatToast | null>(null);
   const [toastCount, setToastCount] = useState(0);
@@ -1069,7 +1228,7 @@ export function InternalChatNotifications({ currentPath }: { currentPath?: strin
       mounted = false;
       channels.forEach((channel) => supabase.removeChannel(channel));
     };
-  }, [currentPath, user?.id]);
+  }, [user?.id]);
 
   if (!toast) return null;
 

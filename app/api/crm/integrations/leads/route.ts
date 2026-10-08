@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase-server";
+import { createCrmActivityNotifications } from "@/lib/crm-notifications";
 
 type LeadPayload = {
   name?: unknown;
@@ -96,7 +98,7 @@ export async function OPTIONS() {
   return withCorsHeaders(new NextResponse(null, { status: 204 }));
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   const { identifier, secret } = getCredentials(request);
   if (!identifier || !secret) return errorResponse("Integration identifier and secret are required.", "Integration credentials are required.", 401);
 
@@ -104,13 +106,13 @@ export async function POST(request: Request) {
     const client = getSupabaseServiceRoleClient();
     const { data: integration, error: integrationError } = await client
       .from("crm_website_integrations")
-      .select("id, company_id, website_id, secret_hash, is_allowed, crm_websites!inner(status), crm_companies!inner(status)")
+      .select("id, company_id, website_id, secret_hash, is_allowed, crm_websites!inner(status), crm_companies!inner(name, status)")
       .eq("public_identifier", identifier)
       .maybeSingle();
     if (integrationError) throw integrationError;
     if (!integration || !integration.is_allowed || !validSecret(secret, integration.secret_hash)) return errorResponse("Invalid or inactive integration credentials.", "Invalid integration credentials.", 401);
     const website = integration.crm_websites as unknown as { status: string };
-    const company = integration.crm_companies as unknown as { status: string };
+    const company = integration.crm_companies as unknown as { name: string; status: string };
     if (website.status !== "active" || company.status !== "active") return errorResponse("The website integration is inactive.", "Inactive website integration.", 403);
 
     let body: unknown;
@@ -135,8 +137,15 @@ export async function POST(request: Request) {
     const { data, error } = await client.from("crm_leads").insert({ company_id: integration.company_id, website_id: integration.website_id, integration_id: integration.id, source: "website", ...lead }).select("id, company_id, website_id, name, email, status, created_at").single();
     if (error) throw error;
     await client.from("crm_website_integrations").update({ last_received_at: new Date().toISOString() }).eq("id", integration.id);
+    await createCrmActivityNotifications({
+      body: `on ${company.name}`,
+      notificationType: "crm_lead",
+      relatedRecordId: data.id,
+      relatedUrl: `/dashboard/crm/leads/${data.id}`,
+      companyId: integration.company_id,
+    });
     return withCorsHeaders(NextResponse.json({ ok: true, lead: data, duplicate: Boolean(duplicate), duplicate_of: duplicate?.id ?? null }, { status: 201 }));
   } catch (error) {
     return errorResponse(error, "Could not create CRM lead.");
   }
-}
+});

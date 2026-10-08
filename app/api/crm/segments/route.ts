@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const fields = ["first_name", "last_name", "email", "status", "source"] as const;
 const operators = ["equals", "not_equals", "contains", "starts_with"] as const;
@@ -22,12 +23,12 @@ function parse(body: Record<string, unknown>) {
 export async function GET(request: Request) {
   try { const { client, error: authError } = await getCrmAdminClient(); if (authError) return fail(authError, authError, 403); const companyId = Number(new URL(request.url).searchParams.get("company_id")); let query = client.from("crm_segments").select("*").order("updated_at", { ascending: false }); if (companyId) query = query.eq("company_id", companyId); const { data, error } = await query; if (error) throw error; return NextResponse.json({ segments: data ?? [] }); } catch (error) { return fail(error, "Could not load segments."); }
 }
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try { const { client, error: authError } = await getCrmAdminClient(); if (authError) return fail(authError, authError, 403); const values = parse(await request.json() as Record<string, unknown>); const { data, error } = await client.from("crm_segments").insert(values).select().single(); if (error) throw error; return NextResponse.json({ segment: data }, { status: 201 }); } catch (error) { return fail(error, "Could not create segment.", 400); }
-}
-export async function PATCH(request: Request) {
+});
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try { const { client, error: authError } = await getCrmAdminClient(); if (authError) return fail(authError, authError, 403); const body = await request.json() as Record<string, unknown>; const id = Number(body.id); if (!Number.isInteger(id) || id <= 0) return fail("A valid segment is required.", "A valid segment is required.", 400); const values = parse(body); const { data, error } = await client.from("crm_segments").update({ ...values, updated_at: new Date().toISOString() }).eq("id", id).select().single(); if (error) throw error; return NextResponse.json({ segment: data }); } catch (error) { return fail(error, "Could not update segment.", 400); }
-}
-export async function DELETE(request: Request) {
+});
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try { const { client, error: authError } = await getCrmAdminClient(); if (authError) return fail(authError, authError, 403); const id = Number(new URL(request.url).searchParams.get("id")); if (!Number.isInteger(id) || id <= 0) return fail("A valid segment is required.", "A valid segment is required.", 400); const { error } = await client.from("crm_segments").delete().eq("id", id); if (error) throw error; return NextResponse.json({ ok: true }); } catch (error) { return fail(error, "Could not delete segment."); }
-}
+});

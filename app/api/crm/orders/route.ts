@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCrmAdminContext } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 const orderFields = "id, public_order_id, lead_id, expert_id, service_name, service_charges, service_deadline, is_writing, word_count, subject_area, status, created_by, completed_by, created_at, updated_at, completed_at, crm_leads(id, name, email, phone, company_id, deleted_at, crm_companies(name), crm_websites(name, website_url)), crm_experts(id, name, email, service_area, status)";
 
@@ -55,7 +56,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -86,4 +87,4 @@ export async function POST(request: Request) {
   } catch (error) {
     return fail(error, "Could not create order.");
   }
-}
+});

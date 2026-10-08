@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { hashExpertPassword } from "@/lib/crm-expert-crypto";
 import { getCrmAdminContext } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string; code?: string };
@@ -9,7 +10,7 @@ function fail(error: unknown, fallback: string, status = 500) {
 
 const fields = "id, name, email, service_area, status, created_at, updated_at, deleted_at";
 
-export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -31,9 +32,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   } catch (error) {
     return fail(error, "Could not update expert.");
   }
-}
+});
 
-export async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
+export const DELETE = withCrmApiLogging(async function DELETE(_request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -45,4 +46,4 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   } catch (error) {
     return fail(error, "Could not deactivate expert.");
   }
-}
+});

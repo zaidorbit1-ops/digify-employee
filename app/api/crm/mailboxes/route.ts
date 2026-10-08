@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCrmAdminClient } from "@/lib/crm-admin";
-import { getHostingerMailbox, getHostingerWebhook, regenerateHostingerWebhookSecret, registerHostingerWebhook, testHostingerWebhook } from "@/lib/hostinger-mail";
+import { activateHostingerWebhook, getHostingerMailbox, getHostingerWebhook, regenerateHostingerWebhookSecret, registerHostingerWebhook, testHostingerWebhook } from "@/lib/hostinger-mail";
 import { getHostingerApiToken, getHostingerEncryptionKey, hostingerMailboxSuffix } from "@/lib/hostinger-env";
 import { decryptHostingerWebhookSecret, encryptHostingerWebhookSecret } from "@/lib/hostinger-secrets";
+import { withCrmApiLogging, writeCrmLog } from "@/lib/crm-logs";
 
 const statuses = ["pending", "connected", "error", "disconnected"];
 
@@ -44,10 +45,22 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const client = await authorizedClient();
     const body = await request.json() as Record<string, unknown>;
+    if (text(body.action) === "resume_webhook") {
+      const id = Number(body.id);
+      const { data: mailbox, error } = await client.from("crm_mailboxes").select("id, company_id, email_address, webhook_id").eq("id", id).maybeSingle();
+      if (error) throw error;
+      if (!mailbox) return errorResponse(null, "Mailbox not found.", 404);
+      if (!mailbox.webhook_id) return errorResponse(null, "No Hostinger webhook is registered for this mailbox.", 400);
+      const activated = await activateHostingerWebhook(mailbox.email_address, mailbox.webhook_id);
+      const { error: updateError } = await client.from("crm_mailboxes").update({ status: "connected", hostinger_resource_id: activated.resourceId, last_error: null, updated_at: new Date().toISOString() }).eq("id", id);
+      if (updateError) throw updateError;
+      await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webhook.resumed", message: "Paused Hostinger webhook was reactivated.", route: "/api/crm/mailboxes", companyId: mailbox.company_id, metadata: { mailbox_id: id, webhook_status: activated.webhook.status } });
+      return NextResponse.json({ ok: true, webhook_status: activated.webhook.status });
+    }
     if (text(body.action) === "test_webhook") {
       const requestId = randomUUID();
       const id = Number(body.id);
@@ -79,6 +92,7 @@ export async function POST(request: Request) {
           callback_http_status: result.callback_http_status,
           callback_error: result.error,
         });
+        await writeCrmLog({ level: delivered ? "success" : "error", source: "hostinger-webhook", event: "webhook.delivery_test", message: delivered ? "Hostinger webhook test callback reached the CRM." : result.error || `Webhook test callback returned HTTP ${result.callback_http_status ?? "unknown"}.`, route: "/api/crm/mailboxes", requestId, companyId: undefined, metadata: { mailbox_id: id, webhook_status: result.webhook_status, callback_http_status: result.callback_http_status } });
         return NextResponse.json(result, { status: delivered ? 200 : 502 });
       } catch (testError) {
         const providerError = testError as { message?: string; code?: string; response?: { status?: number; data?: unknown } };
@@ -96,6 +110,7 @@ export async function POST(request: Request) {
           provider_response: providerResponse,
           error: reason,
         });
+        await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webhook.delivery_test_failed", message: reason, route: "/api/crm/mailboxes", requestId, metadata: { mailbox_id: id, provider_http_status: providerError.response?.status ?? null } });
         return NextResponse.json({ ok: false, request_id: requestId, mailbox: mailbox.email_address, error: reason, provider_http_status: providerError.response?.status ?? null, provider_response: providerResponse }, { status: 502 });
       }
     }
@@ -188,9 +203,11 @@ export async function POST(request: Request) {
       if (failed.length) {
         const reason = failed.map((check) => `${check.name}: ${check.reason}`).join(" | ");
         await client.from("crm_mailboxes").update({ status: "error", last_error: reason, updated_at: new Date().toISOString() }).eq("id", id);
+        await writeCrmLog({ level: "error", source: "hostinger-webhook", event: "webhook.health_check_failed", message: reason, route: "/api/crm/mailboxes", metadata: { mailbox_id: id, failed_checks: failed.map((check) => check.name), webhook_status: checks.find((check) => check.name === "Webhook status")?.reason ?? null } });
         return NextResponse.json({ ok: false, error: "Mailbox health check failed.", checks }, { status: 400 });
       }
       await client.from("crm_mailboxes").update({ status: "connected", hostinger_resource_id: resourceId, webhook_id: registration?.webhookId ?? mailbox.webhook_id, encrypted_webhook_secret: registration ? encryptHostingerWebhookSecret(registration.secret, mailbox.email_address) : undefined, last_error: null, updated_at: new Date().toISOString() }).eq("id", id);
+      await writeCrmLog({ level: "success", source: "hostinger-webhook", event: "webhook.health_check_passed", message: "Hostinger mailbox health checks passed.", route: "/api/crm/mailboxes", metadata: { mailbox_id: id, checks_passed: checks.length } });
       return NextResponse.json({ ok: true, message: "All Hostinger mailbox checks passed.", checks });
     }
     const companyId = Number(body.company_id);
@@ -217,9 +234,9 @@ export async function POST(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not create Hostinger mailbox.", (error as { status?: number }) .status ?? 400);
   }
-}
+});
 
-export async function PATCH(request: Request) {
+export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
   try {
     const client = await authorizedClient();
     const body = await request.json() as Record<string, unknown>;
@@ -235,9 +252,9 @@ export async function PATCH(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not update Hostinger mailbox.", (error as { status?: number }).status ?? 400);
   }
-}
+});
 
-export async function DELETE(request: Request) {
+export const DELETE = withCrmApiLogging(async function DELETE(request: Request) {
   try {
     const client = await authorizedClient();
     const id = Number(new URL(request.url).searchParams.get("id"));
@@ -248,4 +265,4 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return errorResponse(error, "Could not delete Hostinger mailbox.");
   }
-}
+});

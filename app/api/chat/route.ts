@@ -11,10 +11,10 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 function toTime(value: string | null | undefined) {
-  if (!value) return "Now";
+  if (!value) return new Date().toISOString();
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Now";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (Number.isNaN(date.getTime())) return new Date().toISOString();
+  return date.toISOString();
 }
 
 function computeUnreadCount(
@@ -183,7 +183,7 @@ export async function GET(request: Request) {
 
       const { data: messages, error: messagesError } = await client
         .from("chat_messages")
-        .select("id, conversation_id, body, created_at, sender_user_id, sender_employee_id")
+        .select("id, conversation_id, body, created_at, sender_user_id, sender_employee_id, edited_at, deleted_at")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
 
@@ -198,21 +198,23 @@ export async function GET(request: Request) {
         : { data: [], error: null };
       if (attachmentsError && !isMissingAttachmentsTable(attachmentsError)) throw attachmentsError;
 
-      const attachmentMap = new Map<string, {
+      const attachmentMap = new Map<string, Array<{
         id: string;
         name: string;
         path: string;
         type: string;
         size: number;
-      }>();
+      }>>();
       for (const attachment of attachments ?? []) {
-        attachmentMap.set(String(attachment.message_id), {
+        const messageAttachments = attachmentMap.get(String(attachment.message_id)) ?? [];
+        messageAttachments.push({
           id: String(attachment.id),
           name: attachment.file_name,
           path: attachment.file_path,
           type: attachment.file_type,
           size: Number(attachment.file_size),
         });
+        attachmentMap.set(String(attachment.message_id), messageAttachments);
       }
 
       let { data: readMembers, error: readMembersError } = await client
@@ -260,15 +262,21 @@ export async function GET(request: Request) {
         .eq("user_id", user.id);
       if (readUpdate.error && !isMissingReadColumn(readUpdate.error)) throw readUpdate.error;
 
+      const serverNow = Date.now();
       return NextResponse.json({
+        serverNow,
         messages: (messages ?? []).map((message) => ({
           id: message.id,
           sender: message.sender_user_id === user.id ? "me" : "them",
-          text: message.body,
+          text: message.deleted_at ? "This message has been deleted" : message.body,
           time: toTime(message.created_at),
+          editableForMs: Math.max(0, Math.min(60_000, 60_000 - Math.max(0, serverNow - new Date(message.created_at).getTime()))),
           senderName: userNames.get(message.sender_user_id) ?? "Employee",
           seen: message.sender_user_id === user.id && otherReadTimes.some((readAt) => readAt >= new Date(message.created_at).getTime()),
-          attachment: attachmentMap.get(String(message.id)) ?? null,
+          editedAt: message.edited_at ? toTime(message.edited_at) : null,
+          deletedAt: message.deleted_at ? toTime(message.deleted_at) : null,
+          attachments: message.deleted_at ? [] : attachmentMap.get(String(message.id)) ?? [],
+          attachment: message.deleted_at ? null : attachmentMap.get(String(message.id))?.[0] ?? null,
         })),
       });
     }
@@ -581,19 +589,74 @@ export async function POST(request: Request) {
       return NextResponse.json({ added: memberUserIds });
     }
 
+    if (action === "edit_message" || action === "delete_message") {
+      const messageId = String(body?.message_id ?? "").trim();
+      if (!messageId) return NextResponse.json({ error: "A valid message is required." }, { status: 400 });
+
+      const { data: message, error: messageError } = await client
+        .from("chat_messages")
+        .select("id, conversation_id, sender_user_id, body, created_at, deleted_at")
+        .eq("id", messageId)
+        .maybeSingle();
+      if (messageError) throw messageError;
+      if (!message) return NextResponse.json({ error: "Message not found." }, { status: 404 });
+
+      const { data: membership, error: membershipError } = await client
+        .from("conversation_members")
+        .select("conversation_id")
+        .eq("conversation_id", message.conversation_id)
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (membershipError) throw membershipError;
+      if (!membership || message.sender_user_id !== user.id) {
+        return NextResponse.json({ error: "You can only change your own messages." }, { status: 403 });
+      }
+      if (message.deleted_at) return NextResponse.json({ error: "This message has already been deleted." }, { status: 409 });
+
+      const ageMs = Date.now() - new Date(message.created_at).getTime();
+      if (ageMs < 0 || ageMs > 60_000) {
+        return NextResponse.json({ error: "Messages can only be changed within one minute of sending." }, { status: 403 });
+      }
+
+      const changedAt = new Date().toISOString();
+      const values = action === "edit_message"
+        ? { body: String(body?.body ?? "").trim(), edited_at: changedAt, updated_at: changedAt }
+        : { body: "This message has been deleted", deleted_at: changedAt, updated_at: changedAt };
+      if (action === "edit_message" && (!values.body || values.body.length > 4000)) {
+        return NextResponse.json({ error: "Edited messages must contain between 1 and 4000 characters." }, { status: 400 });
+      }
+
+      const { data: updatedMessage, error: updateError } = await client
+        .from("chat_messages")
+        .update(values)
+        .eq("id", messageId)
+        .select("id, body, edited_at, deleted_at")
+        .single();
+      if (updateError) throw updateError;
+      return NextResponse.json({
+        message: {
+          id: updatedMessage.id,
+          text: updatedMessage.body,
+          editedAt: updatedMessage.edited_at ? toTime(updatedMessage.edited_at) : null,
+          deletedAt: updatedMessage.deleted_at ? toTime(updatedMessage.deleted_at) : null,
+        },
+      });
+    }
+
     const conversationId = String(body.conversation_id ?? "").trim();
     const text = String(body.body ?? "").trim();
-    const requestedAttachment = body.attachment && typeof body.attachment === "object"
-      ? body.attachment as { name?: string; path?: string; type?: string; size?: number }
-      : null;
+    const requestedAttachments = Array.isArray(body.attachments)
+      ? body.attachments.filter((attachment: unknown) => attachment && typeof attachment === "object") as Array<{ name?: string; path?: string; type?: string; size?: number }>
+      : body.attachment && typeof body.attachment === "object"
+        ? [body.attachment as { name?: string; path?: string; type?: string; size?: number }]
+        : [];
     if (!conversationId) {
       return NextResponse.json({ error: "A conversation is required." }, { status: 400 });
     }
-    if ((!text && !requestedAttachment) || text.length > 4000) {
+    if ((!text && !requestedAttachments.length) || text.length > 4000) {
       return NextResponse.json({ error: "Your message must be between 1 and 4000 characters." }, { status: 400 });
     }
-    const attachmentSize = requestedAttachment?.size;
-    if (requestedAttachment && (!requestedAttachment.name || !requestedAttachment.path || !requestedAttachment.type || !Number.isFinite(attachmentSize) || (attachmentSize as number) <= 0 || (attachmentSize as number) > 10 * 1024 * 1024)) {
+    if (requestedAttachments.length > 10 || requestedAttachments.some((attachment) => !attachment.name || !attachment.path || !attachment.type || !Number.isFinite(attachment.size) || (attachment.size as number) <= 0 || (attachment.size as number) > 10 * 1024 * 1024)) {
       return NextResponse.json({ error: "Attachments must be valid files up to 10 MB." }, { status: 400 });
     }
 
@@ -617,36 +680,47 @@ export async function POST(request: Request) {
         sender_employee_id: employeeId,
         body: text || "Attachment",
       })
-      .select("id, conversation_id, body, created_at, sender_employee_id")
+      .select("id, conversation_id, body, created_at, sender_employee_id, edited_at, deleted_at")
       .single();
 
     if (messageError) throw messageError;
 
-    if (requestedAttachment) {
-      const { error: attachmentError } = await client.from("chat_attachments").insert({
+    if (requestedAttachments.length) {
+      const { error: attachmentError } = await client.from("chat_attachments").insert(requestedAttachments.map((attachment) => ({
         message_id: message.id,
         conversation_id: conversationId,
         uploaded_by: user.id,
-        file_name: requestedAttachment.name,
-        file_path: requestedAttachment.path,
-        file_type: requestedAttachment.type,
-        file_size: requestedAttachment.size,
-      });
+        file_name: attachment.name,
+        file_path: attachment.path,
+        file_type: attachment.type,
+        file_size: attachment.size,
+      })));
       if (attachmentError) throw attachmentError;
     }
 
+    const serverNow = Date.now();
     return NextResponse.json({
+      serverNow,
       message: {
         id: message.id,
         sender: "me",
         text: message.body,
         time: toTime(message.created_at),
+        editableForMs: Math.max(0, Math.min(60_000, 60_000 - Math.max(0, serverNow - new Date(message.created_at).getTime()))),
+        editedAt: message.edited_at ? toTime(message.edited_at) : null,
+        deletedAt: message.deleted_at ? toTime(message.deleted_at) : null,
         seen: false,
-        attachment: requestedAttachment ? {
-          name: requestedAttachment.name,
-          path: requestedAttachment.path,
-          type: requestedAttachment.type,
-          size: requestedAttachment.size,
+        attachments: requestedAttachments.map((attachment) => ({
+          name: attachment.name!,
+          path: attachment.path!,
+          type: attachment.type!,
+          size: attachment.size!,
+        })),
+        attachment: requestedAttachments[0] ? {
+          name: requestedAttachments[0].name!,
+          path: requestedAttachments[0].path!,
+          type: requestedAttachments[0].type!,
+          size: requestedAttachments[0].size!,
         } : null,
       },
     }, { status: 201 });

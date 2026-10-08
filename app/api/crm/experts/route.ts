@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { hashExpertPassword } from "@/lib/crm-expert-crypto";
 import { getCrmAdminContext } from "@/lib/crm-admin";
+import { withCrmApiLogging } from "@/lib/crm-logs";
 
 function fail(error: unknown, fallback: string, status = 500) {
   const value = error as { message?: string; code?: string };
@@ -30,7 +31,7 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = withCrmApiLogging(async function POST(request: Request) {
   try {
     const { client, user, error: authError } = await getCrmAdminContext();
     if (authError || !user) return fail(authError, authError ?? "Superadmin access required.", 403);
@@ -47,4 +48,4 @@ export async function POST(request: Request) {
   } catch (error) {
     return fail(error, "Could not create expert.");
   }
-}
+});

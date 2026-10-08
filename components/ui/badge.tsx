@@ -4,13 +4,15 @@ import type { ReactNode } from "react";
 type BadgeProps = {
   children: ReactNode;
   tone?: "neutral" | "success" | "warning" | "danger" | "primary" | "holiday";
+  className?: string;
 };
 
-export function Badge({ children, tone = "neutral" }: BadgeProps) {
+export function Badge({ children, tone = "neutral", className }: BadgeProps) {
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold capitalize",
+        className,
         tone === "neutral" && "bg-stone-100 text-stone-600",
         tone === "success" && "bg-emerald-50 text-emerald-700",
         tone === "warning" && "bg-amber-50 text-amber-700",

@@ -19,6 +19,7 @@ import {
   IconSettings,
   IconFile,
   IconRefresh,
+  IconPin,
 } from "@/components/icons";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/components/auth/auth-provider";
@@ -28,7 +29,7 @@ const navItems = [
   { label: "Devices", href: "/dashboard/devices", icon: IconDevices },
   { label: "Employees", href: "/dashboard/employees", icon: IconEmployees },
   { label: "Attendance", href: "/dashboard/attendance", icon: IconAttendance },
-  { label: "Notes & Reminders", href: "/dashboard/notes", icon: IconBell },
+  { label: "Tasks & Projects", href: "/dashboard/tasks", icon: IconBell },
   { label: "Internal Chat", href: "/dashboard/internal-chat", icon: IconBell },
   { label: "Leave", href: "/dashboard/leave", icon: IconCalendar },
   { label: "Holidays", href: "/dashboard/holidays", icon: IconCalendar },
@@ -51,12 +52,13 @@ const crmNavItems = [
   { label: "Experts", href: "/dashboard/crm/experts", icon: IconEmployees },
   { label: "Orders", href: "/dashboard/crm/orders", icon: IconWallet },
   { label: "Contacts", href: "/dashboard/crm/contacts", icon: IconEmployees },
-  { label: "Segments", href: "/dashboard/crm/segments", icon: IconLists },
+  { label: "Retargeting", href: "/dashboard/crm/retargeting", icon: IconRefresh },
   { label: "Webmail", href: "/dashboard/crm/webmail", icon: IconBell },
   { label: "Email Templates", href: "/dashboard/crm/templates", icon: IconFile },
   { label: "Campaigns", href: "/dashboard/crm/campaigns", icon: IconWallet },
   { label: "Automations", href: "/dashboard/crm/automations", icon: IconRefresh },
   { label: "Analytics", href: "/dashboard/crm/analytics", icon: IconOverview },
+  { label: "System logs", href: "/dashboard/crm/logs", icon: IconOverview },
   { label: "CRM Settings", href: "/dashboard/crm/settings", icon: IconSettings },
 ];
 
@@ -71,6 +73,8 @@ export function Sidebar({
   const { profile, user, signOut } = useAuth();
   const [grantedModules, setGrantedModules] = useState<string[]>([]);
   const [pendingNotes, setPendingNotes] = useState(0);
+  const [pinnedHrefs, setPinnedHrefs] = useState<string[]>([]);
+  const [pinsLoaded, setPinsLoaded] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const sidebarScrollRef = useRef<HTMLDivElement>(null);
@@ -115,25 +119,43 @@ export function Sidebar({
   }, [profile?.role]);
 
   useEffect(() => {
-    if (!user) return;
+    const storageKey = user?.id ? `sidebar-pinned-links:${user.id}` : null;
+    if (!storageKey) {
+      setPinnedHrefs([]);
+      setPinsLoaded(true);
+      return;
+    }
+    setPinsLoaded(false);
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
+      setPinnedHrefs(Array.isArray(stored) ? stored.filter((href): href is string => typeof href === "string") : []);
+    } catch {
+      setPinnedHrefs([]);
+    } finally {
+      setPinsLoaded(true);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
     let mounted = true;
-    async function loadPendingNotes() {
+    async function loadPendingTasks() {
       try {
-        const response = await fetch("/api/notes", { cache: "no-store" });
+        const response = await fetch("/api/tasks", { cache: "no-store" });
         if (!response.ok) return;
         const result = await response.json();
-        if (mounted) setPendingNotes((result.notes ?? []).filter((note: { completed_at?: string | null }) => !note.completed_at).length);
+        if (mounted) setPendingNotes((result.tasks ?? []).filter((task: { status?: string }) => task.status !== "done").length);
       } catch {
         if (mounted) setPendingNotes(0);
       }
     }
-    loadPendingNotes();
-    const timer = window.setInterval(loadPendingNotes, 30000);
+    loadPendingTasks();
+    const timer = window.setInterval(loadPendingTasks, 30000);
     return () => {
       mounted = false;
       window.clearInterval(timer);
     };
-  }, [user, pathname]);
+  }, [user?.id]);
 
   useEffect(() => {
     function closeWorkspaceMenu(event: MouseEvent) {
@@ -163,6 +185,7 @@ export function Sidebar({
     "/dashboard/crm/orders": "crm_orders",
     "/dashboard/crm/contacts": "crm_contacts",
     "/dashboard/crm/segments": "crm_segments",
+    "/dashboard/crm/retargeting": "crm_campaigns",
     "/dashboard/crm/webmail": "crm_webmail",
     "/dashboard/crm/templates": "crm_email_templates",
     "/dashboard/crm/campaigns": "crm_campaigns",
@@ -178,8 +201,8 @@ export function Sidebar({
       icon: IconAttendance,
     },
     {
-      label: "Notes & Reminders",
-      href: "/dashboard/notes",
+      label: "Tasks & Projects",
+      href: "/dashboard/tasks",
       icon: IconBell,
     },
     {
@@ -228,6 +251,22 @@ export function Sidebar({
         ? employeeCrmItems
         : [...employeeDefaultItems, ...employeeGrantedItems]
       : navItems;
+  const orderedNavItems = pinsLoaded
+    ? [...visibleNavItems].sort((first, second) => Number(pinnedHrefs.includes(second.href)) - Number(pinnedHrefs.includes(first.href)))
+    : visibleNavItems;
+
+  function togglePinnedPage(href: string) {
+    if (!user?.id) return;
+    setPinnedHrefs((current) => {
+      const next = current.includes(href) ? current.filter((item) => item !== href) : [href, ...current];
+      try {
+        window.localStorage.setItem(`sidebar-pinned-links:${user.id}`, JSON.stringify(next));
+      } catch {
+        // Keep the current session usable if browser storage is unavailable.
+      }
+      return next;
+    });
+  }
 
   return (
     <>
@@ -242,7 +281,8 @@ export function Sidebar({
       <aside
         ref={sidebarRef}
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex h-screen w-[272px] flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-50 flex h-screen flex-col border-r border-border bg-white transition-transform duration-300 ease-out lg:static lg:translate-x-0",
+          isCrmWorkspace ? "w-[min(272px,calc(100vw-1rem))]" : "w-[272px]",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -294,45 +334,62 @@ export function Sidebar({
             </div>
           ) : null}
           <nav className="space-y-1">
-            {visibleNavItems.map((item) => {
+            {orderedNavItems.map((item) => {
               const active = item.href === "/dashboard"
                 ? pathname === "/dashboard"
                 : item.href === "/dashboard/crm"
                   ? pathname === "/dashboard/crm"
                   : pathname.startsWith(item.href);
+              const isPinned = pinnedHrefs.includes(item.href);
               const Icon = item.icon;
 
               return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onClose}
-                  className={cn(
-                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-200",
-                    active
-                      ? "bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(228,90,90,0.12)]"
-                      : "text-stone-500 hover:bg-[#fbf6f5] hover:text-foreground",
-                  )}
-                >
-                  <span
+                <div key={item.href} className="group flex items-center gap-1">
+                  <Link
+                    href={item.href}
+                    onClick={onClose}
                     className={cn(
-                      "grid h-9 w-9 place-items-center rounded-xl",
+                      "flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition duration-200",
                       active
-                        ? "bg-white text-primary shadow-sm"
-                        : "bg-stone-50 text-stone-400",
+                        ? "bg-primary-soft text-primary shadow-[inset_0_0_0_1px_rgba(228,90,90,0.12)]"
+                        : "text-stone-500 hover:bg-[#fbf6f5] hover:text-foreground",
                     )}
                   >
-                    <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
-                  </span>
-                  <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
-                    <span className="truncate">{item.label}</span>
-                    {item.href === "/dashboard/notes" && pendingNotes > 0 ? (
-                      <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
-                        {pendingNotes > 99 ? "99+" : pendingNotes}
-                      </span>
-                    ) : null}
-                  </span>
-                </Link>
+                    <span
+                      className={cn(
+                        "grid h-9 w-9 shrink-0 place-items-center rounded-xl",
+                        active
+                          ? "bg-white text-primary shadow-sm"
+                          : "bg-stone-50 text-stone-400",
+                      )}
+                    >
+                      <Icon className="h-4.5 w-4.5 h-[18px] w-[18px]" />
+                    </span>
+                    <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                      <span className="truncate">{item.label}</span>
+                      {item.href === "/dashboard/tasks" && pendingNotes > 0 ? (
+                        <span className="grid min-w-5 place-items-center rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                          {pendingNotes > 99 ? "99+" : pendingNotes}
+                        </span>
+                      ) : null}
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    aria-label={isPinned ? `Unpin ${item.label}` : `Pin ${item.label} to top`}
+                    aria-pressed={isPinned}
+                    title={isPinned ? "Unpin page" : "Pin page to top"}
+                    onClick={() => togglePinnedPage(item.href)}
+                    className={cn(
+                      "grid h-9 w-8 shrink-0 place-items-center rounded-lg transition",
+                      isPinned
+                        ? "bg-primary-soft text-primary"
+                        : "text-stone-300 opacity-0 hover:bg-primary-soft hover:text-primary group-hover:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <IconPin className={cn("h-4 w-4", isPinned && "-rotate-45")} />
+                  </button>
+                </div>
               );
             })}
           </nav>

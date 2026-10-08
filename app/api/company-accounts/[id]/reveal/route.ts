@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { decryptCompanyPassword } from "@/lib/company-accounts-crypto";
+import { canAccessCompany } from "@/lib/company-access";
 import { supabase } from "@/lib/supabase";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
@@ -9,8 +10,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     const id = Number(rawId);
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid account is required." }, { status: 400 });
 
-    const { data, error } = await supabase.from("company_accounts").select("encrypted_password").eq("id", id).single();
+    const { data, error } = await supabase.from("company_accounts").select("company_id, encrypted_password").eq("id", id).single();
     if (error) throw error;
+    if (!(await canAccessCompany(data.company_id))) return NextResponse.json({ error: "You do not have access to this company account." }, { status: 403 });
     return NextResponse.json({ password: decryptCompanyPassword(String(data.encrypted_password)) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not reveal password." }, { status: 500 });
