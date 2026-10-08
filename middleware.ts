@@ -12,6 +12,13 @@ function trackingHost(value: string | undefined) {
 }
 
 export async function middleware(request: NextRequest) {
+  const isPublicCampaignTracking =
+    request.method === "GET" &&
+    /^\/api\/email\/track\/(?:open|click)\/[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(
+      request.nextUrl.pathname,
+    );
+  if (isPublicCampaignTracking) return NextResponse.next();
+
   const configuredTrackingHosts = [
     "track.classtakerspro.com",
     "track.digifyitsolution.com",

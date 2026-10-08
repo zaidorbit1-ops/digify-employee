@@ -41,6 +41,40 @@ function safeLogMessage(value: string) {
   return value.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[email]").replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").slice(0, 500);
 }
 
+function describeDeliveryError(error: unknown): string {
+  if (error instanceof Error) return error.message || error.name || "Campaign delivery failed.";
+  if (typeof error === "string") return error;
+  if (!error || typeof error !== "object") return `Campaign delivery failed (${String(error)}).`;
+
+  const value = error as Record<string, unknown>;
+  const fields = ["message", "error", "detail", "details", "hint", "code", "status", "statusCode", "statusText", "reason"];
+  const parts = fields.flatMap((key) => {
+    const field = value[key];
+    if (typeof field === "string" && field.trim()) return [`${key}: ${field.trim()}`];
+    if (typeof field === "number") return [`${key}: ${field}`];
+    return [];
+  });
+
+  const response = value.response;
+  if (response && typeof response === "object") {
+    const responseValue = response as Record<string, unknown>;
+    for (const key of ["status", "statusCode", "statusText", "data", "body"]) {
+      const field = responseValue[key];
+      if (typeof field === "string" && field.trim()) parts.push(`response ${key}: ${field.trim()}`);
+      else if (typeof field === "number") parts.push(`response ${key}: ${field}`);
+      else if (field && typeof field === "object" && !Array.isArray(field)) {
+        const data = field as Record<string, unknown>;
+        for (const detailKey of ["message", "error", "detail", "details", "code"]) {
+          const detail = data[detailKey];
+          if (typeof detail === "string" && detail.trim()) parts.push(`response ${detailKey}: ${detail.trim()}`);
+        }
+      }
+    }
+  }
+
+  return parts.length ? parts.join("; ") : `Campaign delivery failed (unrecognized ${value.constructor?.name ?? "error"} object).`;
+}
+
 async function writeSystemLog(db: ReturnType<typeof createClient>, input: { level: "success" | "info" | "warning" | "error"; event: string; message: string; companyId?: number; requestId?: string; metadata?: Record<string, unknown> }) {
   try {
     const { error } = await db.rpc("insert_crm_system_log", {
@@ -280,6 +314,7 @@ async function prepareCampaignTracking(db: ReturnType<typeof createClient>, mess
       campaign_contact_id: message.campaign_contact_id,
       campaign_message_id: message.id,
       event_type: "opened",
+      target_url: "",
     });
   }
   for (const target of links.keys()) {
@@ -491,7 +526,7 @@ async function failClaimed(db: ReturnType<typeof createClient>, message: Record<
   const permanent = attempts >= maxAttempts;
   const now = new Date();
   const delaySeconds = Math.min(3600, 60 * (2 ** Math.max(0, attempts - 1)));
-  const reason = error instanceof Error ? error.message : "Campaign delivery failed.";
+  const reason = safeLogMessage(describeDeliveryError(error));
   const [{ error: messageError }, { error: contactError }] = await Promise.all([
     db.from("crm_campaign_messages").update({ status: permanent ? "failed" : "queued", failed_at: permanent ? now.toISOString() : null, error_message: reason.slice(0, 2000), next_attempt_at: permanent ? null : new Date(now.getTime() + delaySeconds * 1000).toISOString(), updated_at: now.toISOString() }).eq("id", message.id),
     db.from("crm_campaign_contacts").update({ status: permanent ? "failed" : "queued" }).eq("id", message.campaign_contact_id),

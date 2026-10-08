@@ -11,14 +11,16 @@ function serviceClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function requestDetails(request: Request) {
+function requestDetails(request: Request, expectedType: "opened" | "clicked") {
   // Image proxies and privacy relays can fetch pixels for a recipient; no filter proves human intent.
   const userAgent = (request.headers.get("user-agent") ?? "").slice(0, 1000);
   const purpose = request.headers.get("purpose") ?? request.headers.get("sec-purpose") ?? "";
   const prefetch = /prefetch|prerender/i.test(purpose)
     || request.headers.get("sec-fetch-mode") === "navigate" && request.headers.get("sec-fetch-dest") === "empty"
     && /preview|scanner|bot/i.test(userAgent);
-  const automatedAgent = automatedAgentPattern.test(userAgent);
+  const automatedAgent =
+    automatedAgentPattern.test(userAgent) &&
+    !(expectedType === "opened" && /googleimageproxy/i.test(userAgent));
   const methodIsAutomated = request.method !== "GET";
   const filterReason = automatedAgent
     ? "known_automated_user_agent"
@@ -67,7 +69,7 @@ export async function recordCampaignTrackingRequest(
   request: Request,
 ) {
   if (!/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(token)) return null;
-  const details = requestDetails(request);
+  const details = requestDetails(request, expectedType);
   const { data, error } = await serviceClient().rpc("record_crm_campaign_tracking_event", {
     p_token: token,
     p_event_id: randomUUID(),
@@ -89,7 +91,7 @@ export async function recordLegacyCampaignTrackingRequest(
   request: Request,
   targetUrl?: string,
 ) {
-  const details = requestDetails(request);
+  const details = requestDetails(request, eventType);
   const client = serviceClient();
   const { data: message, error: messageError } = await client
     .from("crm_campaign_messages")
