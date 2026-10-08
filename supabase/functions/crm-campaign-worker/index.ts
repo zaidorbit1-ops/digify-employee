@@ -121,6 +121,61 @@ async function prepareDueCampaigns(db: ReturnType<typeof createClient>) {
   for (const campaign of campaigns) await prepareCampaign(db, campaign);
 }
 
+function mailboxEnvSuffix(address: string) {
+  const normalized = address.trim().toLowerCase();
+  const domain = normalized.split("@")[1];
+  const suffix = (domain?.split(".")[0] ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+  if (!suffix) throw new Error("A valid mailbox address is required to resolve the brand-specific API key.");
+  return suffix;
+}
+
+function getBrevoApiKeyForMailbox(address: string) {
+  const suffix = mailboxEnvSuffix(address);
+  return Deno.env.get(`BREVO_API_KEY_${suffix}`) || Deno.env.get("BREVO_API_KEY") || "";
+}
+
+function shouldUseBrevoForMailbox(mailbox: Record<string, any>, address: string) {
+  const provider = String(mailbox.provider ?? "").trim().toLowerCase();
+  if (provider === "brevo" || provider === "sendinblue") return true;
+  if (provider === "hostinger") return false;
+  return Boolean(getBrevoApiKeyForMailbox(address));
+}
+
+async function sendBrevo(input: { to: string; subject: string; html: string; text: string; displayName: string | null; mailbox: Record<string, any> }) {
+  const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
+  const apiKey = getBrevoApiKeyForMailbox(address);
+  const suffix = mailboxEnvSuffix(address);
+  if (!apiKey) throw new Error(`BREVO_API_KEY_${suffix} or BREVO_API_KEY is missing for ${address}.`);
+
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+    },
+    body: JSON.stringify({
+      sender: {
+        name: input.displayName || input.mailbox.display_name || "CRM Campaign",
+        email: address,
+      },
+      to: [{ email: input.to }],
+      replyTo: {
+        email: address,
+        name: input.displayName || input.mailbox.display_name || "CRM Campaign",
+      },
+      subject: input.subject,
+      htmlContent: input.html || input.text,
+      textContent: input.text || input.html,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 1000);
+    throw new Error(`Brevo email send failed (${response.status}): ${detail || response.statusText}`);
+  }
+}
+
 async function sendHostinger(input: { to: string; subject: string; html: string; text: string; displayName: string | null; mailbox: Record<string, any> }) {
   const address = String(input.mailbox.email_address ?? "").trim().toLowerCase();
   const suffix = (address.split("@")[1]?.split(".")[0] ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
@@ -151,6 +206,40 @@ async function sendHostinger(input: { to: string; subject: string; html: string;
   }
 }
 
+async function sendCampaignMessage(db: ReturnType<typeof createClient>, message: Record<string, any>, campaign: Record<string, any>, contact: Record<string, any>, mailbox: Record<string, any>, html: string, text: string, subject: string) {
+  const mailboxAddress = String(mailbox.email_address ?? "").trim().toLowerCase();
+  const preferredProvider = shouldUseBrevoForMailbox(mailbox, mailboxAddress) ? "brevo" : "hostinger";
+  const providers = preferredProvider === "brevo" ? ["brevo", "hostinger"] : ["hostinger"];
+
+  let lastError: unknown = null;
+  for (const providerName of providers) {
+    try {
+      if (providerName === "brevo") {
+        await sendBrevo({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox });
+      } else {
+        await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox });
+      }
+      return { providerName, providerMessageId: `${providerName}:campaign:${message.id}` };
+    } catch (error) {
+      lastError = error;
+      const reason = error instanceof Error ? error.message : "Unknown send error.";
+      await writeSystemLog(db, {
+        level: providerName === "brevo" ? "warning" : "error",
+        event: providerName === "brevo" ? "campaign.email.brevo_fallback" : "campaign.email.provider_failed",
+        message: `${providerName.toUpperCase()} delivery failed for campaign message ${message.id}. ${reason}`,
+        companyId: campaign.company_id,
+        metadata: { campaign_id: campaign.id, campaign_message_id: message.id, mailbox_id: campaign.mailbox_id, provider: providerName, error: reason },
+      });
+
+      if (providerName === "hostinger") {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Campaign email delivery failed on all configured providers.");
+}
+
 async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<string, any>) {
   const { data: relation, error: relationError } = await db.from("crm_campaign_contacts")
     .select("campaign_id, contact_id, crm_campaigns(*), crm_contacts(*)")
@@ -159,7 +248,7 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
   const campaign = relation.crm_campaigns;
   const contact = relation.crm_contacts;
   const [mailboxResult, templateResult, companyResult] = await Promise.all([
-    db.from("crm_mailboxes").select("id, email_address, status, hostinger_resource_id").eq("id", campaign.mailbox_id).single(),
+    db.from("crm_mailboxes").select("id, company_id, email_address, provider, status, hostinger_resource_id").eq("id", campaign.mailbox_id).single(),
     db.from("crm_email_templates").select("subject, html_body, text_body").eq("id", campaign.template_id).single(),
     db.from("crm_companies").select("name").eq("id", campaign.company_id).single(),
   ]);
@@ -192,9 +281,8 @@ async function sendClaimed(db: ReturnType<typeof createClient>, message: Record<
     });
   }
   const text = render(templateResult.data.text_body || subject, contact, companyName);
-  await sendHostinger({ to: contact.email, subject, html, text, displayName: campaign.from_name, mailbox: mailboxResult.data });
 
-  const providerMessageId = `hostinger:campaign:${message.id}`;
+  const { providerName, providerMessageId } = await sendCampaignMessage(db, message, campaign, contact, mailboxResult.data, html, text, subject);
   const now = new Date().toISOString();
   try {
     const { data: thread, error: threadError } = await db.from("crm_email_threads").upsert({
