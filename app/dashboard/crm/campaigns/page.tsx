@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { IconArrowRight, IconBuilding, IconCalendar, IconEdit, IconEmployees, IconMail, IconPlus, IconTrash } from "@/components/icons";
+import { IconArrowRight, IconBuilding, IconCalendar, IconEdit, IconEmployees, IconMail, IconPlus, IconRefresh, IconTrash } from "@/components/icons";
 import { Alert } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,16 @@ type CampaignForm = { company_id: string; name: string; audience_type: "list" | 
 
 const blankForm: CampaignForm = { company_id: "", name: "", audience_type: "list", contact_list_id: "", segment_id: "", template_id: "", mailbox_id: "", from_name: "", subject: "", schedule_at: "", interval_seconds: "180", batch_size: "1", status: "draft" };
 
+function toDateTimeLocal(value?: string | null) {
+  if (!value) {
+    const next = new Date(Date.now() + 60_000);
+    return new Date(next.getTime() - next.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 function preview(html: string) {
   const sample = html.replace(/\{\{\s*first_name\s*\}\}/g, "Alex").replace(/\{\{\s*last_name\s*\}\}/g, "Morgan").replace(/\{\{\s*email\s*\}\}/g, "alex@example.com").replace(/\{\{\s*company_name\s*\}\}/g, "Your company");
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;padding:24px;background:#f3f5f4;color:#25302c;font:15px/1.6 Arial,sans-serif}main{max-width:620px;margin:auto;background:#fff;padding:24px;border:1px solid #e1e7e3}</style></head><body><main>${sample}</main></body></html>`;
@@ -40,6 +50,11 @@ export default function CrmCampaignsPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [testTo, setTestTo] = useState("");
+  const [relaunchOpen, setRelaunchOpen] = useState(false);
+  const [relaunchCampaign, setRelaunchCampaign] = useState<Campaign | null>(null);
+  const [relaunchName, setRelaunchName] = useState("");
+  const [relaunchMode, setRelaunchMode] = useState<"now" | "scheduled">("now");
+  const [relaunchAt, setRelaunchAt] = useState("");
   const [previewMode, setPreviewMode] = useState<"html" | "text">("html");
   const [saving, setSaving] = useState(false);
   const [loadingResources, setLoadingResources] = useState(false);
@@ -175,6 +190,33 @@ export default function CrmCampaignsPage() {
     finally { setSaving(false); }
   }
 
+  async function relaunchSelectedCampaign() {
+    if (!relaunchCampaign) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const nextName = relaunchName.trim() || relaunchCampaign.name;
+      const nextSchedule = relaunchMode === "scheduled" ? new Date(relaunchAt).toISOString() : new Date().toISOString();
+      const response = await fetch("/api/crm/campaigns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "relaunch",
+          id: relaunchCampaign.id,
+          name: nextName,
+          mode: relaunchMode,
+          schedule_at: nextSchedule,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not relaunch this campaign.");
+      setRelaunchOpen(false);
+      setMessage({ text: result.message ?? (relaunchMode === "now" ? "Campaign relaunched immediately." : "Campaign relaunch scheduled."), tone: "success" });
+      await loadCampaignData();
+    } catch (error) { setMessage({ text: error instanceof Error ? error.message : "Could not relaunch campaign.", tone: "danger" }); }
+    finally { setSaving(false); }
+  }
+
   const selectedTemplate = templates.find((item) => String(item.id) === form.template_id);
   const selectedSegment = segments.find((item) => String(item.id) === form.segment_id);
   const selectedContactList = contactLists.find((item) => String(item.id) === form.contact_list_id);
@@ -197,7 +239,7 @@ export default function CrmCampaignsPage() {
 
   return <>
     <div className="space-y-6 pb-10">
-      <PageHeader eyebrow="Business CRM / Email Marketing" title="Campaigns" description="Browse campaigns across your companies and manage every send from one place." actions={<Button onClick={openNew} disabled={!companies.length}><IconPlus className="h-4 w-4" />New campaign</Button>} />
+      <PageHeader eyebrow="Business CRM / Email Marketing" title="Campaigns" description="Browse campaigns across your companies and manage every send from one place." actions={<div className="flex flex-wrap items-center gap-2"><Link href="/dashboard/crm/campaigns/debug"><Button variant="secondary">Debug delivery</Button></Link><Button onClick={openNew} disabled={!companies.length}><IconPlus className="h-4 w-4" />New campaign</Button></div>} />
       {message ? <div><Alert tone={message.tone}>{message.text}</Alert></div> : null}
 
       <section className="relative isolate overflow-hidden rounded-2xl bg-gradient-to-r from-[#263f35] via-[#315946] to-[#39765d] px-6 py-6 text-white shadow-[0_18px_45px_rgba(33,73,54,0.18)] sm:px-8">
@@ -261,8 +303,9 @@ export default function CrmCampaignsPage() {
                 </div>
                 <p className="mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-primary">View delivery report <IconArrowRight className="h-4 w-4" /></p>
               </Link>
-              <div className="flex gap-2 border-t border-stone-200 bg-white px-5 py-3 sm:px-6">
+              <div className="flex flex-wrap gap-2 border-t border-stone-200 bg-white px-5 py-3 sm:px-6">
                 <Button variant="secondary" onClick={() => openEdit(campaign)}><IconEdit className="h-4 w-4" />Edit</Button>
+                <Button variant="secondary" onClick={() => { setRelaunchCampaign(campaign); setRelaunchName(campaign.name); setRelaunchMode("now"); setRelaunchAt(toDateTimeLocal(campaign.schedule_at ?? new Date().toISOString())); setRelaunchOpen(true); }}><IconRefresh className="h-4 w-4" />Relaunch</Button>
                 <Button variant="ghost" className="text-rose-600" onClick={() => removeCampaign(campaign)}><IconTrash className="h-4 w-4" />Delete</Button>
               </div>
             </Card>;
@@ -277,6 +320,36 @@ export default function CrmCampaignsPage() {
         </Card>
       )}
     </div>
+
+    <Modal size="default" open={relaunchOpen} onClose={() => setRelaunchOpen(false)} title="Relaunch campaign" description={relaunchCampaign ? `Re-run ${relaunchCampaign.name} without creating a duplicate. The saved audience, template, mailbox, and queue settings stay untouched.` : "Re-run this campaign without creating a duplicate."}>
+      {relaunchCampaign ? (
+        <div className="space-y-5">
+          <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-stone-500">Campaign</p>
+            <p className="mt-2 text-lg font-bold text-stone-900">{relaunchCampaign.name}</p>
+          </div>
+          <Field label="Campaign name">
+            <TextInput value={relaunchName} onChange={(event) => setRelaunchName(event.target.value)} placeholder="Leave as-is to keep current name" />
+          </Field>
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-stone-800">Relaunch action</p>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant={relaunchMode === "now" ? "primary" : "secondary"} onClick={() => setRelaunchMode("now")}>Send now</Button>
+              <Button type="button" variant={relaunchMode === "scheduled" ? "primary" : "secondary"} onClick={() => setRelaunchMode("scheduled")}>Schedule later</Button>
+            </div>
+          </div>
+          {relaunchMode === "scheduled" ? (
+            <Field label="Relaunch at">
+              <TextInput type="datetime-local" value={relaunchAt} onChange={(event) => setRelaunchAt(event.target.value)} />
+            </Field>
+          ) : null}
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setRelaunchOpen(false)}>Cancel</Button>
+            <Button type="button" onClick={relaunchSelectedCampaign} disabled={relaunchMode === "scheduled" && !relaunchAt || saving}>{saving ? (relaunchMode === "now" ? "Sending..." : "Scheduling...") : (relaunchMode === "now" ? "Relaunch now" : "Schedule relaunch")}</Button>
+          </div>
+        </div>
+      ) : null}
+    </Modal>
 
     <Modal size="wide" open={editorOpen} onClose={() => setEditorOpen(false)} title={editingId ? "Edit campaign" : "Create campaign"} description="A scheduled campaign is picked up by the server-side delivery worker.">
       <form className="grid gap-7 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]" onSubmit={saveCampaign}>
