@@ -34,9 +34,8 @@ function employeeValues(body: Record<string, unknown>) {
   };
 }
 
-function validateEmployee(values: ReturnType<typeof employeeValues>, password?: string) {
+function validateEmployee(values: ReturnType<typeof employeeValues>) {
   if (!values.name || !values.phone || !values.email) return "Name, phone number, and email address are required.";
-  if (password !== undefined && password.length < 6) return "Password must be at least 6 characters.";
   if (values.salary !== null && (!Number.isFinite(values.salary) || values.salary < 0)) return "Salary must be a valid non-negative number.";
   return null;
 }
@@ -63,12 +62,11 @@ export async function POST(request: Request) {
   try {
     const body = await request.json() as Record<string, unknown>;
     const values = employeeValues(body);
-    const password = String(body.password ?? "");
-    const validationError = validateEmployee(values, password);
+    const validationError = validateEmployee(values);
     if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
 
     const employeeId = await nextEmployeeId();
-    const authUser = await createEmployeeAuthUser(values.email, password, values.name);
+    const authUser = await createEmployeeAuthUser(values.email, values.name);
     authUserId = authUser.id;
     const employee = await addEmployee({ ...values, employee_id: employeeId, auth_user_id: authUser.id });
 
@@ -96,8 +94,7 @@ export async function PATCH(request: Request) {
     if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "A valid employee ID is required." }, { status: 400 });
 
     const values = employeeValues(body);
-    const password = body.password ? String(body.password) : undefined;
-    const validationError = validateEmployee(values, password);
+    const validationError = validateEmployee(values);
     if (validationError) return NextResponse.json({ error: validationError }, { status: 400 });
 
     const current = (await getEmployees()).find((employee) => employee.id === id);
@@ -109,7 +106,7 @@ export async function PATCH(request: Request) {
 
     const employee = await updateEmployee(id, values);
     if (current.auth_user_id) {
-      await updateEmployeeAuthUser(current.auth_user_id, { email: values.email, password, active: values.status === "active" });
+      await updateEmployeeAuthUser(current.auth_user_id, { email: values.email, active: values.status === "active" });
     }
     const { error: profileError } = await requireDatabase().from("profiles").update({ full_name: values.name, is_active: values.status === "active" }).eq("employee_id", id);
     if (profileError) throw profileError;

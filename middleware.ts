@@ -64,6 +64,7 @@ export async function middleware(request: NextRequest) {
   const isLogin = request.nextUrl.pathname === "/login";
   const isDashboard = request.nextUrl.pathname.startsWith("/dashboard");
   const isApi = request.nextUrl.pathname.startsWith("/api/");
+  const isAuthCodeRequest = request.nextUrl.pathname === "/api/auth/request-code";
   const isWorkerSync =
     request.nextUrl.pathname === "/api/attendance/sync" &&
     Boolean(process.env.ATTENDANCE_WORKER_SECRET) &&
@@ -85,6 +86,7 @@ export async function middleware(request: NextRequest) {
   if (
     isApi &&
     !user &&
+    !isAuthCodeRequest &&
     !isWorkerSync &&
     !isConnectorIngest &&
     !isConnectorCommand &&

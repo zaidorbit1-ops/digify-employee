@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { IconRefresh } from "@/components/icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ type Company = { id: number; name: string };
 type CompanyAccess = { employee_id: number; company_id: number };
 type Permission = { id?: number; employee_id: number; module: string; can_read: boolean; can_add: boolean; can_edit: boolean; can_delete: boolean };
 type Message = { text: string; tone?: "danger" | "success" };
-type ProfileForm = { name: string; email: string; password: string };
+type ProfileForm = { name: string; email: string };
 type PermissionKey = "can_read" | "can_add" | "can_edit" | "can_delete";
 
 const modules = [
@@ -27,7 +27,7 @@ const permissionKeys: PermissionKey[] = ["can_read", "can_add", "can_edit", "can
 
 export default function SettingsPage() {
   const { user, profile } = useAuth();
-  const [form, setForm] = useState<ProfileForm>({ name: profile?.full_name ?? "", email: user?.email ?? "", password: "" });
+  const [form, setForm] = useState<ProfileForm>({ name: profile?.full_name ?? "", email: user?.email ?? "" });
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [companyAccess, setCompanyAccess] = useState<CompanyAccess[]>([]);
@@ -37,7 +37,6 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(false);
   const [accessLoading, setAccessLoading] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
-  const passwordEdited = useRef(false);
 
   const filteredEmployees = useMemo(() => {
     const query = employeeSearch.trim().toLowerCase();
@@ -52,8 +51,7 @@ export default function SettingsPage() {
   }
 
   useEffect(() => {
-    setForm({ name: profile?.full_name ?? "", email: user?.email ?? "", password: "" });
-    passwordEdited.current = false;
+    setForm({ name: profile?.full_name ?? "", email: user?.email ?? "" });
   }, [profile, user]);
 
   async function loadAccess() {
@@ -85,15 +83,9 @@ export default function SettingsPage() {
       const supabase = getSupabaseBrowserClient();
       const { error: authError } = await supabase.auth.updateUser({ email: form.email.trim().toLowerCase() });
       if (authError) throw authError;
-      if (passwordEdited.current && form.password.trim()) {
-        const { error: passwordError } = await supabase.auth.updateUser({ password: form.password.trim() });
-        if (passwordError) throw passwordError;
-      }
       if (!user?.id) throw new Error("Your session is not ready.");
       const { error: profileError } = await supabase.from("profiles").update({ full_name: form.name.trim() }).eq("user_id", user.id);
       if (profileError) throw profileError;
-      setForm((current) => ({ ...current, password: "" }));
-      passwordEdited.current = false;
       setMessage({ text: "Profile settings updated.", tone: "success" });
     } catch (error) {
       setMessage({ text: error instanceof Error ? error.message : "Could not update profile settings.", tone: "danger" });
@@ -165,7 +157,7 @@ export default function SettingsPage() {
       <PageHeader eyebrow="Settings" title="Workspace settings" description="Update your profile and control employee access to each CRM module." actions={profile?.role === "superadmin" ? <Button variant="secondary" onClick={loadAccess} disabled={accessLoading}><IconRefresh className="h-4 w-4" />Refresh access</Button> : undefined} />
       {message ? <div className="mb-5"><Alert tone={message.tone}>{message.text}</Alert></div> : null}
 
-      <Card className="mb-5 p-5 sm:p-6"><div className="mb-5"><p className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">Profile</p><h2 className="mt-1 text-lg font-bold">Your account</h2><p className="mt-1 text-sm text-muted">Change your name, email, or login password.</p></div><form onSubmit={saveProfile} className="grid gap-4 md:grid-cols-3"><Field label="Full name"><TextInput required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label="Email address"><TextInput required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field><Field label="New password (optional)"><TextInput type="password" autoComplete="new-password" minLength={6} value={form.password} onChange={(event) => { passwordEdited.current = true; setForm({ ...form, password: event.target.value }); }} placeholder="Leave empty to keep current" /></Field><div className="md:col-span-3 flex justify-end"><Button type="submit" disabled={loading}>{loading ? "Saving..." : "Save profile"}</Button></div></form></Card>
+      <Card className="mb-5 p-5 sm:p-6"><div className="mb-5"><p className="text-[10px] font-bold uppercase tracking-[0.12em] text-primary">Profile</p><h2 className="mt-1 text-lg font-bold">Your account</h2><p className="mt-1 text-sm text-muted">Change your name or sign-in email. A code will be sent to your email when you sign in.</p></div><form onSubmit={saveProfile} className="grid gap-4 md:grid-cols-2"><Field label="Full name"><TextInput required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label="Email address"><TextInput required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field><div className="md:col-span-2 flex justify-end"><Button type="submit" disabled={loading}>{loading ? "Saving..." : "Save profile"}</Button></div></form></Card>
 
       {profile?.role === "superadmin" ? <>
         <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-primary/15 bg-primary-soft/40 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-primary">Editing access for</p><p className="mt-1 text-base font-bold">{selectedEmployee?.name ?? "Select an employee"}</p><p className="mt-1 text-xs text-muted">{selectedEmployee ? `Employee ID ${selectedEmployee.employee_id ?? selectedEmployee.id} · ${selectedEmployee.email ?? "Permissions are saved instantly"}` : "Choose an employee below to manage module access."}</p></div><div className="rounded-xl bg-white px-3 py-2 text-right shadow-sm"><p className="text-[10px] font-bold uppercase tracking-[0.12em] text-stone-400">Active staff</p><p className="mt-0.5 text-lg font-bold text-primary">{employees.length}</p></div></div>

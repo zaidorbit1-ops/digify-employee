@@ -95,13 +95,11 @@ function requireServiceRoleSupabase() {
 
 export async function createEmployeeAuthUser(
   email: string,
-  password: string,
   fullName: string,
 ) {
   const client = requireServiceRoleSupabase();
   const { data, error } = await client.auth.admin.createUser({
     email,
-    password,
     email_confirm: true,
     user_metadata: { full_name: fullName, role: "employee" },
   });
@@ -113,12 +111,11 @@ export async function createEmployeeAuthUser(
 
 export async function updateEmployeeAuthUser(
   userId: string,
-  values: { email?: string; password?: string; active: boolean },
+  values: { email?: string; active: boolean },
 ) {
   const client = requireServiceRoleSupabase();
   const { data, error } = await client.auth.admin.updateUserById(userId, {
     ...(values.email ? { email: values.email, email_confirm: true } : {}),
-    ...(values.password ? { password: values.password } : {}),
     ban_duration: values.active ? "none" : "876000h",
   });
 
