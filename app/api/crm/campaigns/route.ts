@@ -26,7 +26,7 @@ function campaignValues(body: Record<string, unknown>) {
   const scheduleAt = text(body.schedule_at, 80) || null;
   const intervalSeconds = Number(body.interval_seconds ?? 180);
   const batchSize = Number(body.batch_size ?? 1);
-  const status = text(body.status, 20) || "draft";
+  const status = text(body.status, 20) || "scheduled";
   if (!Number.isInteger(companyId) || companyId <= 0) throw new Error("A valid company is required.");
   if (!name) throw new Error("Campaign name is required.");
   if (!Number.isInteger(templateId) || templateId <= 0) throw new Error("Select an email template.");
@@ -37,6 +37,7 @@ function campaignValues(body: Record<string, unknown>) {
   if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error("Batch size must be at least 1.");
   if (!statuses.includes(status)) throw new Error("Choose a valid campaign status.");
   if (scheduleAt && Number.isNaN(new Date(scheduleAt).getTime())) throw new Error("Schedule must be a valid date and time.");
+  if (status === "scheduled" && scheduleAt && new Date(scheduleAt).getTime() <= Date.now()) throw new Error("Scheduled start must be in the future.");
   return { company_id: companyId, name, segment_id: segmentId, contact_list_id: contactListId, template_id: templateId, mailbox_id: mailboxId, from_name: text(body.from_name, 255) || null, reply_to: text(body.reply_to, 320) || null, subject: text(body.subject, 500) || null, schedule_at: scheduleAt, interval_seconds: intervalSeconds, batch_size: batchSize, status };
 }
 
@@ -139,9 +140,20 @@ export const PATCH = withCrmApiLogging(async function PATCH(request: Request) {
     const values = campaignValues(body);
     if (!statuses.includes(values.status)) throw new Error("Choose a valid campaign status.");
     await validateCampaignRelations(client, values);
-    const editableValues = Object.fromEntries(Object.entries(values).filter(([key]) => key !== "status"));
-    const { data, error } = await client.from("crm_campaigns").update({ ...editableValues, updated_at: new Date().toISOString() }).eq("id", id).select().single();
+    const { data: existing, error: existingError } = await client.from("crm_campaigns").select("status").eq("id", id).maybeSingle();
+    if (existingError) throw existingError;
+    if (!existing) return fail("Campaign is not available.", "Campaign is not available.", 404);
+    const canChangeDelivery = ["draft", "scheduled"].includes(existing.status);
+    const update = {
+      ...values,
+      status: canChangeDelivery ? values.status : existing.status,
+      updated_at: new Date().toISOString(),
+    };
+    let updateQuery = client.from("crm_campaigns").update(update).eq("id", id);
+    if (canChangeDelivery) updateQuery = updateQuery.eq("status", existing.status);
+    const { data, error } = await updateQuery.select().maybeSingle();
     if (error) throw error;
+    if (!data) throw new Error("Campaign status changed while it was being edited. Refresh and try again.");
     return NextResponse.json({ campaign: data });
   } catch (error) { return fail(error, "Could not update campaign.", 400); }
 });
