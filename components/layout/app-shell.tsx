@@ -22,6 +22,7 @@ const titles: Record<string, string> = {
   "/dashboard/lookups": "Lookup lists",
   "/dashboard/employee": "Employee portal",
   "/dashboard/settings": "Settings",
+  "/dashboard/whatsapp": "WhatsApp",
   "/dashboard/crm": "Business CRM",
 };
 
@@ -29,8 +30,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
-  const isCrmWorkspace = pathname.startsWith("/dashboard/crm");
-  const title = titles[pathname] ?? (pathname.startsWith("/dashboard/crm") ? "Business CRM" : "Dashboard");
+  const isCrmWorkspace = pathname.startsWith("/dashboard/crm") || pathname.startsWith("/dashboard/whatsapp");
+  const title = titles[pathname] ?? (pathname.startsWith("/dashboard/crm") || pathname.startsWith("/dashboard/whatsapp") ? "Business CRM" : "Dashboard");
   const { profile, user, loading, profileError, signOut } = useAuth();
 
   useEffect(() => {

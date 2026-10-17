@@ -189,6 +189,7 @@ export async function middleware(request: NextRequest) {
           .maybeSingle()).data !== null;
       const crmRoutes = [
         "/dashboard/crm",
+        "/dashboard/whatsapp",
         "/dashboard/crm/companies",
         "/dashboard/crm/custom-fields",
         "/dashboard/crm/leads",
@@ -233,6 +234,7 @@ export async function middleware(request: NextRequest) {
           (row) =>
             [
               "crm_companies",
+              "crm_whatsapp",
               "crm_custom_fields",
               "crm_leads",
               "crm_experts",
@@ -289,6 +291,14 @@ function withCookies(target: NextResponse, source: NextResponse) {
 }
 
 function permissionModule(pathname: string) {
+  if (
+    pathname === "/dashboard/whatsapp" ||
+    pathname.startsWith("/dashboard/whatsapp/") ||
+    pathname.startsWith("/api/whatsapp/")
+  ) {
+    return "crm_whatsapp";
+  }
+
   if (pathname.startsWith("/dashboard/crm/") || pathname.startsWith("/api/crm/")) {
     const match = pathname.match(/^\/(?:dashboard|api)\/crm\/([^/]+)/);
     const segment = match?.[1];

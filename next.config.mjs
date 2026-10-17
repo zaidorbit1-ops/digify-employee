@@ -1,6 +1,7 @@
 import path from "node:path";
 
 const nextConfig = {
+  serverExternalPackages: ["@whiskeysockets/baileys"],
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

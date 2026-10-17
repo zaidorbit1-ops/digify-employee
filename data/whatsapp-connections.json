@@ -1,0 +1,12 @@
+{
+  "4": {
+    "company_id": 4,
+    "company_name": "Class Takers Pro",
+    "status": "reconnecting",
+    "connected_number": null,
+    "profile_name": "Company WhatsApp",
+    "qr_code": null,
+    "last_connected_at": null,
+    "note": "The WhatsApp session was interrupted and is reconnecting."
+  }
+}

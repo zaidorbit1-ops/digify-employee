@@ -16,7 +16,6 @@ type Company = { id: number; name: string; logo_url?: string | null; description
 type FormState = { name: string; description: string; status: string; website_name: string; website_url: string; website_technology: string; hosting_provider: string; logo_url: string };
 type Message = { text: string; tone?: "danger" | "success" };
 type WebsiteForm = { name: string; website_url: string; technology: string; hosting_provider: string; status: string; custom_fields: Array<{ name: string; label?: string; aliases?: string[] }> };
-
 const emptyForm: FormState = { name: "", description: "", status: "active", website_name: "Primary website", website_url: "", website_technology: "other", hosting_provider: "other", logo_url: "" };
 const emptyWebsiteForm: WebsiteForm = { name: "", website_url: "", technology: "other", hosting_provider: "other", status: "active", custom_fields: [] };
 

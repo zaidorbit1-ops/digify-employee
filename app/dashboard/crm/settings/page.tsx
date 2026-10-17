@@ -21,6 +21,7 @@ type Message = { text: string; tone?: "danger" | "success" };
 
 const crmModules = [
   ["crm_companies", "Companies"],
+  ["crm_whatsapp", "WhatsApp"],
   ["crm_custom_fields", "Custom fields"],
   ["crm_leads", "Leads"],
   ["crm_experts", "Experts"],
